@@ -219,9 +219,7 @@ pub fn main() !void {
     defer wgpu.instanceRelease(demo.instance);
 
     glfw.windowHint(.{ .client_api = .none });
-    const window = glfw.createWindow(640, 480, "triangle [wgpu + glfw]", null, null) orelse {
-        std.debug.panic("Failed to create GLFW window", .{});
-    };
+    const window = try glfw.createWindow(640, 480, "triangle [wgpu + glfw]", null, null);
     defer glfw.destroyWindow(window);
 
     glfw.setWindowUserPointer(window, &demo);

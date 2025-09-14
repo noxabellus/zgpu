@@ -171,7 +171,13 @@ pub fn windowHint(hint: WindowHint) void {
     }
 }
 
-pub const createWindow = @extern(*const fn (width: i32, height: i32, title: [*:0]const u8, monitor: ?*Monitor, share: ?*Window) callconv(.c) ?*Window, .{ .name = "glfwCreateWindow" });
+// pub const createWindow = @extern(*const fn (width: i32, height: i32, title: [*:0]const u8, monitor: ?*Monitor, share: ?*Window) callconv(.c) ?*Window, .{ .name = "glfwCreateWindow" });
+extern fn glfwCreateWindow(width: i32, height: i32, title: [*:0]const u8, monitor: ?*Monitor, share: ?*Window) callconv(.c) ?*Window;
+pub fn createWindow(width: i32, height: i32, title: [*:0]const u8, monitor: ?*Monitor, share: ?*Window) !*Window {
+    const window = glfwCreateWindow(width, height, title, monitor, share);
+    return window orelse error.FailedToCreateWindow;
+}
+
 pub const destroyWindow = @extern(*const fn (window: *Window) callconv(.c) void, .{ .name = "glfwDestroyWindow" });
 
 extern fn glfwWindowShouldClose(window: *Window) callconv(.c) i32;
