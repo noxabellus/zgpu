@@ -1,20 +1,11 @@
 const std = @import("std");
 const wgpu = @import("wgpu.zig");
-
-// Import for GLFW remains the same
-const C = @cImport({
-    @cDefine("GLFW_EXPOSE_NATIVE_X11", "");
-    @cInclude("GLFW/glfw3.h");
-    @cInclude("GLFW/glfw3native.h");
-});
+const glfw = @import("glfw.zig");
 
 test {
     std.testing.refAllDecls(@This());
-}
-
-/// A helper function to create a wgpu.StringView from a Zig string.
-fn str(s: []const u8) wgpu.StringView {
-    return .{ .data = s.ptr, .length = s.len };
+    std.testing.refAllDecls(wgpu);
+    std.testing.refAllDecls(glfw);
 }
 
 /// A descriptor for creating and initializing a buffer in one step.
@@ -85,7 +76,7 @@ fn frmwrk_device_create_buffer_init(device: wgpu.Device, descriptor: *const frmw
             .label = .{ .data = descriptor.label.ptr, .length = descriptor.label.len },
             .size = 0,
             .usage = descriptor.usage,
-            .mapped_at_creation = .false,
+            .mapped_at_creation = false,
         });
     }
 
@@ -97,7 +88,7 @@ fn frmwrk_device_create_buffer_init(device: wgpu.Device, descriptor: *const frmw
         .label = .{ .data = descriptor.label.ptr, .length = descriptor.label.len },
         .size = padded_size,
         .usage = descriptor.usage,
-        .mapped_at_creation = .true,
+        .mapped_at_creation = true,
     });
 
     const mapped_range = wgpu.bufferGetMappedRange(buffer, 0, unpadded_size).?;
@@ -157,11 +148,11 @@ fn frmwrk_print_adapter_info(adapter: wgpu.Adapter) void {
 
 // --- Application State Struct ---
 const Demo = struct {
-    instance: wgpu.Instance,
-    surface: wgpu.Surface,
-    adapter: wgpu.Adapter,
-    device: wgpu.Device,
-    config: wgpu.SurfaceConfiguration,
+    instance: wgpu.Instance = null,
+    surface: wgpu.Surface = null,
+    adapter: wgpu.Adapter = null,
+    device: wgpu.Device = null,
+    config: wgpu.SurfaceConfiguration = .{},
 };
 
 // --- Asynchronous Callbacks ---
@@ -190,11 +181,11 @@ fn handle_request_device(status: wgpu.RequestDeviceStatus, device: wgpu.Device, 
 }
 
 // --- GLFW Event Callbacks ---
-fn handle_glfw_key(window: ?*C.GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int) callconv(.c) void {
+fn handle_glfw_key(window: *glfw.Window, key: glfw.Key, scancode: i32, action: glfw.KeyState32, mods: glfw.Modifier) callconv(.c) void {
     _ = scancode;
     _ = mods;
-    if (key == C.GLFW_KEY_R and (action == C.GLFW_PRESS or action == C.GLFW_REPEAT)) {
-        const demo: *Demo = @ptrCast(@alignCast(C.glfwGetWindowUserPointer(window) orelse return));
+    if (key == .r and (action == .press or action == .repeat)) {
+        const demo: *Demo = @ptrCast(@alignCast(glfw.getWindowUserPointer(window) orelse return));
         if (demo.instance == null) return;
 
         var report: wgpu.GlobalReport = undefined;
@@ -203,12 +194,12 @@ fn handle_glfw_key(window: ?*C.GLFWwindow, key: c_int, scancode: c_int, action: 
     }
 }
 
-fn handle_glfw_framebuffer_size(window: ?*C.GLFWwindow, width: c_int, height: c_int) callconv(.c) void {
+fn handle_glfw_framebuffer_size(window: *glfw.Window, width: i32, height: i32) callconv(.c) void {
     if (width <= 0 and height <= 0) {
         return;
     }
 
-    const demo: *Demo = @ptrCast(@alignCast(C.glfwGetWindowUserPointer(window) orelse return));
+    const demo: *Demo = @ptrCast(@alignCast(glfw.getWindowUserPointer(window) orelse return));
     if (demo.surface == null) return;
 
     demo.config.width = @intCast(width);
@@ -220,29 +211,31 @@ fn handle_glfw_framebuffer_size(window: ?*C.GLFWwindow, width: c_int, height: c_
 pub fn main() !void {
     frmwrk_setup_logging(.warn);
 
-    C.glfwInitHint(C.GLFW_PLATFORM, C.GLFW_PLATFORM_X11);
+    // this call is required to force glfw to use X11 backend on wayland systems
+    glfw.initHint(.{ .platform = .x11 });
 
-    if (C.glfwInit() == 0) return error.FailedToInitGLFW;
-    defer C.glfwTerminate();
+    try glfw.init();
+    defer glfw.deinit();
 
-    var demo = std.mem.zeroes(Demo);
+    var demo = Demo{};
 
     demo.instance = wgpu.createInstance(null);
     std.debug.assert(demo.instance != null);
     defer wgpu.instanceRelease(demo.instance);
 
-    C.glfwWindowHint(C.GLFW_CLIENT_API, C.GLFW_NO_API);
-    const window = C.glfwCreateWindow(640, 480, "triangle [wgpu + glfw]", null, null);
-    std.debug.assert(window != null);
-    defer C.glfwDestroyWindow(window);
+    glfw.windowHint(.{ .client_api = .none });
+    const window = glfw.createWindow(640, 480, "triangle [wgpu + glfw]", null, null) orelse {
+        std.debug.panic("Failed to create GLFW window", .{});
+    };
+    defer glfw.destroyWindow(window);
 
-    C.glfwSetWindowUserPointer(window, &demo);
-    _ = C.glfwSetKeyCallback(window, handle_glfw_key);
-    _ = C.glfwSetFramebufferSizeCallback(window, handle_glfw_framebuffer_size);
+    glfw.setWindowUserPointer(window, &demo);
+    _ = glfw.setKeyCallback(window, handle_glfw_key);
+    _ = glfw.setFramebufferSizeCallback(window, handle_glfw_framebuffer_size);
 
     {
-        const x11_display = C.glfwGetX11Display();
-        const x11_window = C.glfwGetX11Window(window);
+        const x11_display = glfw.getX11Display();
+        const x11_window = glfw.getX11Window(window);
         std.debug.assert(x11_display != null and x11_window != 0);
 
         var xlib_source = wgpu.SurfaceSourceXlibWindow{
@@ -282,7 +275,7 @@ pub fn main() !void {
     defer wgpu.shaderModuleRelease(shader_module);
 
     const pipeline_layout = wgpu.deviceCreatePipelineLayout(demo.device, &wgpu.PipelineLayoutDescriptor{
-        .label = str("pipeline_layout"),
+        .label = .fromSlice("pipeline_layout"),
     });
     std.debug.assert(pipeline_layout != null);
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
@@ -292,15 +285,15 @@ pub fn main() !void {
     defer wgpu.surfaceCapabilitiesFreeMembers(surface_capabilities);
 
     const render_pipeline = wgpu.deviceCreateRenderPipeline(demo.device, &wgpu.RenderPipelineDescriptor{
-        .label = str("render_pipeline"),
+        .label = .fromSlice("render_pipeline"),
         .layout = pipeline_layout,
         .vertex = .{
             .module = shader_module,
-            .entry_point = str("vs_main"),
+            .entry_point = .fromSlice("vs_main"),
         },
         .fragment = &wgpu.FragmentState{
             .module = shader_module,
-            .entry_point = str("fs_main"),
+            .entry_point = .fromSlice("fs_main"),
             .target_count = 1,
             .targets = &[_]wgpu.ColorTargetState{
                 .{
@@ -324,16 +317,16 @@ pub fn main() !void {
     };
 
     {
-        var width: c_int = 0;
-        var height: c_int = 0;
-        C.glfwGetWindowSize(window, &width, &height);
+        var width: i32 = 0;
+        var height: i32 = 0;
+        glfw.getWindowSize(window, &width, &height);
         demo.config.width = @intCast(width);
         demo.config.height = @intCast(height);
     }
     wgpu.surfaceConfigure(demo.surface, &demo.config);
 
-    main_loop: while (C.glfwWindowShouldClose(window) == 0) {
-        C.glfwPollEvents();
+    main_loop: while (!glfw.windowShouldClose(window)) {
+        glfw.pollEvents();
 
         var surface_texture: wgpu.SurfaceTexture = undefined;
         wgpu.surfaceGetCurrentTexture(demo.surface, &surface_texture);
@@ -344,9 +337,9 @@ pub fn main() !void {
                 if (surface_texture.texture != null) {
                     wgpu.textureRelease(surface_texture.texture);
                 }
-                var width: c_int = 0;
-                var height: c_int = 0;
-                C.glfwGetWindowSize(window, &width, &height);
+                var width: i32 = 0;
+                var height: i32 = 0;
+                glfw.getWindowSize(window, &width, &height);
                 if (width != 0 and height != 0) {
                     demo.config.width = @intCast(width);
                     demo.config.height = @intCast(height);
@@ -367,13 +360,13 @@ pub fn main() !void {
         defer wgpu.textureViewRelease(frame);
 
         const command_encoder = wgpu.deviceCreateCommandEncoder(demo.device, &wgpu.CommandEncoderDescriptor{
-            .label = str("command_encoder"),
+            .label = .fromSlice("command_encoder"),
         });
         std.debug.assert(command_encoder != null);
         defer wgpu.commandEncoderRelease(command_encoder);
 
         const render_pass_encoder = wgpu.commandEncoderBeginRenderPass(command_encoder, &wgpu.RenderPassDescriptor{
-            .label = str("render_pass_encoder"),
+            .label = .fromSlice("render_pass_encoder"),
             .color_attachment_count = 1,
             .color_attachments = &[_]wgpu.RenderPassColorAttachment{
                 .{
@@ -393,7 +386,7 @@ pub fn main() !void {
         wgpu.renderPassEncoderRelease(render_pass_encoder); // Must release after ending
 
         const command_buffer = wgpu.commandEncoderFinish(command_encoder, &wgpu.CommandBufferDescriptor{
-            .label = str("command_buffer"),
+            .label = .fromSlice("command_buffer"),
         });
         std.debug.assert(command_buffer != null);
         defer wgpu.commandBufferRelease(command_buffer);

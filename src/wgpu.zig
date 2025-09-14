@@ -791,6 +791,21 @@ pub const NativeTextureFormat = enum(u32) {
 pub const StringView = extern struct {
     data: ?[*]const u8 = null,
     length: usize = 0,
+
+    pub fn fromSlice(slice: []const u8) StringView {
+        return StringView{
+            .data = slice.ptr,
+            .length = slice.len,
+        };
+    }
+
+    pub fn toSlice(self: StringView) []const u8 {
+        if (self.data) |d| {
+            return d[0..self.length];
+        } else {
+            return &.{};
+        }
+    }
 };
 
 pub const Adapter = ?*AdapterImpl;
@@ -1053,7 +1068,7 @@ pub const RenderBundleEncoderDescriptor = extern struct {
     label: StringView = .{},
     color_format_count: usize = 0,
     color_formats: ?[*]const TextureFormat = null,
-    depth_stencil_format: TextureFormat = null,
+    depth_stencil_format: TextureFormat = .undefined,
     sample_count: u32 = 0,
     depth_read_only: BigBool = .false,
     stencil_read_only: BigBool = .false,
