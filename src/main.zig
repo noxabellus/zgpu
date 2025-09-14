@@ -119,15 +119,11 @@ fn frmwrk_print_global_report(report: C.WGPUGlobalReport) void {
 
 fn frmwrk_print_adapter_info(adapter: C.WGPUAdapter) void {
     var info = std.mem.zeroes(C.WGPUAdapterInfo);
-    // This function populates the `info` struct.
     _ = C.wgpuAdapterGetInfo(adapter, &info);
-
-    // Safely print each string field, providing a fallback if the pointer is null.
     std.debug.print("description: {s}\n", .{if (info.description.data) |d| d[0..info.description.length] else "(null)"});
     std.debug.print("vendor: {s}\n", .{if (info.vendor.data) |d| d[0..info.vendor.length] else "(null)"});
     std.debug.print("architecture: {s}\n", .{if (info.architecture.data) |d| d[0..info.architecture.length] else "(null)"});
     std.debug.print("device: {s}\n", .{if (info.device.data) |d| d[0..info.device.length] else "(null)"});
-
     std.debug.print("backend type: {d}\n", .{info.backendType});
     std.debug.print("adapter type: {d}\n", .{info.adapterType});
     std.debug.print("vendorID: {x}\n", .{info.vendorID});
