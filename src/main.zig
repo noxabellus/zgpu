@@ -243,18 +243,18 @@ pub fn main() !void {
     std.debug.assert(demo.surface != null);
     defer wgpu.surfaceRelease(demo.surface);
 
+    // TODO: this doesn't seem like the right way to handle the future but it's from the examples
     _ = wgpu.instanceRequestAdapter(demo.instance, &wgpu.RequestAdapterOptions{
         .compatible_surface = demo.surface,
     }, .{ .callback = handle_request_adapter, .userdata1 = &demo });
-
     while (demo.adapter == null) {
         wgpu.instanceProcessEvents(demo.instance);
     }
     defer wgpu.adapterRelease(demo.adapter);
     frmwrk_print_adapter_info(demo.adapter);
 
+    // TODO: this doesn't seem like the right way to handle the future but it's from the examples
     _ = wgpu.adapterRequestDevice(demo.adapter, null, .{ .callback = handle_request_device, .userdata1 = &demo });
-
     while (demo.device == null) {
         wgpu.instanceProcessEvents(demo.instance);
     }
