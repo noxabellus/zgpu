@@ -11,7 +11,7 @@ test {
 /// A descriptor for creating and initializing a buffer in one step.
 const frmwrk_buffer_init_descriptor = struct {
     label: []const u8,
-    usage: wgpu.BufferUsage, // Changed to new type
+    usage: wgpu.BufferUsage,
     content: ?*anyopaque,
     content_size: usize,
 };
@@ -20,7 +20,6 @@ const frmwrk_buffer_init_descriptor = struct {
 fn log_callback(level: wgpu.LogLevel, message: wgpu.StringView, userdata: ?*anyopaque) callconv(.c) void {
     _ = userdata;
 
-    // Use the new wgpu.LogLevel enum
     const level_str = switch (level) {
         .@"error" => "error",
         .warn => "warn",
@@ -30,10 +29,7 @@ fn log_callback(level: wgpu.LogLevel, message: wgpu.StringView, userdata: ?*anyo
         else => "unknown_level",
     };
 
-    // message.data is now an optional pointer
-    if (message.data) |data| {
-        std.debug.print("[wgpu] [{s}] {s}\n", .{ level_str, data[0..message.length] });
-    }
+    std.debug.print("[wgpu] [{s}] {s}\n", .{ level_str, message.toSlice() });
 }
 
 /// Sets up wgpu logging.
@@ -49,7 +45,6 @@ fn frmwrk_load_shader_module(device: wgpu.Device, name: []const u8) !wgpu.Shader
     };
     defer std.heap.page_allocator.free(buf);
 
-    // Use the new descriptor and chained struct types
     var wgsl_descriptor = wgpu.ShaderSourceWGSL{
         .chain = .{ .s_type = .shader_source_wgsl },
         .code = .{ .data = buf.ptr, .length = buf.len },
@@ -139,8 +134,8 @@ fn frmwrk_print_adapter_info(adapter: wgpu.Adapter) void {
     std.debug.print("vendor: {s}\n", .{if (info.vendor.data) |d| d[0..info.vendor.length] else "(null)"});
     std.debug.print("architecture: {s}\n", .{if (info.architecture.data) |d| d[0..info.architecture.length] else "(null)"});
     std.debug.print("device: {s}\n", .{if (info.device.data) |d| d[0..info.device.length] else "(null)"});
-    std.debug.print("backend type: {any}\n", .{info.backend_type}); // Printing the enum is more descriptive
-    std.debug.print("adapter type: {any}\n", .{info.adapter_type}); // Printing the enum is more descriptive
+    std.debug.print("backend type: {any}\n", .{info.backend_type});
+    std.debug.print("adapter type: {any}\n", .{info.adapter_type});
     std.debug.print("vendor_id: {x}\n", .{info.vendor_id});
     std.debug.print("device_id: {x}\n", .{info.device_id});
     wgpu.adapterInfoFreeMembers(info);
@@ -373,7 +368,7 @@ pub fn main() !void {
                     .view = frame,
                     .load_op = .clear,
                     .store_op = .store,
-                    .depth_slice = std.math.maxInt(u32), // WGPU_DEPTH_SLICE_UNDEFINED
+                    .depth_slice = wgpu.undefined_depth_slice,
                     .clear_value = .{ .r = 0.0, .g = 1.0, .b = 0.0, .a = 1.0 },
                 },
             },
@@ -383,7 +378,7 @@ pub fn main() !void {
         wgpu.renderPassEncoderSetPipeline(render_pass_encoder, render_pipeline);
         wgpu.renderPassEncoderDraw(render_pass_encoder, 3, 1, 0, 0);
         wgpu.renderPassEncoderEnd(render_pass_encoder);
-        wgpu.renderPassEncoderRelease(render_pass_encoder); // Must release after ending
+        wgpu.renderPassEncoderRelease(render_pass_encoder);
 
         const command_buffer = wgpu.commandEncoderFinish(command_encoder, &wgpu.CommandBufferDescriptor{
             .label = .fromSlice("command_buffer"),

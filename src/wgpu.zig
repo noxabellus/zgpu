@@ -2,6 +2,8 @@ const std = @import("std");
 
 pub const BigBool = enum(u32) { false = 0, true = 1 };
 
+pub const undefined_depth_slice = std.math.maxInt(u32);
+
 pub const BufferUsage = packed struct(u64) {
     map_read: bool = false,
     map_write: bool = false,
