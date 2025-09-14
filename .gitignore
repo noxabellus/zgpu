@@ -1,0 +1,4 @@
+.direnv
+.vscode
+.zig-cache
+zig-out
