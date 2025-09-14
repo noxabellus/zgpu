@@ -1,5 +1,5 @@
 const std = @import("std");
-const wgpu = @import("wgpu.zig"); // Your new idiomatic bindings
+const wgpu = @import("wgpu.zig");
 
 // Import for GLFW remains the same
 const C = @cImport({
@@ -8,8 +8,12 @@ const C = @cImport({
     @cInclude("GLFW/glfw3native.h");
 });
 
-/// A helper function to create a wgpu.StringView from a Zig string literal.
-fn str(comptime s: []const u8) wgpu.StringView {
+test {
+    std.testing.refAllDecls(@This());
+}
+
+/// A helper function to create a wgpu.StringView from a Zig string.
+fn str(s: []const u8) wgpu.StringView {
     return .{ .data = s.ptr, .length = s.len };
 }
 
@@ -56,13 +60,13 @@ fn frmwrk_load_shader_module(device: wgpu.Device, name: []const u8) !wgpu.Shader
 
     // Use the new descriptor and chained struct types
     var wgsl_descriptor = wgpu.ShaderSourceWGSL{
-        .chain = .{ .sType = .shader_source_wgsl },
+        .chain = .{ .s_type = .shader_source_wgsl },
         .code = .{ .data = buf.ptr, .length = buf.len },
     };
 
     const shader_module = wgpu.deviceCreateShaderModule(device, &wgpu.ShaderModuleDescriptor{
         .label = .{ .data = name.ptr, .length = name.len },
-        .nextInChain = @ptrCast(&wgsl_descriptor),
+        .next_in_chain = @ptrCast(&wgsl_descriptor),
     });
 
     if (shader_module == null) {
@@ -81,7 +85,7 @@ fn frmwrk_device_create_buffer_init(device: wgpu.Device, descriptor: *const frmw
             .label = .{ .data = descriptor.label.ptr, .length = descriptor.label.len },
             .size = 0,
             .usage = descriptor.usage,
-            .mappedAtCreation = .false, // Use wgpu.BigBool enum
+            .mapped_at_creation = .false,
         });
     }
 
@@ -93,10 +97,9 @@ fn frmwrk_device_create_buffer_init(device: wgpu.Device, descriptor: *const frmw
         .label = .{ .data = descriptor.label.ptr, .length = descriptor.label.len },
         .size = padded_size,
         .usage = descriptor.usage,
-        .mappedAtCreation = .true, // Use wgpu.BigBool enum
+        .mapped_at_creation = .true,
     });
 
-    // wgpu.bufferGetMappedRange returns an optional pointer
     const mapped_range = wgpu.bufferGetMappedRange(buffer, 0, unpadded_size).?;
     @memcpy(mapped_range, descriptor.content.?[0..unpadded_size]);
     wgpu.bufferUnmap(buffer);
@@ -106,28 +109,28 @@ fn frmwrk_device_create_buffer_init(device: wgpu.Device, descriptor: *const frmw
 
 // --- Printing helper functions adapted to new types ---
 fn print_registry_report(report: wgpu.RegistryReport, comptime prefix: []const u8) void {
-    std.debug.print(prefix ++ "numAllocated={d}\n", .{report.numAllocated});
-    std.debug.print(prefix ++ "numKeptFromUser={d}\n", .{report.numKeptFromUser});
-    std.debug.print(prefix ++ "numReleasedFromUser={d}\n", .{report.numReleasedFromUser});
-    std.debug.print(prefix ++ "elementSize={d}\n", .{report.elementSize});
+    std.debug.print(prefix ++ "num_allocated={d}\n", .{report.num_allocated});
+    std.debug.print(prefix ++ "num_kept_from_user={d}\n", .{report.num_kept_from_user});
+    std.debug.print(prefix ++ "num_released_from_user={d}\n", .{report.num_released_from_user});
+    std.debug.print(prefix ++ "element_size={d}\n", .{report.element_size});
 }
 
 fn print_hub_report(report: wgpu.HubReport, comptime prefix: []const u8) void {
     print_registry_report(report.adapters, prefix ++ "adapter.");
     print_registry_report(report.devices, prefix ++ "devices.");
     print_registry_report(report.queues, prefix ++ "queues.");
-    print_registry_report(report.pipelineLayouts, prefix ++ "pipelineLayouts.");
-    print_registry_report(report.shaderModules, prefix ++ "shaderModules.");
-    print_registry_report(report.bindGroupLayouts, prefix ++ "bindGroupLayouts.");
-    print_registry_report(report.bindGroups, prefix ++ "bindGroups.");
-    print_registry_report(report.commandBuffers, prefix ++ "commandBuffers.");
-    print_registry_report(report.renderBundles, prefix ++ "renderBundles.");
-    print_registry_report(report.renderPipelines, prefix ++ "renderPipelines.");
-    print_registry_report(report.computePipelines, prefix ++ "computePipelines.");
-    print_registry_report(report.pipelineCaches, prefix ++ "pipelineCaches.");
-    print_registry_report(report.querySets, prefix ++ "querySets.");
+    print_registry_report(report.pipeline_layouts, prefix ++ "pipeline_layouts.");
+    print_registry_report(report.shader_modules, prefix ++ "shaderModules.");
+    print_registry_report(report.bind_group_layouts, prefix ++ "bind_group_layouts.");
+    print_registry_report(report.bind_groups, prefix ++ "bind_groups.");
+    print_registry_report(report.command_buffers, prefix ++ "command_buffers.");
+    print_registry_report(report.render_bundles, prefix ++ "render_bundles.");
+    print_registry_report(report.render_pipelines, prefix ++ "render_pipelines.");
+    print_registry_report(report.compute_pipelines, prefix ++ "compute_pipelines.");
+    print_registry_report(report.pipeline_caches, prefix ++ "pipeline_caches.");
+    print_registry_report(report.query_sets, prefix ++ "query_sets.");
     print_registry_report(report.textures, prefix ++ "textures.");
-    print_registry_report(report.textureViews, prefix ++ "textureViews.");
+    print_registry_report(report.texture_views, prefix ++ "texture_views.");
     print_registry_report(report.samplers, prefix ++ "samplers.");
 }
 
@@ -145,10 +148,10 @@ fn frmwrk_print_adapter_info(adapter: wgpu.Adapter) void {
     std.debug.print("vendor: {s}\n", .{if (info.vendor.data) |d| d[0..info.vendor.length] else "(null)"});
     std.debug.print("architecture: {s}\n", .{if (info.architecture.data) |d| d[0..info.architecture.length] else "(null)"});
     std.debug.print("device: {s}\n", .{if (info.device.data) |d| d[0..info.device.length] else "(null)"});
-    std.debug.print("backend type: {any}\n", .{info.backendType}); // Printing the enum is more descriptive
-    std.debug.print("adapter type: {any}\n", .{info.adapterType}); // Printing the enum is more descriptive
-    std.debug.print("vendorID: {x}\n", .{info.vendorID});
-    std.debug.print("deviceID: {x}\n", .{info.deviceID});
+    std.debug.print("backend type: {any}\n", .{info.backend_type}); // Printing the enum is more descriptive
+    std.debug.print("adapter type: {any}\n", .{info.adapter_type}); // Printing the enum is more descriptive
+    std.debug.print("vendor_id: {x}\n", .{info.vendor_id});
+    std.debug.print("device_id: {x}\n", .{info.device_id});
     wgpu.adapterInfoFreeMembers(info);
 }
 
@@ -214,7 +217,6 @@ fn handle_glfw_framebuffer_size(window: ?*C.GLFWwindow, width: c_int, height: c_
     wgpu.surfaceConfigure(demo.surface, &demo.config);
 }
 
-// --- Main Function ---
 pub fn main() !void {
     frmwrk_setup_logging(.warn);
 
@@ -244,19 +246,19 @@ pub fn main() !void {
         std.debug.assert(x11_display != null and x11_window != 0);
 
         var xlib_source = wgpu.SurfaceSourceXlibWindow{
-            .chain = .{ .sType = .surface_source_xlib_window },
+            .chain = .{ .s_type = .surface_source_xlib_window },
             .display = x11_display,
             .window = x11_window,
         };
         demo.surface = wgpu.instanceCreateSurface(demo.instance, &wgpu.SurfaceDescriptor{
-            .nextInChain = @ptrCast(&xlib_source),
+            .next_in_chain = @ptrCast(&xlib_source),
         });
     }
     std.debug.assert(demo.surface != null);
     defer wgpu.surfaceRelease(demo.surface);
 
     _ = wgpu.instanceRequestAdapter(demo.instance, &wgpu.RequestAdapterOptions{
-        .compatibleSurface = demo.surface,
+        .compatible_surface = demo.surface,
     }, .{ .callback = handle_request_adapter, .userdata1 = &demo });
 
     while (demo.adapter == null) {
@@ -294,16 +296,16 @@ pub fn main() !void {
         .layout = pipeline_layout,
         .vertex = .{
             .module = shader_module,
-            .entryPoint = str("vs_main"),
+            .entry_point = str("vs_main"),
         },
         .fragment = &wgpu.FragmentState{
             .module = shader_module,
-            .entryPoint = str("fs_main"),
-            .targetCount = 1,
+            .entry_point = str("fs_main"),
+            .target_count = 1,
             .targets = &[_]wgpu.ColorTargetState{
                 .{
                     .format = surface_capabilities.formats.?[0],
-                    .writeMask = .all,
+                    .write_mask = .all,
                 },
             },
         },
@@ -315,10 +317,10 @@ pub fn main() !void {
 
     demo.config = .{
         .device = demo.device,
-        .usage = .renderAttachmentUsage, // Use packed struct for flags
+        .usage = .renderAttachmentUsage,
         .format = surface_capabilities.formats.?[0],
-        .presentMode = .fifo,
-        .alphaMode = surface_capabilities.alphaModes.?[0],
+        .present_mode = .fifo,
+        .alpha_mode = surface_capabilities.alpha_modes.?[0],
     };
 
     {
@@ -372,14 +374,14 @@ pub fn main() !void {
 
         const render_pass_encoder = wgpu.commandEncoderBeginRenderPass(command_encoder, &wgpu.RenderPassDescriptor{
             .label = str("render_pass_encoder"),
-            .colorAttachmentCount = 1,
-            .colorAttachments = &[_]wgpu.RenderPassColorAttachment{
+            .color_attachment_count = 1,
+            .color_attachments = &[_]wgpu.RenderPassColorAttachment{
                 .{
                     .view = frame,
-                    .loadOp = .clear,
-                    .storeOp = .store,
-                    .depthSlice = std.math.maxInt(u32), // WGPU_DEPTH_SLICE_UNDEFINED
-                    .clearValue = .{ .r = 0.0, .g = 1.0, .b = 0.0, .a = 1.0 },
+                    .load_op = .clear,
+                    .store_op = .store,
+                    .depth_slice = std.math.maxInt(u32), // WGPU_DEPTH_SLICE_UNDEFINED
+                    .clear_value = .{ .r = 0.0, .g = 1.0, .b = 0.0, .a = 1.0 },
                 },
             },
         });
