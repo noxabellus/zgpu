@@ -1,52 +1,68 @@
 const std = @import("std");
+const wgpu = @import("wgpu.zig"); // Your new idiomatic bindings
 
+// Import for GLFW remains the same
 const C = @cImport({
-    @cInclude("webgpu.h");
-    @cInclude("wgpu.h");
     @cDefine("GLFW_EXPOSE_NATIVE_X11", "");
     @cInclude("GLFW/glfw3.h");
     @cInclude("GLFW/glfw3native.h");
 });
 
+/// A helper function to create a wgpu.StringView from a Zig string literal.
+fn str(comptime s: []const u8) wgpu.StringView {
+    return .{ .data = s.ptr, .length = s.len };
+}
+
+/// A descriptor for creating and initializing a buffer in one step.
 const frmwrk_buffer_init_descriptor = struct {
     label: []const u8,
-    usage: C.WGPUBufferUsage,
+    usage: wgpu.BufferUsage, // Changed to new type
     content: ?*anyopaque,
     content_size: usize,
 };
 
-fn log_callback(level: C.WGPULogLevel, message: C.WGPUStringView, userdata: ?*anyopaque) callconv(.c) void {
+/// The wgpu log callback, adapted for the new binding's types.
+fn log_callback(level: wgpu.LogLevel, message: wgpu.StringView, userdata: ?*anyopaque) callconv(.c) void {
     _ = userdata;
 
-    std.debug.print("[wgpu] [{s}] {s}\n", .{ switch (level) {
-        C.WGPULogLevel_Error => "error",
-        C.WGPULogLevel_Warn => "warn",
-        C.WGPULogLevel_Info => "info",
-        C.WGPULogLevel_Debug => "debug",
-        C.WGPULogLevel_Trace => "trace",
+    // Use the new wgpu.LogLevel enum
+    const level_str = switch (level) {
+        .@"error" => "error",
+        .warn => "warn",
+        .info => "info",
+        .debug => "debug",
+        .trace => "trace",
         else => "unknown_level",
-    }, message.data[0..message.length] });
+    };
+
+    // message.data is now an optional pointer
+    if (message.data) |data| {
+        std.debug.print("[wgpu] [{s}] {s}\n", .{ level_str, data[0..message.length] });
+    }
 }
 
-fn frmwrk_setup_logging(level: C.WGPULogLevel) void {
-    C.wgpuSetLogCallback(log_callback, null);
-    C.wgpuSetLogLevel(level);
+/// Sets up wgpu logging.
+fn frmwrk_setup_logging(level: wgpu.LogLevel) void {
+    _ = wgpu.setLogCallback(log_callback, null);
+    wgpu.setLogLevel(level);
 }
 
-fn frmwrk_load_shader_module(device: C.WGPUDevice, name: []const u8) !C.WGPUShaderModule {
+/// Loads a WGSL shader from a file.
+fn frmwrk_load_shader_module(device: wgpu.Device, name: []const u8) !wgpu.ShaderModule {
     const buf = std.fs.cwd().readFileAlloc(std.heap.page_allocator, name, 8192) catch {
         return error.FailedToLoadShader;
     };
     defer std.heap.page_allocator.free(buf);
 
-    const shader_module = C.wgpuDeviceCreateShaderModule(device, &C.WGPUShaderModuleDescriptor{
+    // Use the new descriptor and chained struct types
+    var wgsl_descriptor = wgpu.ShaderSourceWGSL{
+        .chain = .{ .sType = .shader_source_wgsl },
+        .code = .{ .data = buf.ptr, .length = buf.len },
+    };
+
+    const shader_module = wgpu.deviceCreateShaderModule(device, &wgpu.ShaderModuleDescriptor{
         .label = .{ .data = name.ptr, .length = name.len },
-        .nextInChain = @ptrCast(&C.WGPUShaderSourceWGSL{
-            .chain = C.WGPUChainedStruct{
-                .sType = C.WGPUSType_ShaderSourceWGSL,
-            },
-            .code = .{ .data = buf.ptr, .length = buf.len },
-        }),
+        .nextInChain = @ptrCast(&wgsl_descriptor),
     });
 
     if (shader_module == null) {
@@ -58,40 +74,45 @@ fn frmwrk_load_shader_module(device: C.WGPUDevice, name: []const u8) !C.WGPUShad
 
 const COPY_BUFFER_ALIGNMENT = 4;
 
-fn frmwrk_device_create_buffer_init(device: C.WGPUDevice, descriptor: *const frmwrk_buffer_init_descriptor) C.WGPUBuffer {
+/// A helper to create and initialize a buffer.
+fn frmwrk_device_create_buffer_init(device: wgpu.Device, descriptor: *const frmwrk_buffer_init_descriptor) wgpu.Buffer {
     if (descriptor.content_size == 0) {
-        return C.wgpuDeviceCreateBuffer(device, &C.WGPUBufferDescriptor{
+        return wgpu.deviceCreateBuffer(device, &wgpu.BufferDescriptor{
             .label = .{ .data = descriptor.label.ptr, .length = descriptor.label.len },
             .size = 0,
             .usage = descriptor.usage,
-            .mappedAtCreation = false,
+            .mappedAtCreation = .false, // Use wgpu.BigBool enum
         });
     }
 
     const unpadded_size = descriptor.content_size;
     const align_mask = COPY_BUFFER_ALIGNMENT - 1;
     const padded_size = @max((unpadded_size + align_mask) & ~align_mask, COPY_BUFFER_ALIGNMENT);
-    const buffer = C.wgpuDeviceCreateBuffer(device, &C.WGPUBufferDescriptor{
+
+    const buffer = wgpu.deviceCreateBuffer(device, &wgpu.BufferDescriptor{
         .label = .{ .data = descriptor.label.ptr, .length = descriptor.label.len },
         .size = padded_size,
         .usage = descriptor.usage,
-        .mappedAtCreation = true,
+        .mappedAtCreation = .true, // Use wgpu.BigBool enum
     });
-    const buf = C.wgpuBufferGetMappedRange(buffer, 0, unpadded_size);
-    @memcpy(buf, descriptor.content[0..unpadded_size]);
-    C.wgpuBufferUnmap(buffer);
+
+    // wgpu.bufferGetMappedRange returns an optional pointer
+    const mapped_range = wgpu.bufferGetMappedRange(buffer, 0, unpadded_size).?;
+    @memcpy(mapped_range, descriptor.content.?[0..unpadded_size]);
+    wgpu.bufferUnmap(buffer);
 
     return buffer;
 }
 
-fn print_registry_report(report: anytype, comptime prefix: anytype) void {
+// --- Printing helper functions adapted to new types ---
+fn print_registry_report(report: wgpu.RegistryReport, comptime prefix: []const u8) void {
     std.debug.print(prefix ++ "numAllocated={d}\n", .{report.numAllocated});
     std.debug.print(prefix ++ "numKeptFromUser={d}\n", .{report.numKeptFromUser});
     std.debug.print(prefix ++ "numReleasedFromUser={d}\n", .{report.numReleasedFromUser});
     std.debug.print(prefix ++ "elementSize={d}\n", .{report.elementSize});
 }
 
-fn print_hub_report(report: anytype, comptime prefix: anytype) void {
+fn print_hub_report(report: wgpu.HubReport, comptime prefix: []const u8) void {
     print_registry_report(report.adapters, prefix ++ "adapter.");
     print_registry_report(report.devices, prefix ++ "devices.");
     print_registry_report(report.queues, prefix ++ "queues.");
@@ -110,190 +131,194 @@ fn print_hub_report(report: anytype, comptime prefix: anytype) void {
     print_registry_report(report.samplers, prefix ++ "samplers.");
 }
 
-fn frmwrk_print_global_report(report: C.WGPUGlobalReport) void {
+fn frmwrk_print_global_report(report: wgpu.GlobalReport) void {
     std.debug.print("struct WGPUGlobalReport {{\n", .{});
     print_registry_report(report.surfaces, "\tsurfaces.");
     print_hub_report(report.hub, "\thub.");
     std.debug.print("}}\n", .{});
 }
 
-fn frmwrk_print_adapter_info(adapter: C.WGPUAdapter) void {
-    var info = std.mem.zeroes(C.WGPUAdapterInfo);
-    _ = C.wgpuAdapterGetInfo(adapter, &info);
+fn frmwrk_print_adapter_info(adapter: wgpu.Adapter) void {
+    var info = std.mem.zeroes(wgpu.AdapterInfo);
+    _ = wgpu.adapterGetInfo(adapter, &info);
     std.debug.print("description: {s}\n", .{if (info.description.data) |d| d[0..info.description.length] else "(null)"});
     std.debug.print("vendor: {s}\n", .{if (info.vendor.data) |d| d[0..info.vendor.length] else "(null)"});
     std.debug.print("architecture: {s}\n", .{if (info.architecture.data) |d| d[0..info.architecture.length] else "(null)"});
     std.debug.print("device: {s}\n", .{if (info.device.data) |d| d[0..info.device.length] else "(null)"});
-    std.debug.print("backend type: {d}\n", .{info.backendType});
-    std.debug.print("adapter type: {d}\n", .{info.adapterType});
+    std.debug.print("backend type: {any}\n", .{info.backendType}); // Printing the enum is more descriptive
+    std.debug.print("adapter type: {any}\n", .{info.adapterType}); // Printing the enum is more descriptive
     std.debug.print("vendorID: {x}\n", .{info.vendorID});
     std.debug.print("deviceID: {x}\n", .{info.deviceID});
-    C.wgpuAdapterInfoFreeMembers(info);
+    wgpu.adapterInfoFreeMembers(info);
 }
 
+// --- Application State Struct ---
 const Demo = struct {
-    instance: C.WGPUInstance,
-    surface: C.WGPUSurface,
-    adapter: C.WGPUAdapter,
-    device: C.WGPUDevice,
-    config: C.WGPUSurfaceConfiguration,
+    instance: wgpu.Instance,
+    surface: wgpu.Surface,
+    adapter: wgpu.Adapter,
+    device: wgpu.Device,
+    config: wgpu.SurfaceConfiguration,
 };
 
-fn handle_request_adapter(status: C.WGPURequestAdapterStatus, adapter: C.WGPUAdapter, message: C.WGPUStringView, userdata1: ?*anyopaque, userdata2: ?*anyopaque) callconv(.c) void {
+// --- Asynchronous Callbacks ---
+fn handle_request_adapter(status: wgpu.RequestAdapterStatus, adapter: wgpu.Adapter, message: wgpu.StringView, userdata1: ?*anyopaque, userdata2: ?*anyopaque) callconv(.c) void {
     _ = userdata2;
-    if (status == C.WGPURequestAdapterStatus_Success) {
+    if (status == .success) {
         const demo: *Demo = @ptrCast(@alignCast(userdata1.?));
         demo.adapter = adapter;
     } else {
-        std.debug.print("request_adapter status={x} message={s}\n", .{ status, message.data[0..message.length] });
+        if (message.data) |data| {
+            std.debug.print("request_adapter status={any} message={s}\n", .{ status, data[0..message.length] });
+        }
     }
 }
-fn handle_request_device(status: C.WGPURequestDeviceStatus, device: C.WGPUDevice, message: C.WGPUStringView, userdata1: ?*anyopaque, userdata2: ?*anyopaque) callconv(.c) void {
+
+fn handle_request_device(status: wgpu.RequestDeviceStatus, device: wgpu.Device, message: wgpu.StringView, userdata1: ?*anyopaque, userdata2: ?*anyopaque) callconv(.c) void {
     _ = userdata2;
-    if (status == C.WGPURequestDeviceStatus_Success) {
+    if (status == .success) {
         const demo: *Demo = @ptrCast(@alignCast(userdata1.?));
         demo.device = device;
     } else {
-        std.debug.print("request_device status={x} message={s}\n", .{ status, message.data[0..message.length] });
+        if (message.data) |data| {
+            std.debug.print("request_device status={any} message={s}\n", .{ status, data[0..message.length] });
+        }
     }
 }
-fn handle_glfw_key(window: *C.GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int) callconv(.c) void {
+
+// --- GLFW Event Callbacks ---
+fn handle_glfw_key(window: ?*C.GLFWwindow, key: c_int, scancode: c_int, action: c_int, mods: c_int) callconv(.c) void {
     _ = scancode;
     _ = mods;
     if (key == C.GLFW_KEY_R and (action == C.GLFW_PRESS or action == C.GLFW_REPEAT)) {
         const demo: *Demo = @ptrCast(@alignCast(C.glfwGetWindowUserPointer(window) orelse return));
-        if (demo.instance == null)
-            return;
+        if (demo.instance == null) return;
 
-        var report: C.WGPUGlobalReport = undefined;
-        C.wgpuGenerateReport(demo.instance, &report);
+        var report: wgpu.GlobalReport = undefined;
+        wgpu.generateReport(demo.instance, &report);
         frmwrk_print_global_report(report);
     }
 }
 
-fn handle_glfw_framebuffer_size(window: *C.GLFWwindow, width: c_int, height: c_int) callconv(.c) void {
+fn handle_glfw_framebuffer_size(window: ?*C.GLFWwindow, width: c_int, height: c_int) callconv(.c) void {
     if (width <= 0 and height <= 0) {
         return;
     }
 
     const demo: *Demo = @ptrCast(@alignCast(C.glfwGetWindowUserPointer(window) orelse return));
+    if (demo.surface == null) return;
 
     demo.config.width = @intCast(width);
     demo.config.height = @intCast(height);
 
-    C.wgpuSurfaceConfigure(demo.surface, &demo.config);
+    wgpu.surfaceConfigure(demo.surface, &demo.config);
 }
 
+// --- Main Function ---
 pub fn main() !void {
-    frmwrk_setup_logging(C.WGPULogLevel_Warn);
+    frmwrk_setup_logging(.warn);
 
     C.glfwInitHint(C.GLFW_PLATFORM, C.GLFW_PLATFORM_X11);
 
-    if (C.glfwInit() == 0)
-        return error.FailedToInitGLFW;
+    if (C.glfwInit() == 0) return error.FailedToInitGLFW;
+    defer C.glfwTerminate();
 
     var demo = std.mem.zeroes(Demo);
-    demo.instance = C.wgpuCreateInstance(null);
+
+    demo.instance = wgpu.createInstance(null);
     std.debug.assert(demo.instance != null);
+    defer wgpu.instanceRelease(demo.instance);
 
     C.glfwWindowHint(C.GLFW_CLIENT_API, C.GLFW_NO_API);
-    const window =
-        C.glfwCreateWindow(640, 480, "triangle [wgpu-native + glfw]", null, null);
+    const window = C.glfwCreateWindow(640, 480, "triangle [wgpu + glfw]", null, null);
     std.debug.assert(window != null);
+    defer C.glfwDestroyWindow(window);
 
     C.glfwSetWindowUserPointer(window, &demo);
-    _ = C.glfwSetKeyCallback(window, @ptrCast(&handle_glfw_key));
-    _ = C.glfwSetFramebufferSizeCallback(window, @ptrCast(&handle_glfw_framebuffer_size));
+    _ = C.glfwSetKeyCallback(window, handle_glfw_key);
+    _ = C.glfwSetFramebufferSizeCallback(window, handle_glfw_framebuffer_size);
+
     {
         const x11_display = C.glfwGetX11Display();
         const x11_window = C.glfwGetX11Window(window);
+        std.debug.assert(x11_display != null and x11_window != 0);
 
-        std.debug.print("Attempting to use X11 backend.\n", .{});
-        std.debug.print("X11 display:{?d}, window: {d}\n", .{ x11_display, x11_window });
-        std.debug.assert(x11_display != null);
-        std.debug.assert(x11_window != 0);
-
-        demo.surface = C.wgpuInstanceCreateSurface(demo.instance, &C.WGPUSurfaceDescriptor{
-            .nextInChain = @ptrCast(&C.WGPUSurfaceSourceXlibWindow{
-                .chain = C.WGPUChainedStruct{
-                    .sType = C.WGPUSType_SurfaceSourceXlibWindow,
-                },
-                .display = x11_display,
-                .window = x11_window,
-            }),
+        var xlib_source = wgpu.SurfaceSourceXlibWindow{
+            .chain = .{ .sType = .surface_source_xlib_window },
+            .display = x11_display,
+            .window = x11_window,
+        };
+        demo.surface = wgpu.instanceCreateSurface(demo.instance, &wgpu.SurfaceDescriptor{
+            .nextInChain = @ptrCast(&xlib_source),
         });
     }
     std.debug.assert(demo.surface != null);
+    defer wgpu.surfaceRelease(demo.surface);
 
-    const future = C.wgpuInstanceRequestAdapter(demo.instance, &C.WGPURequestAdapterOptions{
+    _ = wgpu.instanceRequestAdapter(demo.instance, &wgpu.RequestAdapterOptions{
         .compatibleSurface = demo.surface,
-    }, C.WGPURequestAdapterCallbackInfo{ .callback = handle_request_adapter, .userdata1 = &demo });
-    while (demo.adapter == null) {
-        std.debug.print("Waiting for adapter...\n", .{});
-        C.wgpuInstanceProcessEvents(demo.instance);
-    }
-    std.debug.assert(demo.adapter != null);
-    _ = future;
+    }, .{ .callback = handle_request_adapter, .userdata1 = &demo });
 
+    while (demo.adapter == null) {
+        wgpu.instanceProcessEvents(demo.instance);
+    }
+    defer wgpu.adapterRelease(demo.adapter);
     frmwrk_print_adapter_info(demo.adapter);
 
-    const future2 = C.wgpuAdapterRequestDevice(demo.adapter, null, C.WGPURequestDeviceCallbackInfo{ .callback = handle_request_device, .userdata1 = &demo });
+    _ = wgpu.adapterRequestDevice(demo.adapter, null, .{ .callback = handle_request_device, .userdata1 = &demo });
 
     while (demo.device == null) {
-        std.debug.print("Waiting for device...\n", .{});
-        C.wgpuInstanceProcessEvents(demo.instance);
+        wgpu.instanceProcessEvents(demo.instance);
     }
-    std.debug.assert(demo.device != null);
-    _ = future2;
+    defer wgpu.deviceRelease(demo.device);
 
-    const queue = C.wgpuDeviceGetQueue(demo.device);
+    const queue = wgpu.deviceGetQueue(demo.device);
     std.debug.assert(queue != null);
+    defer wgpu.queueRelease(queue);
 
-    const shader_module =
-        try frmwrk_load_shader_module(demo.device, "shader.wgsl");
+    const shader_module = try frmwrk_load_shader_module(demo.device, "shader.wgsl");
+    defer wgpu.shaderModuleRelease(shader_module);
 
-    const pipeline_layout = C.wgpuDeviceCreatePipelineLayout(demo.device, &C.WGPUPipelineLayoutDescriptor{
-        .label = .{ .data = "pipeline_layout", .length = C.WGPU_STRLEN },
+    const pipeline_layout = wgpu.deviceCreatePipelineLayout(demo.device, &wgpu.PipelineLayoutDescriptor{
+        .label = str("pipeline_layout"),
     });
     std.debug.assert(pipeline_layout != null);
+    defer wgpu.pipelineLayoutRelease(pipeline_layout);
 
-    var surface_capabilities = std.mem.zeroes(C.WGPUSurfaceCapabilities);
-    _ = C.wgpuSurfaceGetCapabilities(demo.surface, demo.adapter, &surface_capabilities);
+    var surface_capabilities: wgpu.SurfaceCapabilities = undefined;
+    _ = wgpu.surfaceGetCapabilities(demo.surface, demo.adapter, &surface_capabilities);
+    defer wgpu.surfaceCapabilitiesFreeMembers(surface_capabilities);
 
-    const render_pipeline = C.wgpuDeviceCreateRenderPipeline(demo.device, &C.WGPURenderPipelineDescriptor{
-        .label = .{ .data = "render_pipeline", .length = C.WGPU_STRLEN },
+    const render_pipeline = wgpu.deviceCreateRenderPipeline(demo.device, &wgpu.RenderPipelineDescriptor{
+        .label = str("render_pipeline"),
         .layout = pipeline_layout,
-        .vertex = C.WGPUVertexState{
+        .vertex = .{
             .module = shader_module,
-            .entryPoint = .{ .data = "vs_main", .length = C.WGPU_STRLEN },
+            .entryPoint = str("vs_main"),
         },
-        .fragment = &C.WGPUFragmentState{
+        .fragment = &wgpu.FragmentState{
             .module = shader_module,
-            .entryPoint = .{ .data = "fs_main", .length = C.WGPU_STRLEN },
+            .entryPoint = str("fs_main"),
             .targetCount = 1,
-            .targets = &[_]C.WGPUColorTargetState{
-                C.WGPUColorTargetState{
-                    .format = surface_capabilities.formats[0],
-                    .writeMask = C.WGPUColorWriteMask_All,
+            .targets = &[_]wgpu.ColorTargetState{
+                .{
+                    .format = surface_capabilities.formats.?[0],
+                    .writeMask = .all,
                 },
             },
         },
-        .primitive = C.WGPUPrimitiveState{
-            .topology = C.WGPUPrimitiveTopology_TriangleList,
-        },
-        .multisample = C.WGPUMultisampleState{
-            .count = 1,
-            .mask = 0xFFFFFFFF,
-        },
+        .primitive = .{ .topology = .triangle_list },
+        .multisample = .{ .count = 1, .mask = 0xFFFFFFFF },
     });
     std.debug.assert(render_pipeline != null);
+    defer wgpu.renderPipelineRelease(render_pipeline);
 
-    demo.config = C.WGPUSurfaceConfiguration{
+    demo.config = .{
         .device = demo.device,
-        .usage = C.WGPUTextureUsage_RenderAttachment,
-        .format = surface_capabilities.formats[0],
-        .presentMode = C.WGPUPresentMode_Fifo,
-        .alphaMode = surface_capabilities.alphaModes[0],
+        .usage = .renderAttachmentUsage, // Use packed struct for flags
+        .format = surface_capabilities.formats.?[0],
+        .presentMode = .fifo,
+        .alphaMode = surface_capabilities.alphaModes.?[0],
     };
 
     {
@@ -303,26 +328,19 @@ pub fn main() !void {
         demo.config.width = @intCast(width);
         demo.config.height = @intCast(height);
     }
-
-    C.wgpuSurfaceConfigure(demo.surface, &demo.config);
+    wgpu.surfaceConfigure(demo.surface, &demo.config);
 
     main_loop: while (C.glfwWindowShouldClose(window) == 0) {
         C.glfwPollEvents();
 
-        var surface_texture = std.mem.zeroes(C.WGPUSurfaceTexture);
-        C.wgpuSurfaceGetCurrentTexture(demo.surface, &surface_texture);
-        switch (surface_texture.status) {
-            C.WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal,
-            C.WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal,
-            => {},
+        var surface_texture: wgpu.SurfaceTexture = undefined;
+        wgpu.surfaceGetCurrentTexture(demo.surface, &surface_texture);
 
-            C.WGPUSurfaceGetCurrentTextureStatus_Timeout,
-            C.WGPUSurfaceGetCurrentTextureStatus_Outdated,
-            C.WGPUSurfaceGetCurrentTextureStatus_Lost,
-            => {
-                // Skip this frame, and re-configure surface.
+        switch (surface_texture.status) {
+            .success_optimal, .success_suboptimal => {},
+            .timeout, .outdated, .lost => {
                 if (surface_texture.texture != null) {
-                    C.wgpuTextureRelease(surface_texture.texture);
+                    wgpu.textureRelease(surface_texture.texture);
                 }
                 var width: c_int = 0;
                 var height: c_int = 0;
@@ -330,80 +348,55 @@ pub fn main() !void {
                 if (width != 0 and height != 0) {
                     demo.config.width = @intCast(width);
                     demo.config.height = @intCast(height);
-                    C.wgpuSurfaceConfigure(demo.surface, &demo.config);
+                    wgpu.surfaceConfigure(demo.surface, &demo.config);
                 }
                 continue :main_loop;
             },
-            C.WGPUSurfaceGetCurrentTextureStatus_OutOfMemory,
-            C.WGPUSurfaceGetCurrentTextureStatus_DeviceLost,
-            C.WGPUSurfaceGetCurrentTextureStatus_Force32,
-            => {
-                // Fatal error
-                std.debug.panic("get_current_texture status={x}", .{surface_texture.status});
+            .out_of_memory, .device_lost, .@"error" => {
+                std.debug.panic("get_current_texture status={any}", .{surface_texture.status});
             },
-            else => std.debug.print("get_current_texture unknown status={x}\n", .{surface_texture.status}),
+            else => std.debug.print("get_current_texture unknown status={any}\n", .{surface_texture.status}),
         }
-
         std.debug.assert(surface_texture.texture != null);
+        defer wgpu.textureRelease(surface_texture.texture);
 
-        const frame =
-            C.wgpuTextureCreateView(surface_texture.texture, null);
+        const frame = wgpu.textureCreateView(surface_texture.texture, null);
         std.debug.assert(frame != null);
+        defer wgpu.textureViewRelease(frame);
 
-        const command_encoder = C.wgpuDeviceCreateCommandEncoder(demo.device, &C.WGPUCommandEncoderDescriptor{
-            .label = .{ .data = "command_encoder", .length = C.WGPU_STRLEN },
+        const command_encoder = wgpu.deviceCreateCommandEncoder(demo.device, &wgpu.CommandEncoderDescriptor{
+            .label = str("command_encoder"),
         });
         std.debug.assert(command_encoder != null);
+        defer wgpu.commandEncoderRelease(command_encoder);
 
-        const render_pass_encoder =
-            C.wgpuCommandEncoderBeginRenderPass(command_encoder, &C.WGPURenderPassDescriptor{
-                .label = .{ .data = "render_pass_encoder", .length = C.WGPU_STRLEN },
-                .colorAttachmentCount = 1,
-                .colorAttachments = &[_]C.WGPURenderPassColorAttachment{
-                    C.WGPURenderPassColorAttachment{
-                        .view = frame,
-                        .loadOp = C.WGPULoadOp_Clear,
-                        .storeOp = C.WGPUStoreOp_Store,
-                        .depthSlice = C.WGPU_DEPTH_SLICE_UNDEFINED,
-                        .clearValue = C.WGPUColor{
-                            .r = 0.0,
-                            .g = 1.0,
-                            .b = 0.0,
-                            .a = 1.0,
-                        },
-                    },
+        const render_pass_encoder = wgpu.commandEncoderBeginRenderPass(command_encoder, &wgpu.RenderPassDescriptor{
+            .label = str("render_pass_encoder"),
+            .colorAttachmentCount = 1,
+            .colorAttachments = &[_]wgpu.RenderPassColorAttachment{
+                .{
+                    .view = frame,
+                    .loadOp = .clear,
+                    .storeOp = .store,
+                    .depthSlice = std.math.maxInt(u32), // WGPU_DEPTH_SLICE_UNDEFINED
+                    .clearValue = .{ .r = 0.0, .g = 1.0, .b = 0.0, .a = 1.0 },
                 },
-            });
+            },
+        });
         std.debug.assert(render_pass_encoder != null);
 
-        C.wgpuRenderPassEncoderSetPipeline(render_pass_encoder, render_pipeline);
-        C.wgpuRenderPassEncoderDraw(render_pass_encoder, 3, 1, 0, 0);
-        C.wgpuRenderPassEncoderEnd(render_pass_encoder);
-        C.wgpuRenderPassEncoderRelease(render_pass_encoder);
+        wgpu.renderPassEncoderSetPipeline(render_pass_encoder, render_pipeline);
+        wgpu.renderPassEncoderDraw(render_pass_encoder, 3, 1, 0, 0);
+        wgpu.renderPassEncoderEnd(render_pass_encoder);
+        wgpu.renderPassEncoderRelease(render_pass_encoder); // Must release after ending
 
-        const command_buffer = C.wgpuCommandEncoderFinish(command_encoder, &C.WGPUCommandBufferDescriptor{
-            .label = .{ .data = "command_buffer", .length = C.WGPU_STRLEN },
+        const command_buffer = wgpu.commandEncoderFinish(command_encoder, &wgpu.CommandBufferDescriptor{
+            .label = str("command_buffer"),
         });
         std.debug.assert(command_buffer != null);
+        defer wgpu.commandBufferRelease(command_buffer);
 
-        C.wgpuQueueSubmit(queue, 1, &[_]C.WGPUCommandBuffer{command_buffer});
-        _ = C.wgpuSurfacePresent(demo.surface);
-
-        C.wgpuCommandBufferRelease(command_buffer);
-        C.wgpuCommandEncoderRelease(command_encoder);
-        C.wgpuTextureViewRelease(frame);
-        C.wgpuTextureRelease(surface_texture.texture);
+        wgpu.queueSubmit(queue, 1, &[_]wgpu.CommandBuffer{command_buffer});
+        _ = wgpu.surfacePresent(demo.surface);
     }
-
-    C.wgpuRenderPipelineRelease(render_pipeline);
-    C.wgpuPipelineLayoutRelease(pipeline_layout);
-    C.wgpuShaderModuleRelease(shader_module);
-    C.wgpuSurfaceCapabilitiesFreeMembers(surface_capabilities);
-    C.wgpuQueueRelease(queue);
-    C.wgpuDeviceRelease(demo.device);
-    C.wgpuAdapterRelease(demo.adapter);
-    C.wgpuSurfaceRelease(demo.surface);
-    C.glfwDestroyWindow(window);
-    C.wgpuInstanceRelease(demo.instance);
-    C.glfwTerminate();
 }
