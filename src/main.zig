@@ -8,6 +8,10 @@ test {
     std.testing.refAllDecls(glfw);
 }
 
+const C = @cImport({
+    @cInclude("stb_image.h");
+});
+
 /// A descriptor for creating and initializing a buffer in one step.
 const frmwrk_buffer_init_descriptor = struct {
     label: []const u8,
@@ -29,7 +33,17 @@ fn log_callback(level: wgpu.LogLevel, message: wgpu.StringView, userdata: ?*anyo
         else => "unknown_level",
     };
 
-    std.debug.print("[wgpu] [{s}] {s}\n", .{ level_str, message.toSlice() });
+    const text = message.toSlice();
+
+    inline for (&.{
+        "Suboptimal present of frame", // Suboptimal present is *desired* when resizing the window; alternative is ugly flickering
+    }) |ignore_pattern| {
+        if (std.mem.indexOf(u8, text, ignore_pattern) != null) {
+            return;
+        }
+    }
+
+    std.debug.print("[wgpu] [{s}] {s}\n", .{ level_str, text });
 }
 
 /// Sets up wgpu logging.
@@ -219,7 +233,7 @@ pub fn main() !void {
     defer wgpu.instanceRelease(demo.instance);
 
     glfw.windowHint(.{ .client_api = .none });
-    const window = try glfw.createWindow(640, 480, "triangle [wgpu + glfw]", null, null);
+    const window = try glfw.createWindow(640, 480, "textured-quad [wgpu + glfw]", null, null);
     defer glfw.destroyWindow(window);
 
     glfw.setWindowUserPointer(window, &demo);
@@ -264,11 +278,107 @@ pub fn main() !void {
     std.debug.assert(queue != null);
     defer wgpu.queueRelease(queue);
 
-    const shader_module = try frmwrk_load_shader_module(demo.device, "shader.wgsl");
+    // --- Load Texture ---
+    var image_width: i32 = 0;
+    var image_height: i32 = 0;
+    var image_channels: i32 = 0;
+    // Force 4 channels (RGBA) for alignment and format compatibility
+    const image_data = C.stbi_load("assets/wgpu-logo.png", &image_width, &image_height, &image_channels, 4);
+    const image_data_slice =
+        if (image_data) |data| data[0 .. @as(u64, @intCast(image_width)) * @as(u64, @intCast(image_height)) * 4] else {
+            std.debug.print("Failed to load image.\n", .{});
+            return error.ImageLoadFailed;
+        };
+    defer C.stbi_image_free(image_data);
+    std.debug.print("Loaded image with width={d} height={d} channels={d}\n", .{ image_width, image_height, image_channels });
+
+    // --- Create Texture, Sampler, and upload data ---
+    const texture_size = wgpu.Extent3D{
+        .width = @intCast(image_width),
+        .height = @intCast(image_height),
+        .depth_or_array_layers = 1,
+    };
+    const texture = wgpu.deviceCreateTexture(demo.device, &wgpu.TextureDescriptor{
+        .label = .fromSlice("texture"),
+        .size = texture_size,
+        .mip_level_count = 1,
+        .sample_count = 1,
+        .dimension = .@"2d",
+        .format = .rgba8_unorm_srgb,
+        .usage = wgpu.TextureUsage.textureBindingUsage.merge(.copyDstUsage),
+    });
+    std.debug.assert(texture != null);
+    defer wgpu.textureRelease(texture);
+
+    wgpu.queueWriteTexture(
+        queue,
+        &wgpu.TexelCopyTextureInfo{ .texture = texture, .mip_level = 0, .origin = .{} },
+        image_data,
+        image_data_slice.len,
+        &wgpu.TexelCopyBufferLayout{
+            .offset = 0,
+            .bytes_per_row = @intCast(4 * image_width),
+            .rows_per_image = @intCast(image_height),
+        },
+        &texture_size,
+    );
+
+    const texture_view = wgpu.textureCreateView(texture, null);
+    std.debug.assert(texture_view != null);
+    defer wgpu.textureViewRelease(texture_view);
+
+    const sampler = wgpu.deviceCreateSampler(demo.device, &wgpu.SamplerDescriptor{
+        .label = .fromSlice("sampler"),
+        .address_mode_u = .clamp_to_edge,
+        .address_mode_v = .clamp_to_edge,
+        .address_mode_w = .clamp_to_edge,
+        .mag_filter = .linear,
+        .min_filter = .linear,
+        .mipmap_filter = .nearest,
+    });
+    std.debug.assert(sampler != null);
+    defer wgpu.samplerRelease(sampler);
+
+    // --- Create Bind Group Layout and Bind Group ---
+    const bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &wgpu.BindGroupLayoutDescriptor{
+        .label = .fromSlice("texture_bind_group_layout"),
+        .entry_count = 2,
+        .entries = &[_]wgpu.BindGroupLayoutEntry{
+            .{
+                .binding = 0,
+                .visibility = .fragmentStage,
+                .sampler = .{ .type = .filtering },
+            },
+            .{
+                .binding = 1,
+                .visibility = .fragmentStage,
+                .texture = .{ .sample_type = .float, .view_dimension = .@"2d" },
+            },
+        },
+    });
+    std.debug.assert(bind_group_layout != null);
+    defer wgpu.bindGroupLayoutRelease(bind_group_layout);
+
+    const bind_group = wgpu.deviceCreateBindGroup(demo.device, &wgpu.BindGroupDescriptor{
+        .label = .fromSlice("texture_bind_group"),
+        .layout = bind_group_layout,
+        .entry_count = 2,
+        .entries = &[_]wgpu.BindGroupEntry{
+            .{ .binding = 0, .sampler = sampler },
+            .{ .binding = 1, .texture_view = texture_view },
+        },
+    });
+    std.debug.assert(bind_group != null);
+    defer wgpu.bindGroupRelease(bind_group);
+
+    // --- Create Pipeline ---
+    const shader_module = try frmwrk_load_shader_module(demo.device, "assets/rect.wgsl");
     defer wgpu.shaderModuleRelease(shader_module);
 
     const pipeline_layout = wgpu.deviceCreatePipelineLayout(demo.device, &wgpu.PipelineLayoutDescriptor{
         .label = .fromSlice("pipeline_layout"),
+        .bind_group_layout_count = 1,
+        .bind_group_layouts = &[_]wgpu.BindGroupLayout{bind_group_layout},
     });
     std.debug.assert(pipeline_layout != null);
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
@@ -276,6 +386,34 @@ pub fn main() !void {
     var surface_capabilities: wgpu.SurfaceCapabilities = undefined;
     _ = wgpu.surfaceGetCapabilities(demo.surface, demo.adapter, &surface_capabilities);
     defer wgpu.surfaceCapabilitiesFreeMembers(surface_capabilities);
+
+    const blend_state = wgpu.BlendState{
+        .color = .{
+            // This corresponds to the formula:
+            // (SourceColor * SourceAlpha) + (DestinationColor * (1 - SourceAlpha))
+            .operation = .add,
+            .src_factor = .src_alpha,
+            .dst_factor = .one_minus_src_alpha,
+        },
+        .alpha = .{
+            // We want the final alpha to be the source's alpha.
+            // Formula: (SourceAlpha * 1) + (DestinationAlpha * 0)
+            .operation = .add,
+            .src_factor = .one,
+            .dst_factor = .zero,
+        },
+    };
+
+    // For premultiplied alpha textures (NOT what we need for stb, just for reference)
+    // const premultiplied_blend_state = wgpu.BlendState{
+    //     .color = .{
+    //         // Formula: SourceColor + (DestinationColor * (1 - SourceAlpha))
+    //         .operation = .add,
+    //         .src_factor = .one,
+    //         .dst_factor = .one_minus_src_alpha,
+    //     },
+    //     // ... alpha component is often the same
+    // };
 
     const render_pipeline = wgpu.deviceCreateRenderPipeline(demo.device, &wgpu.RenderPipelineDescriptor{
         .label = .fromSlice("render_pipeline"),
@@ -291,6 +429,7 @@ pub fn main() !void {
             .targets = &[_]wgpu.ColorTargetState{
                 .{
                     .format = surface_capabilities.formats.?[0],
+                    .blend = &blend_state,
                     .write_mask = .all,
                 },
             },
@@ -301,6 +440,7 @@ pub fn main() !void {
     std.debug.assert(render_pipeline != null);
     defer wgpu.renderPipelineRelease(render_pipeline);
 
+    // --- Configure Surface ---
     demo.config = .{
         .device = demo.device,
         .usage = .renderAttachmentUsage,
@@ -318,6 +458,7 @@ pub fn main() !void {
     }
     wgpu.surfaceConfigure(demo.surface, &demo.config);
 
+    // --- Main Loop ---
     main_loop: while (!glfw.windowShouldClose(window)) {
         glfw.pollEvents();
 
@@ -374,7 +515,8 @@ pub fn main() !void {
         std.debug.assert(render_pass_encoder != null);
 
         wgpu.renderPassEncoderSetPipeline(render_pass_encoder, render_pipeline);
-        wgpu.renderPassEncoderDraw(render_pass_encoder, 3, 1, 0, 0);
+        wgpu.renderPassEncoderSetBindGroup(render_pass_encoder, 0, bind_group, 0, null);
+        wgpu.renderPassEncoderDraw(render_pass_encoder, 6, 1, 0, 0); // Draw 6 vertices for the quad
         wgpu.renderPassEncoderEnd(render_pass_encoder);
         wgpu.renderPassEncoderRelease(render_pass_encoder);
 

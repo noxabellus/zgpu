@@ -1125,7 +1125,7 @@ pub const SamplerDescriptor = extern struct {
     lod_min_clamp: f32 = 0.0,
     lod_max_clamp: f32 = 0.0,
     compare: CompareFunction = .undefined,
-    max_anisotropy: u16 = 0,
+    max_anisotropy: u16 = 1, // the minimum valid value is 1
 };
 
 pub const ShaderModuleDescriptor = extern struct {
