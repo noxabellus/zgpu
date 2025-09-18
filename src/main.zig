@@ -531,10 +531,13 @@ pub fn main() !void {
     std.debug.assert(text_bind_group != null);
     defer wgpu.bindGroupRelease(text_bind_group);
 
-    // --- Create Render Pipeline ---
-    // Load our WGSL shader code from a file into a shader module.
-    const shader_module = try wgpu.loadShader(demo.device, "assets/shaders/screenspace_2d.wgsl");
-    defer wgpu.shaderModuleRelease(shader_module);
+    // --- Create Render Pipelines ---
+    // Load our WGSL shader code from files into shader modules.
+    const image_shader_module = try wgpu.loadShader(demo.device, "assets/shaders/screenspace_2d.wgsl");
+    defer wgpu.shaderModuleRelease(image_shader_module);
+
+    const text_shader_module = try wgpu.loadShader(demo.device, "assets/shaders/text_2d.wgsl");
+    defer wgpu.shaderModuleRelease(text_shader_module);
 
     // A PipelineLayout defines which bind groups the pipeline will use.
     const pipeline_layout = wgpu.deviceCreatePipelineLayout(demo.device, &wgpu.PipelineLayoutDescriptor{
@@ -566,32 +569,50 @@ pub fn main() !void {
         },
     };
 
-    // The RenderPipeline is a massive object that configures almost the entire rendering state:
-    // shaders, vertex formats, blending, culling, etc. It's expensive to create, so you
-    // typically create all needed pipelines at initialization.
+    // The RenderPipeline is a massive object that configures almost the entire rendering state.
+    // It's expensive to create, so you typically create all needed pipelines at initialization.
     const render_pipeline = wgpu.deviceCreateRenderPipeline(demo.device, &wgpu.RenderPipelineDescriptor{
         .label = .fromSlice("render_pipeline"),
-        // The bind groups it will use.
         .layout = pipeline_layout,
-        // Vertex shader configuration.
         .vertex = .{
-            .module = shader_module,
+            .module = image_shader_module,
             .entry_point = .fromSlice("vs_main"),
             .buffer_count = 1,
             .buffers = &.{vertex_buffer_layout},
         },
-        // Fragment shader and output target config.
         .fragment = &wgpu.FragmentState{
-            .module = shader_module,
+            .module = image_shader_module,
             .entry_point = .fromSlice("fs_main"),
             .target_count = 1,
             .targets = &[_]wgpu.ColorTargetState{.{ .format = surface_capabilities.formats.?[0], .blend = &blend_state, .write_mask = .all }},
         },
-        .primitive = .{ .topology = .triangle_list }, // How to interpret vertices (as triangles).
-        .multisample = .{ .count = 1, .mask = 0xFFFFFFFF }, // No multisampling.
+        .primitive = .{ .topology = .triangle_list },
+        .multisample = .{ .count = 1, .mask = 0xFFFFFFFF },
     });
     std.debug.assert(render_pipeline != null);
     defer wgpu.renderPipelineRelease(render_pipeline);
+
+    // Create a second pipeline specifically for text rendering.
+    const text_render_pipeline = wgpu.deviceCreateRenderPipeline(demo.device, &wgpu.RenderPipelineDescriptor{
+        .label = .fromSlice("text_render_pipeline"),
+        .layout = pipeline_layout,
+        .vertex = .{
+            .module = text_shader_module,
+            .entry_point = .fromSlice("vs_main"),
+            .buffer_count = 1,
+            .buffers = &.{vertex_buffer_layout},
+        },
+        .fragment = &wgpu.FragmentState{
+            .module = text_shader_module,
+            .entry_point = .fromSlice("fs_main"),
+            .target_count = 1,
+            .targets = &[_]wgpu.ColorTargetState{.{ .format = surface_capabilities.formats.?[0], .blend = &blend_state, .write_mask = .all }},
+        },
+        .primitive = .{ .topology = .triangle_list },
+        .multisample = .{ .count = 1, .mask = 0xFFFFFFFF },
+    });
+    std.debug.assert(text_render_pipeline != null);
+    defer wgpu.renderPipelineRelease(text_render_pipeline);
 
     // --- Configure Surface ---
     // Now that we have a device and have queried capabilities, we can configure the surface.
@@ -773,14 +794,15 @@ pub fn main() !void {
         std.debug.assert(render_pass_encoder != null);
 
         // --- Record Render Commands ---
-        wgpu.renderPassEncoderSetPipeline(render_pass_encoder, render_pipeline);
 
         // Draw the logo quad
+        wgpu.renderPassEncoderSetPipeline(render_pass_encoder, render_pipeline);
         wgpu.renderPassEncoderSetBindGroup(render_pass_encoder, 0, bind_group, 0, null);
         wgpu.renderPassEncoderSetVertexBuffer(render_pass_encoder, 0, vertex_buffer, 0, vertex_data_size);
         wgpu.renderPassEncoderDraw(render_pass_encoder, vertex_count, 1, 0, 0);
 
         // Draw the text
+        wgpu.renderPassEncoderSetPipeline(render_pass_encoder, text_render_pipeline);
         wgpu.renderPassEncoderSetBindGroup(render_pass_encoder, 0, text_bind_group, 0, null);
         wgpu.renderPassEncoderSetVertexBuffer(render_pass_encoder, 0, text_vertex_buffer, 0, text_vertex_data_size);
         wgpu.renderPassEncoderDraw(render_pass_encoder, text_vertex_count, 1, 0, 0);
