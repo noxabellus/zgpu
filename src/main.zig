@@ -1,4 +1,3 @@
-/// src/main.zig
 const std = @import("std");
 const log = std.log.scoped(.main);
 
@@ -428,6 +427,9 @@ pub fn main() !void {
     const first_char = 32; // ASCII space
     const char_count = 95; // 127 - 32
 
+    // This scale factor is constant as long as font_size doesn't change.
+    const font_scale = stbtt.scaleForPixelHeight(&font_info, font_size);
+
     const atlas_pixels = try gpa.alloc(u8, atlas_width * atlas_height);
     defer gpa.free(atlas_pixels);
 
@@ -466,8 +468,8 @@ pub fn main() !void {
     std.debug.assert(font_texture_view != null);
     defer wgpu.textureViewRelease(font_texture_view);
 
-    const text_to_render = "WGpu Test";
-    const text_vertex_count = text_to_render.len * 6;
+    const text_to_render_for_sizing = "WGpu Test";
+    const text_vertex_count = text_to_render_for_sizing.len * 6;
     const text_vertex_data_size = text_vertex_count * @sizeOf(Vertex);
 
     const text_vertex_buffer = wgpu.deviceCreateBuffer(demo.device, &wgpu.BufferDescriptor{
@@ -680,6 +682,27 @@ pub fn main() !void {
             }
         }
 
+        const text_to_render = "WGpu Test";
+
+        // --- Calculate Text Metrics for Current Frame ---
+        // By calculating the precise ascent for the specific string we are rendering in this
+        // frame, we ensure it's always perfectly aligned to the top, even if the text changes.
+        var max_y1_unscaled: i32 = 0;
+        for (text_to_render) |char| {
+            const glyph_index = stbtt.findGlyphIndex(&font_info, char);
+            if (glyph_index == 0) continue;
+
+            var x0: i32 = 0;
+            var y0: i32 = 0;
+            var x1: i32 = 0;
+            var y1: i32 = 0;
+            _ = stbtt.getGlyphBox(&font_info, glyph_index, &x0, &y0, &x1, &y1);
+            if (y1 > max_y1_unscaled) {
+                max_y1_unscaled = y1;
+            }
+        }
+        const final_ascent = @as(f32, @floatFromInt(max_y1_unscaled)) * font_scale;
+
         // --- Regenerate and Upload Text Mesh Data ---
         {
             _ = wgpu.bufferMapAsync(text_staging_buffer, .writeMode, 0, text_vertex_data_size, .{ .callback = &struct {
@@ -696,11 +719,11 @@ pub fn main() !void {
             const mapped_range = wgpu.bufferGetMappedRange(text_staging_buffer, 0, text_vertex_data_size);
             if (mapped_range) |ptr| {
                 const data: [*]Vertex = @ptrCast(@alignCast(ptr));
-                var xpos: f32 = 10.0;
-                var ypos: f32 = 10.0 + font_size; // Start drawing from top-left. Y is inverted.
-                var quad: stbtt.AlignedQuad = .{};
 
-                const font_scale = stbtt.scaleForPixelHeight(&font_info, font_size);
+                // Use the per-frame calculated ascent for perfect positioning.
+                var xpos: f32 = 0.0;
+                var ypos: f32 = 0.0 + final_ascent;
+                var quad: stbtt.AlignedQuad = .{};
 
                 var i: usize = 0;
                 var prev_char: u8 = 0;

@@ -206,7 +206,7 @@ pub const scaleForPixelHeight = @extern(*const fn (info: *const FontInfo, pixels
 pub const scaleForMappingEmToPixels = @extern(*const fn (info: *const FontInfo, pixels: f32) callconv(.c) f32, .{ .name = "stbtt_ScaleForMappingEmToPixels" });
 pub const getFontVMetrics = @extern(*const fn (info: *const FontInfo, ascent: ?*i32, descent: ?*i32, lineGap: ?*i32) callconv(.c) void, .{ .name = "stbtt_GetFontVMetrics" });
 pub const getFontVMetricsOS2 = @extern(*const fn (info: *const FontInfo, typoAscent: ?*i32, typoDescent: ?*i32, typoLineGap: ?*i32) callconv(.c) i32, .{ .name = "stbtt_GetFontVMetricsOS2" });
-pub const getFontBoundingBox = @extern(*const fn (info: *const FontInfo, x0: ?*i32, y0: ?*i32, x1: ?*i32, y1: ?*i32) callconv(.c) void, .{ .name = "stbtt_GetFontBoundingBox" });
+pub const getFontBoundingBox = @extern(*const fn (info: *const FontInfo, x0: *i32, y0: *i32, x1: *i32, y1: ?*i32) callconv(.c) void, .{ .name = "stbtt_GetFontBoundingBox" });
 pub const getCodepointHMetrics = @extern(*const fn (info: *const FontInfo, codepoint: i32, advanceWidth: ?*i32, leftSideBearing: ?*i32) callconv(.c) void, .{ .name = "stbtt_GetCodepointHMetrics" });
 pub const getCodepointKernAdvance = @extern(*const fn (info: *const FontInfo, ch1: i32, ch2: i32) callconv(.c) i32, .{ .name = "stbtt_GetCodepointKernAdvance" });
 pub const getCodepointBox = @extern(*const fn (info: *const FontInfo, codepoint: i32, x0: ?*i32, y0: ?*i32, x1: ?*i32, y1: ?*i32) callconv(.c) i32, .{ .name = "stbtt_GetCodepointBox" });
