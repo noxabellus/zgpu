@@ -422,7 +422,7 @@ fn stbiMalloc(size: usize) callconv(.c) ?*anyopaque {
 
     const mem = mem_allocator.?.alignedAlloc(
         u8,
-        mem_alignment,
+        .fromByteUnits(mem_alignment),
         size,
     ) catch @panic("stbi: out of memory");
 

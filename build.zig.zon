@@ -1,8 +1,8 @@
 .{
-    .name = .wgpu_zig,
+    .name = .zgpu,
     .version = "0.0.0",
-    .fingerprint = 0x1a578192f9399b88,
-    .minimum_zig_version = "0.14.1",
+    .fingerprint = 0x670ebe04a77d4cc7,
+    .minimum_zig_version = "0.15.1",
     .dependencies = .{
         .wgpu_native_linux_x64 = .{
             .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-linux-x86_64-release.zip",
@@ -21,7 +21,7 @@
             .url = "git+https://github.com/nothings/stb#fede005abaf93d9d7f3a679d1999b2db341b360f",
             .hash = "N-V-__8AACIvTgCTqOj6KM32YnqNx1bcsaMuGAeKQEIWZ8Ph",
         },
-        
+
         .glfw = .{
             .url = "https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.zip",
             .hash = "N-V-__8AAGILeQBiX6fOeXM8aImETLAuofbkuBtGo_q6zsGB",

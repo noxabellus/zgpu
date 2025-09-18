@@ -7,10 +7,27 @@ const std = @import("std");
 fn addSystemCFlags(b: *std.Build, lib: *std.Build.Step.Compile) void {
     if (std.process.getEnvVarOwned(b.allocator, "NIX_CFLAGS_COMPILE")) |cflags| {
         defer b.allocator.free(cflags);
-        var it = std.mem.splitScalar(u8, cflags, ' ');
+
+        var it = std.mem.splitAny(u8, cflags, " \n");
         while (it.next()) |flag| {
+            if (flag.len == 0) continue;
+
             if (std.mem.startsWith(u8, flag, "-I")) {
-                lib.addIncludePath(b.path(flag[2..]));
+                const path = flag[2..];
+                // Handle both -I/path and -I /path
+                if (path.len > 0) {
+                    addIncludePath(b, lib, path);
+                } else if (it.next()) |next_path| {
+                    addIncludePath(b, lib, next_path);
+                }
+            } else if (std.mem.eql(u8, flag, "-isystem")) {
+                if (it.next()) |path| {
+                    addIncludePath(b, lib, path);
+                } else {
+                    std.debug.print("Warning: -isystem flag without a path\n", .{});
+                }
+            } else {
+                std.debug.print("Warning: ignoring unsupported NIX_CFLAGS_COMPILE flag: {s}\n", .{flag});
             }
         }
     } else |err| {
@@ -20,7 +37,20 @@ fn addSystemCFlags(b: *std.Build, lib: *std.Build.Step.Compile) void {
     }
 }
 
+/// Helper to add a path, detecting if it's absolute or relative.
+fn addIncludePath(b: *std.Build, lib: *std.Build.Step.Compile, path: []const u8) void {
+    if (std.fs.path.isAbsolute(path)) {
+        std.debug.print("Adding absolute system include path: {s}\n", .{path});
+        lib.addIncludePath(.{ .cwd_relative = path });
+    } else {
+        // This case is unlikely with Nix but good to have.
+        std.debug.print("Adding relative system include path: {s}\n", .{path});
+        lib.addIncludePath(b.path(path));
+    }
+}
+
 pub fn build(b: *std.Build) void {
+    std.debug.print("build.zig started\n", .{});
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -104,11 +134,14 @@ pub fn build(b: *std.Build) void {
     });
 
     // --- GLFW Static Library (compiling the C source) ---
-    const glfw_lib = b.addStaticLibrary(.{
+    const glfw_lib = b.addLibrary(.{
         .name = "glfw",
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
+        .root_module = b.createModule(.{
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+        .linkage = .static,
     });
 
     glfw_mod.linkLibrary(glfw_lib);
