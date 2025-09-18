@@ -292,7 +292,7 @@ pub const Image = struct {
         const new_bytes_per_row = new_width * image.num_components * image.bytes_per_component;
         const new_size = new_height * new_bytes_per_row;
         const new_data = @as([*]u8, @ptrCast(stbiMalloc(new_size)));
-        stbir_resize_uint8_linear(
+        stbir_resize_uint8_srgb(
             image.data.ptr,
             @as(c_int, @intCast(image.width)),
             @as(c_int, @intCast(image.height)),
@@ -540,8 +540,20 @@ extern fn stbi_is_hdr_from_memory(buffer: [*]const u8, len: c_int) c_int;
 extern fn stbi_set_flip_vertically_on_load(flag_true_if_should_flip: c_int) void;
 extern fn stbi_flip_vertically_on_write(flag: c_int) void; // flag is non-zero to flip data vertically
 
-// TODO: bind and utilize resize_float_linear and/or resize_uint8_srgb
+// TODO: utilize resize_float_linear and/or resize_uint8_srgb
 extern fn stbir_resize_uint8_linear(
+    input_pixels: [*]const u8,
+    input_w: c_int,
+    input_h: c_int,
+    input_stride_in_bytes: c_int,
+    output_pixels: [*]u8,
+    output_w: c_int,
+    output_h: c_int,
+    output_stride_in_bytes: c_int,
+    num_channels: c_int,
+) void;
+
+extern fn stbir_resize_uint8_srgb(
     input_pixels: [*]const u8,
     input_w: c_int,
     input_h: c_int,

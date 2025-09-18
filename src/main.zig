@@ -8,7 +8,7 @@ const stbi = @import("stbi");
 const glfw = @import("glfw");
 
 pub const std_options = std.Options{
-    .log_level = .warn,
+    .log_level = .info,
 };
 
 test {
@@ -35,7 +35,7 @@ const Demo = struct {
 
 // --- Vertex and Uniform Data Structs ---
 // `extern struct` ensures a C-compatible memory layout, which is important when passing
-// data to the GPU, as the graphics driver is typically a C/C++ library.
+// data to the GPU, as the graphics driver is typically a C/++ library.
 
 /// Defines the layout of data for a single vertex. Each vertex in our quad
 /// will have a 2D position and a 2D texture coordinate.
@@ -93,7 +93,7 @@ pub fn main() !void {
     }.log_callback, null);
 
     // Set the maximum log level that WGPU will report.
-    wgpu.setLogLevel(.warn);
+    wgpu.setLogLevel(.trace);
 
     // --- GLFW Initialization ---
     // GLFW needs a hint about which platform backend to use (e.g., X11 on Linux, Win32 on Windows).
@@ -202,7 +202,7 @@ pub fn main() !void {
                     const state: *Demo = @ptrCast(@alignCast(userdata1.?));
                     state.adapter = adapter; // On success, store the adapter in our state.
                 } else {
-                    if (message.data) |data| std.debug.print("request_adapter status={any} message={s}\n", .{ status, data[0..message.length] });
+                    if (message.data) |data| log.err("request_adapter status={any} message={s}\n", .{ status, data[0..message.length] });
                 }
             }
         }.handle_request_adapter,
@@ -224,7 +224,7 @@ pub fn main() !void {
                     const state: *Demo = @ptrCast(@alignCast(userdata1.?));
                     state.device = device; // On success, store the device in our state.
                 } else {
-                    if (message.data) |data| std.debug.print("request_device status={any} message={s}\n", .{ status, data[0..message.length] });
+                    if (message.data) |data| log.err("request_device status={any} message={s}\n", .{ status, data[0..message.length] });
                 }
             }
         }.handle_request_device,
@@ -281,11 +281,16 @@ pub fn main() !void {
     std.debug.assert(uniform_buffer != null);
     defer wgpu.bufferRelease(uniform_buffer);
 
-    // --- Load Texture ---
+    // --- Load Texture and Generate Mipmaps ---
     // Use stb_image to load a PNG from the disk into CPU memory.
-    var image = try stbi.Image.loadFromFile("assets/wgpu-logo.png", 4);
+    const image_scale = 0.2;
+    var image = try stbi.Image.loadFromFile("assets/images/wgpu-logo.png", 4);
     defer image.deinit();
-    log.info("Loaded image: {d}x{d}x{d}bpp\n", .{ image.width, image.height, image.bytes_per_component * 8 });
+    log.info("Loaded image: {d}x{d}x{d}bpp", .{ image.width, image.height, image.bytes_per_component * 8 });
+
+    // Calculate the number of mip levels required.
+    const mip_level_count = std.math.log2_int(u32, @max(image.width, image.height)) + 1;
+    log.info("Generating {d} mip levels", .{mip_level_count});
 
     // Create a WGPU texture on the GPU.
     const texture_size = wgpu.Extent3D{ .width = image.width, .height = image.height, .depth_or_array_layers = 1 };
@@ -293,34 +298,100 @@ pub fn main() !void {
     const texture = wgpu.deviceCreateTexture(demo.device, &wgpu.TextureDescriptor{
         .label = .fromSlice("texture"),
         .size = texture_size,
-        .mip_level_count = 1,
+        .mip_level_count = mip_level_count,
         .sample_count = 1,
         .dimension = .@"2d",
-        .format = .rgba8_unorm_srgb, // sRGB format is important for correct color display.
+        .format = .rgba8_unorm_srgb, // sRGB format is important for correct color display
         // Usage: It can be bound in a shader and can be a destination for data copies.
         .usage = wgpu.TextureUsage{ .texture_binding = true, .copy_dst = true },
     });
     std.debug.assert(texture != null);
     defer wgpu.textureRelease(texture);
 
-    // Upload the image data from the CPU buffer to the GPU texture.
-    wgpu.queueWriteTexture(queue, &wgpu.TexelCopyTextureInfo{ .texture = texture }, image.data.ptr, image.data.len, &wgpu.TexelCopyBufferLayout{ .bytes_per_row = image.bytes_per_row, .rows_per_image = image.height }, &texture_size);
+    // Upload the base level (mip 0)
+    wgpu.queueWriteTexture(
+        queue,
+        &wgpu.TexelCopyTextureInfo{ .texture = texture, .mip_level = 0 },
+        image.data.ptr,
+        image.data.len,
+        &wgpu.TexelCopyBufferLayout{ .bytes_per_row = image.bytes_per_row, .rows_per_image = image.height },
+        &texture_size,
+    );
+
+    // Generate and upload subsequent mip levels
+    var src_image = image;
+
+    for (1..mip_level_count) |mip_level| {
+        const dest_width = @max(1, src_image.width / 2);
+        const dest_height = @max(1, src_image.height / 2);
+
+        const dest_image = stbi.Image.resize(&src_image, dest_width, dest_height);
+
+        const mip_texture_size = wgpu.Extent3D{
+            .width = dest_image.width,
+            .height = dest_image.height,
+            .depth_or_array_layers = 1,
+        };
+
+        wgpu.queueWriteTexture(
+            queue,
+            &wgpu.TexelCopyTextureInfo{ .texture = texture, .mip_level = @intCast(mip_level) },
+            dest_image.data.ptr,
+            dest_image.data.len,
+            &wgpu.TexelCopyBufferLayout{
+                .bytes_per_row = dest_image.bytes_per_row,
+                .rows_per_image = dest_image.height,
+            },
+            &mip_texture_size,
+        );
+
+        // If src_image is not the original base image, it was a temporary
+        // created in the previous iteration, so we must free it.
+        if (mip_level > 1) {
+            src_image.deinit();
+        }
+
+        // The destination image of this iteration becomes the source for the next.
+        src_image = dest_image;
+    }
+
+    // After the loop, if we generated any mips, the last `src_image`
+    // is the final, smallest mipmap which needs to be freed.
+    if (mip_level_count > 1) {
+        src_image.deinit();
+    }
 
     // A TextureView describes how the shader will access the texture (e.g., which mip levels).
-    const texture_view = wgpu.textureCreateView(texture, null);
+    const texture_view_descriptor = wgpu.TextureViewDescriptor{
+        .label = .fromSlice("full_mip_chain_view"),
+        // You can often leave format and dimension as 0 to inherit from the texture,
+        // but being explicit is clear.
+        .format = .rgba8_unorm_srgb,
+        .dimension = .@"2d",
+        .base_mip_level = 0,
+        .mip_level_count = mip_level_count,
+        .base_array_layer = 0,
+        .array_layer_count = 1,
+    };
+    const texture_view = wgpu.textureCreateView(texture, &texture_view_descriptor);
     std.debug.assert(texture_view != null);
     defer wgpu.textureViewRelease(texture_view);
+
     // A Sampler describes how the shader will sample the texture (e.g., using linear filtering for smoothness).
     const sampler = wgpu.deviceCreateSampler(demo.device, &wgpu.SamplerDescriptor{
         .label = .fromSlice("sampler"),
         .mag_filter = .linear, // Use linear filtering when magnifying the texture.
         .min_filter = .linear, // Use linear filtering when minifying the texture.
-        .mipmap_filter = .linear, // Use linear filtering between mip levels.
 
-        // NOTE: this does nothing without generating mip levels, which we aren't doing in this example yet.
+        // .mipmap_filter = .linear, // Use linear filtering between mip levels. Worse result for screen aligned quads.
+
+        // Without this, lod_max_clamp is zero-initialized, disabling mipmapping.
+        .lod_min_clamp = 0.0,
+        .lod_max_clamp = @as(f32, @floatFromInt(mip_level_count)),
+
         // A clamp value > 1 enables anisotropic filtering.
         // The device hardware will clamp this to its maximum supported level (often 16).
-        .max_anisotropy = 16, // this requires all filters to be .linear
+        .max_anisotropy = 1, // >1 requires all filters to be .linear. >1 gives worse result for screen aligned quads.
     });
     std.debug.assert(sampler != null);
     defer wgpu.samplerRelease(sampler);
@@ -358,7 +429,7 @@ pub fn main() !void {
 
     // --- Create Render Pipeline ---
     // Load our WGSL shader code from a file into a shader module.
-    const shader_module = try wgpu.loadShader(demo.device, "assets/screenspace_2d.wgsl");
+    const shader_module = try wgpu.loadShader(demo.device, "assets/shaders/screenspace_2d.wgsl");
     defer wgpu.shaderModuleRelease(shader_module);
 
     // A PipelineLayout defines which bind groups the pipeline will use.
@@ -468,8 +539,8 @@ pub fn main() !void {
             var cursor_y: f64 = 0;
             glfw.getCursorPos(window, &cursor_x, &cursor_y);
             // Define the size of the quad.
-            const quad_width: f32 = @as(f32, @floatFromInt(image.width)) * 0.25;
-            const quad_height: f32 = @as(f32, @floatFromInt(image.height)) * 0.25;
+            const quad_width: f32 = @as(f32, @floatFromInt(image.width)) * image_scale;
+            const quad_height: f32 = @as(f32, @floatFromInt(image.height)) * image_scale;
             // Calculate the quad's corners based on the cursor position.
             const x1: f32 = @as(f32, @floatCast(cursor_x)) - quad_width / 2.0;
             const y1: f32 = @as(f32, @floatCast(cursor_y)) - quad_height / 2.0;
@@ -547,7 +618,7 @@ pub fn main() !void {
             .label = .fromSlice("render_pass_encoder"),
             .color_attachment_count = 1,
             // Configure the color attachment (our `frame` from the swap chain).
-            .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{ .view = frame, .load_op = .clear, .store_op = .store, .clear_value = .{ .g = 1.0, .a = 1.0 } }},
+            .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{ .view = frame, .load_op = .clear, .store_op = .store, .clear_value = .{ .b = 1.0, .a = 1.0 } }},
         });
         std.debug.assert(render_pass_encoder != null);
 
