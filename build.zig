@@ -126,6 +126,24 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
     });
 
+    // --- STB_RECT_PACK Module ---
+    const stbrp_mod = b.createModule(.{
+        .root_source_file = b.path("libs/stbrp/stbrp.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    const stbrp_test = b.addTest(.{ .root_module = stbrp_mod });
+    check_step.dependOn(&stbrp_test.step);
+    test_step.dependOn(&b.addRunArtifact(stbrp_test).step);
+
+    stbrp_mod.addIncludePath(stb_dep.path("."));
+    stbrp_mod.addCSourceFile(.{
+        .file = b.path("libs/stbrp/stbrp.c"),
+        .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
+    });
+
     // --- GLFW Module (Zig bindings) ---
     const glfw_mod = b.createModule(.{
         .root_source_file = b.path("libs/glfw.zig"),
@@ -178,6 +196,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("wgpu", wgpu_mod);
     exe_mod.addImport("stbi", stbi_mod);
     exe_mod.addImport("stbtt", stbtt_mod);
+    exe_mod.addImport("stbrp", stbrp_mod);
     exe_mod.addImport("glfw", glfw_mod);
 
     b.installArtifact(exe);

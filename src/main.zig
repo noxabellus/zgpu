@@ -6,6 +6,7 @@ const builtin = @import("builtin");
 const wgpu = @import("wgpu"); // wgpu bindings, zigified structures and enums
 const stbi = @import("stbi"); // stb_image, stb_image_resize2, and stb_image_write with fully zigified api
 const stbtt = @import("stbtt"); // stb_truetype, simple wrapper around the C API, zigified structs, no enums yet
+const stbrp = @import("stbrp"); // stb_rectpack, simple wrapper around the C API, zigified structs and enums
 const glfw = @import("glfw"); // glfw bindings, zigified bools and enums
 
 pub const std_options = std.Options{

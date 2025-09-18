@@ -82,8 +82,14 @@ pub const FontInfo = extern struct {
     fdselect: Buffer = .{},
 };
 
-// This is treated as an opaque type in the stb_truetype header.
-pub const Rect = opaque {};
+pub const Rect = extern struct {
+    id: i32 = 0,
+    w: i32 = 0,
+    h: i32 = 0,
+    x: i32 = 0,
+    y: i32 = 0,
+    was_packed: BigBool = .False,
+};
 
 pub const PackRange = extern struct {
     font_size: f32 = 0.0,
@@ -185,6 +191,24 @@ pub const MACSTYLE_ITALIC = @as(i32, 2);
 pub const MACSTYLE_UNDERSCORE = @as(i32, 4);
 pub const MACSTYLE_NONE = @as(i32, 8);
 
+pub const BigBool = enum(i32) {
+    False,
+    _,
+
+    const True: BigBool = @enumFromInt(1);
+
+    pub fn from(x: bool) BigBool {
+        return if (x) .True else .False;
+    }
+
+    pub fn to(self: BigBool) bool {
+        return switch (self) {
+            .False => false,
+            else => true,
+        };
+    }
+};
+
 pub const bakeFontBitmap = @extern(*const fn (data: [*]const u8, offset: i32, pixel_height: f32, pixels: [*]u8, pw: i32, ph: i32, first_char: i32, num_chars: i32, chardata: [*]BakedChar) callconv(.c) i32, .{ .name = "stbtt_BakeFontBitmap" });
 pub const getBakedQuad = @extern(*const fn (chardata: [*]const BakedChar, pw: i32, ph: i32, char_index: i32, xpos: *f32, ypos: *f32, q: *AlignedQuad, opengl_fillrule: i32) callconv(.c) void, .{ .name = "stbtt_GetBakedQuad" });
 pub const getScaledFontVMetrics = @extern(*const fn (fontdata: [*]const u8, index: i32, size: f32, ascent: ?*f32, descent: ?*f32, lineGap: ?*f32) callconv(.c) void, .{ .name = "stbtt_GetScaledFontVMetrics" });
@@ -195,9 +219,9 @@ pub const packFontRanges = @extern(*const fn (spc: *PackContext, fontdata: [*]co
 pub const packSetOversampling = @extern(*const fn (spc: *PackContext, h_oversample: u32, v_oversample: u32) callconv(.c) void, .{ .name = "stbtt_PackSetOversampling" });
 pub const packSetSkipMissingCodepoints = @extern(*const fn (spc: *PackContext, skip: i32) callconv(.c) void, .{ .name = "stbtt_PackSetSkipMissingCodepoints" });
 pub const getPackedQuad = @extern(*const fn (chardata: [*]const PackedChar, pw: i32, ph: i32, char_index: i32, xpos: *f32, ypos: *f32, q: *AlignedQuad, align_to_integer: i32) callconv(.c) void, .{ .name = "stbtt_GetPackedQuad" });
-// pub const packFontRangesGatherRects = @extern(*const fn (spc: *PackContext, info: *const FontInfo, ranges: [*]PackRange, num_ranges: i32, rects: [*c]Rect) callconv(.c) i32, .{ .name = "stbtt_PackFontRangesGatherRects" });
-// pub const packFontRangesPackRects = @extern(*const fn (spc: *PackContext, rects: [*]Rect, num_rects: i32) callconv(.c) void, .{ .name = "stbtt_PackFontRangesPackRects" });
-// pub const packFontRangesRenderIntoRects = @extern(*const fn (spc: *PackContext, info: *const FontInfo, ranges: [*]const PackRange, num_ranges: i32, rects: [*]Rect) callconv(.c) i32, .{ .name = "stbtt_PackFontRangesRenderIntoRects" });
+pub const packFontRangesGatherRects = @extern(*const fn (spc: *PackContext, info: *const FontInfo, ranges: [*]PackRange, num_ranges: i32, rects: [*]Rect) callconv(.c) i32, .{ .name = "stbtt_PackFontRangesGatherRects" });
+pub const packFontRangesPackRects = @extern(*const fn (spc: *PackContext, rects: [*]Rect, num_rects: i32) callconv(.c) void, .{ .name = "stbtt_PackFontRangesPackRects" });
+pub const packFontRangesRenderIntoRects = @extern(*const fn (spc: *PackContext, info: *const FontInfo, ranges: [*]const PackRange, num_ranges: i32, rects: [*]Rect) callconv(.c) i32, .{ .name = "stbtt_PackFontRangesRenderIntoRects" });
 pub const getNumberOfFonts = @extern(*const fn (data: [*]const u8) callconv(.c) i32, .{ .name = "stbtt_GetNumberOfFonts" });
 pub const getFontOffsetForIndex = @extern(*const fn (data: [*]const u8, index: i32) callconv(.c) i32, .{ .name = "stbtt_GetFontOffsetForIndex" });
 pub const initFont = @extern(*const fn (info: *FontInfo, data: [*]const u8, offset: i32) callconv(.c) i32, .{ .name = "stbtt_InitFont" });
