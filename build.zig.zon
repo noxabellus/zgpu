@@ -7,12 +7,23 @@
         .wgpu_native_linux_x64 = .{
             .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-linux-x86_64-release.zip",
             .hash = "N-V-__8AAJLttgMT05WocIA-7lzJ0aXNv39ddKg-uX_jpWd6",
+            .lazy = true,
+        },
+
+        // TODO: windows wgpu
+
+        // TODO: https://github.com/google/dawn/releases emdawnwebgpu!
+
+        .stb = .{
+            .url = "git+https://github.com/nothings/stb#fede005abaf93d9d7f3a679d1999b2db341b360f",
+            .hash = "N-V-__8AACIvTgCTqOj6KM32YnqNx1bcsaMuGAeKQEIWZ8Ph",
         },
     },
 
     .paths = .{
         "build.zig",
         "build.zig.zon",
+        "libs",
         "src",
     },
 }

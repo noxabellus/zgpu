@@ -3,9 +3,9 @@ const log = std.log.scoped(.main);
 
 const builtin = @import("builtin");
 
-const wgpu = @import("wgpu.zig");
-const glfw = @import("glfw.zig");
-const stbi = @import("stbi.zig");
+const wgpu = @import("wgpu");
+const stbi = @import("stbi");
+const glfw = @import("glfw");
 
 pub const std_options = std.Options{
     .log_level = .warn,
@@ -107,6 +107,10 @@ pub fn main() !void {
     try glfw.init();
     // Ensure GLFW is de-initialized when the main function exits.
     defer glfw.deinit();
+
+    // Initialize the stbi library.
+    stbi.init(std.heap.page_allocator);
+    defer stbi.deinit();
 
     // --- Core WGPU and Window Setup ---
     // Create an instance of our application state struct.
@@ -279,12 +283,12 @@ pub fn main() !void {
 
     // --- Load Texture ---
     // Use stb_image to load a PNG from the disk into CPU memory.
-    var image = try stbi.Image8.fromPath("assets/wgpu-logo.png", .rgba);
+    var image = try stbi.Image.loadFromFile("assets/wgpu-logo.png", 4);
     defer image.deinit();
-    std.debug.print("Loaded image: {any}\n", .{image.info});
+    log.info("Loaded image: {d}x{d}x{d}bpp\n", .{ image.width, image.height, image.bytes_per_component * 8 });
 
     // Create a WGPU texture on the GPU.
-    const texture_size = wgpu.Extent3D{ .width = image.info.width, .height = image.info.height, .depth_or_array_layers = 1 };
+    const texture_size = wgpu.Extent3D{ .width = image.width, .height = image.height, .depth_or_array_layers = 1 };
 
     const texture = wgpu.deviceCreateTexture(demo.device, &wgpu.TextureDescriptor{
         .label = .fromSlice("texture"),
@@ -300,7 +304,7 @@ pub fn main() !void {
     defer wgpu.textureRelease(texture);
 
     // Upload the image data from the CPU buffer to the GPU texture.
-    wgpu.queueWriteTexture(queue, &wgpu.TexelCopyTextureInfo{ .texture = texture }, image.buffer.ptr, image.buffer.len, &wgpu.TexelCopyBufferLayout{ .bytes_per_row = 4 * image.info.width, .rows_per_image = image.info.height }, &texture_size);
+    wgpu.queueWriteTexture(queue, &wgpu.TexelCopyTextureInfo{ .texture = texture }, image.data.ptr, image.data.len, &wgpu.TexelCopyBufferLayout{ .bytes_per_row = image.bytes_per_row, .rows_per_image = image.height }, &texture_size);
 
     // A TextureView describes how the shader will access the texture (e.g., which mip levels).
     const texture_view = wgpu.textureCreateView(texture, null);
@@ -464,8 +468,8 @@ pub fn main() !void {
             var cursor_y: f64 = 0;
             glfw.getCursorPos(window, &cursor_x, &cursor_y);
             // Define the size of the quad.
-            const quad_width: f32 = @as(f32, @floatFromInt(image.info.width)) * 0.25;
-            const quad_height: f32 = @as(f32, @floatFromInt(image.info.height)) * 0.25;
+            const quad_width: f32 = @as(f32, @floatFromInt(image.width)) * 0.25;
+            const quad_height: f32 = @as(f32, @floatFromInt(image.height)) * 0.25;
             // Calculate the quad's corners based on the cursor position.
             const x1: f32 = @as(f32, @floatCast(cursor_x)) - quad_width / 2.0;
             const y1: f32 = @as(f32, @floatCast(cursor_y)) - quad_height / 2.0;
