@@ -1,4 +1,10 @@
 const std = @import("std");
+const log = std.log.scoped(.wgpu);
+
+test {
+    log.debug("semantic analysis for wgpu.zig", .{});
+    std.testing.refAllDecls(@This());
+}
 
 pub const BigBool = enum(u32) { false = 0, true = 1 };
 
@@ -2089,3 +2095,77 @@ pub const renderPassEncoderEndPipelineStatisticsQuery = @extern(*const fn (Rende
 pub const computePassEncoderWriteTimestamp = @extern(*const fn (ComputePassEncoder, QuerySet, u32) callconv(.c) void, .{ .name = "wgpuComputePassEncoderWriteTimestamp" });
 /// `void wgpuRenderPassEncoderWriteTimestamp(WGPURenderPassEncoder renderPassEncoder, WGPUQuerySet querySet, uint32_t queryIndex)`
 pub const renderPassEncoderWriteTimestamp = @extern(*const fn (RenderPassEncoder, QuerySet, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderWriteTimestamp" });
+
+// Extended API //
+
+/// Loads a WGSL shader from a file.
+pub fn loadShader(device: Device, path: []const u8) !ShaderModule {
+    const buf = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 8192) catch {
+        return error.FailedToLoadShader;
+    };
+    defer std.heap.page_allocator.free(buf);
+
+    var wgsl_descriptor = ShaderSourceWGSL{
+        .chain = .{ .s_type = .shader_source_wgsl },
+        .code = .{ .data = buf.ptr, .length = buf.len },
+    };
+
+    const shader_module = deviceCreateShaderModule(device, &ShaderModuleDescriptor{
+        .label = .{ .data = path.ptr, .length = path.len },
+        .next_in_chain = @ptrCast(&wgsl_descriptor),
+    });
+
+    if (shader_module == null) {
+        return error.FailedToCreateShaderModule;
+    }
+
+    return shader_module;
+}
+
+// --- Printing helper functions adapted to new types ---
+fn printRegistryReport(report: RegistryReport, comptime prefix: []const u8) void {
+    std.debug.print(prefix ++ "num_allocated={d}\n", .{report.num_allocated});
+    std.debug.print(prefix ++ "num_kept_from_user={d}\n", .{report.num_kept_from_user});
+    std.debug.print(prefix ++ "num_released_from_user={d}\n", .{report.num_released_from_user});
+    std.debug.print(prefix ++ "element_size={d}\n", .{report.element_size});
+}
+
+fn printHubReport(report: HubReport, comptime prefix: []const u8) void {
+    printRegistryReport(report.adapters, prefix ++ "adapter.");
+    printRegistryReport(report.devices, prefix ++ "devices.");
+    printRegistryReport(report.queues, prefix ++ "queues.");
+    printRegistryReport(report.pipeline_layouts, prefix ++ "pipeline_layouts.");
+    printRegistryReport(report.shader_modules, prefix ++ "shaderModules.");
+    printRegistryReport(report.bind_group_layouts, prefix ++ "bind_group_layouts.");
+    printRegistryReport(report.bind_groups, prefix ++ "bind_groups.");
+    printRegistryReport(report.command_buffers, prefix ++ "command_buffers.");
+    printRegistryReport(report.render_bundles, prefix ++ "render_bundles.");
+    printRegistryReport(report.render_pipelines, prefix ++ "render_pipelines.");
+    printRegistryReport(report.compute_pipelines, prefix ++ "compute_pipelines.");
+    printRegistryReport(report.pipeline_caches, prefix ++ "pipeline_caches.");
+    printRegistryReport(report.query_sets, prefix ++ "query_sets.");
+    printRegistryReport(report.textures, prefix ++ "textures.");
+    printRegistryReport(report.texture_views, prefix ++ "texture_views.");
+    printRegistryReport(report.samplers, prefix ++ "samplers.");
+}
+
+pub fn printGlobalReport(report: GlobalReport) void {
+    std.debug.print("struct WGPUGlobalReport {{\n", .{});
+    printRegistryReport(report.surfaces, "\tsurfaces.");
+    printHubReport(report.hub, "\thub.");
+    std.debug.print("}}\n", .{});
+}
+
+pub fn printAdapterInfo(adapter: Adapter) void {
+    var info = std.mem.zeroes(AdapterInfo);
+    _ = adapterGetInfo(adapter, &info);
+    std.debug.print("description: {s}\n", .{if (info.description.data) |d| d[0..info.description.length] else "(null)"});
+    std.debug.print("vendor: {s}\n", .{if (info.vendor.data) |d| d[0..info.vendor.length] else "(null)"});
+    std.debug.print("architecture: {s}\n", .{if (info.architecture.data) |d| d[0..info.architecture.length] else "(null)"});
+    std.debug.print("device: {s}\n", .{if (info.device.data) |d| d[0..info.device.length] else "(null)"});
+    std.debug.print("backend type: {any}\n", .{info.backend_type});
+    std.debug.print("adapter type: {any}\n", .{info.adapter_type});
+    std.debug.print("vendor_id: {x}\n", .{info.vendor_id});
+    std.debug.print("device_id: {x}\n", .{info.device_id});
+    adapterInfoFreeMembers(info);
+}

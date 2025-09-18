@@ -1,158 +1,19 @@
 const std = @import("std");
+const log = std.log.scoped(.main);
+
+const builtin = @import("builtin");
+
 const wgpu = @import("wgpu.zig");
 const glfw = @import("glfw.zig");
+const stbi = @import("stbi.zig");
 
-test {
-    std.testing.refAllDecls(@This());
-    std.testing.refAllDecls(wgpu);
-    std.testing.refAllDecls(glfw);
-}
-
-const C = @cImport({
-    @cInclude("stb_image.h");
-});
-
-/// A descriptor for creating and initializing a buffer in one step.
-const frmwrk_buffer_init_descriptor = struct {
-    label: []const u8,
-    usage: wgpu.BufferUsage,
-    content: ?*anyopaque,
-    content_size: usize,
+pub const std_options = std.Options{
+    .log_level = .warn,
 };
 
-/// The wgpu log callback, adapted for the new binding's types.
-fn log_callback(level: wgpu.LogLevel, message: wgpu.StringView, userdata: ?*anyopaque) callconv(.c) void {
-    _ = userdata;
-
-    const level_str = switch (level) {
-        .@"error" => "error",
-        .warn => "warn",
-        .info => "info",
-        .debug => "debug",
-        .trace => "trace",
-        else => "unknown_level",
-    };
-
-    const text = message.toSlice();
-
-    inline for (&.{
-        "Suboptimal present of frame", // Suboptimal present is *desired* when resizing the window; alternative is ugly flickering
-    }) |ignore_pattern| {
-        if (std.mem.indexOf(u8, text, ignore_pattern) != null) {
-            return;
-        }
-    }
-
-    std.debug.print("[wgpu] [{s}] {s}\n", .{ level_str, text });
-}
-
-/// Sets up wgpu logging.
-fn frmwrk_setup_logging(level: wgpu.LogLevel) void {
-    _ = wgpu.setLogCallback(log_callback, null);
-    wgpu.setLogLevel(level);
-}
-
-/// Loads a WGSL shader from a file.
-fn frmwrk_load_shader_module(device: wgpu.Device, name: []const u8) !wgpu.ShaderModule {
-    const buf = std.fs.cwd().readFileAlloc(std.heap.page_allocator, name, 8192) catch {
-        return error.FailedToLoadShader;
-    };
-    defer std.heap.page_allocator.free(buf);
-
-    var wgsl_descriptor = wgpu.ShaderSourceWGSL{
-        .chain = .{ .s_type = .shader_source_wgsl },
-        .code = .{ .data = buf.ptr, .length = buf.len },
-    };
-
-    const shader_module = wgpu.deviceCreateShaderModule(device, &wgpu.ShaderModuleDescriptor{
-        .label = .{ .data = name.ptr, .length = name.len },
-        .next_in_chain = @ptrCast(&wgsl_descriptor),
-    });
-
-    if (shader_module == null) {
-        return error.FailedToCreateShaderModule;
-    }
-
-    return shader_module;
-}
-
-const COPY_BUFFER_ALIGNMENT = 4;
-
-/// A helper to create and initialize a buffer.
-fn frmwrk_device_create_buffer_init(device: wgpu.Device, descriptor: *const frmwrk_buffer_init_descriptor) wgpu.Buffer {
-    if (descriptor.content_size == 0) {
-        return wgpu.deviceCreateBuffer(device, &wgpu.BufferDescriptor{
-            .label = .{ .data = descriptor.label.ptr, .length = descriptor.label.len },
-            .size = 0,
-            .usage = descriptor.usage,
-            .mapped_at_creation = false,
-        });
-    }
-
-    const unpadded_size = descriptor.content_size;
-    const align_mask = COPY_BUFFER_ALIGNMENT - 1;
-    const padded_size = @max((unpadded_size + align_mask) & ~align_mask, COPY_BUFFER_ALIGNMENT);
-
-    const buffer = wgpu.deviceCreateBuffer(device, &wgpu.BufferDescriptor{
-        .label = .{ .data = descriptor.label.ptr, .length = descriptor.label.len },
-        .size = padded_size,
-        .usage = descriptor.usage,
-        .mapped_at_creation = true,
-    });
-
-    const mapped_range = wgpu.bufferGetMappedRange(buffer, 0, unpadded_size).?;
-    @memcpy(mapped_range, descriptor.content.?[0..unpadded_size]);
-    wgpu.bufferUnmap(buffer);
-
-    return buffer;
-}
-
-// --- Printing helper functions adapted to new types ---
-fn print_registry_report(report: wgpu.RegistryReport, comptime prefix: []const u8) void {
-    std.debug.print(prefix ++ "num_allocated={d}\n", .{report.num_allocated});
-    std.debug.print(prefix ++ "num_kept_from_user={d}\n", .{report.num_kept_from_user});
-    std.debug.print(prefix ++ "num_released_from_user={d}\n", .{report.num_released_from_user});
-    std.debug.print(prefix ++ "element_size={d}\n", .{report.element_size});
-}
-
-fn print_hub_report(report: wgpu.HubReport, comptime prefix: []const u8) void {
-    print_registry_report(report.adapters, prefix ++ "adapter.");
-    print_registry_report(report.devices, prefix ++ "devices.");
-    print_registry_report(report.queues, prefix ++ "queues.");
-    print_registry_report(report.pipeline_layouts, prefix ++ "pipeline_layouts.");
-    print_registry_report(report.shader_modules, prefix ++ "shaderModules.");
-    print_registry_report(report.bind_group_layouts, prefix ++ "bind_group_layouts.");
-    print_registry_report(report.bind_groups, prefix ++ "bind_groups.");
-    print_registry_report(report.command_buffers, prefix ++ "command_buffers.");
-    print_registry_report(report.render_bundles, prefix ++ "render_bundles.");
-    print_registry_report(report.render_pipelines, prefix ++ "render_pipelines.");
-    print_registry_report(report.compute_pipelines, prefix ++ "compute_pipelines.");
-    print_registry_report(report.pipeline_caches, prefix ++ "pipeline_caches.");
-    print_registry_report(report.query_sets, prefix ++ "query_sets.");
-    print_registry_report(report.textures, prefix ++ "textures.");
-    print_registry_report(report.texture_views, prefix ++ "texture_views.");
-    print_registry_report(report.samplers, prefix ++ "samplers.");
-}
-
-fn frmwrk_print_global_report(report: wgpu.GlobalReport) void {
-    std.debug.print("struct WGPUGlobalReport {{\n", .{});
-    print_registry_report(report.surfaces, "\tsurfaces.");
-    print_hub_report(report.hub, "\thub.");
-    std.debug.print("}}\n", .{});
-}
-
-fn frmwrk_print_adapter_info(adapter: wgpu.Adapter) void {
-    var info = std.mem.zeroes(wgpu.AdapterInfo);
-    _ = wgpu.adapterGetInfo(adapter, &info);
-    std.debug.print("description: {s}\n", .{if (info.description.data) |d| d[0..info.description.length] else "(null)"});
-    std.debug.print("vendor: {s}\n", .{if (info.vendor.data) |d| d[0..info.vendor.length] else "(null)"});
-    std.debug.print("architecture: {s}\n", .{if (info.architecture.data) |d| d[0..info.architecture.length] else "(null)"});
-    std.debug.print("device: {s}\n", .{if (info.device.data) |d| d[0..info.device.length] else "(null)"});
-    std.debug.print("backend type: {any}\n", .{info.backend_type});
-    std.debug.print("adapter type: {any}\n", .{info.adapter_type});
-    std.debug.print("vendor_id: {x}\n", .{info.vendor_id});
-    std.debug.print("device_id: {x}\n", .{info.device_id});
-    wgpu.adapterInfoFreeMembers(info);
+test {
+    log.debug("semantic analysis for main.zig", .{});
+    std.testing.refAllDecls(@This());
 }
 
 // --- Application State Struct ---
@@ -164,64 +25,66 @@ const Demo = struct {
     config: wgpu.SurfaceConfiguration = .{},
 };
 
-// --- Asynchronous Callbacks ---
-fn handle_request_adapter(status: wgpu.RequestAdapterStatus, adapter: wgpu.Adapter, message: wgpu.StringView, userdata1: ?*anyopaque, userdata2: ?*anyopaque) callconv(.c) void {
-    _ = userdata2;
-    if (status == .success) {
-        const demo: *Demo = @ptrCast(@alignCast(userdata1.?));
-        demo.adapter = adapter;
-    } else {
-        if (message.data) |data| {
-            std.debug.print("request_adapter status={any} message={s}\n", .{ status, data[0..message.length] });
-        }
-    }
-}
-
-fn handle_request_device(status: wgpu.RequestDeviceStatus, device: wgpu.Device, message: wgpu.StringView, userdata1: ?*anyopaque, userdata2: ?*anyopaque) callconv(.c) void {
-    _ = userdata2;
-    if (status == .success) {
-        const demo: *Demo = @ptrCast(@alignCast(userdata1.?));
-        demo.device = device;
-    } else {
-        if (message.data) |data| {
-            std.debug.print("request_device status={any} message={s}\n", .{ status, data[0..message.length] });
-        }
-    }
-}
-
-// --- GLFW Event Callbacks ---
-fn handle_glfw_key(window: *glfw.Window, key: glfw.Key, scancode: i32, action: glfw.KeyState32, mods: glfw.Modifier) callconv(.c) void {
-    _ = scancode;
-    _ = mods;
-    if (key == .r and (action == .press or action == .repeat)) {
-        const demo: *Demo = @ptrCast(@alignCast(glfw.getWindowUserPointer(window) orelse return));
-        if (demo.instance == null) return;
-
-        var report: wgpu.GlobalReport = undefined;
-        wgpu.generateReport(demo.instance, &report);
-        frmwrk_print_global_report(report);
-    }
-}
-
-fn handle_glfw_framebuffer_size(window: *glfw.Window, width: i32, height: i32) callconv(.c) void {
-    if (width <= 0 and height <= 0) {
-        return;
-    }
-
-    const demo: *Demo = @ptrCast(@alignCast(glfw.getWindowUserPointer(window) orelse return));
-    if (demo.surface == null) return;
-
-    demo.config.width = @intCast(width);
-    demo.config.height = @intCast(height);
-
-    wgpu.surfaceConfigure(demo.surface, &demo.config);
-}
-
 pub fn main() !void {
-    frmwrk_setup_logging(.warn);
+    _ = wgpu.setLogCallback(&struct {
+        fn log_callback(level: wgpu.LogLevel, message: wgpu.StringView, userdata: ?*anyopaque) callconv(.c) void {
+            _ = userdata;
 
-    // this call is required to force glfw to use X11 backend on wayland systems
-    glfw.initHint(.{ .platform = .x11 });
+            const level_str = switch (level) {
+                .@"error" => "error",
+                .warn => "warn",
+                .info => "info",
+                .debug => "debug",
+                .trace => "trace",
+                else => "unknown_level",
+            };
+
+            const text = message.toSlice();
+
+            inline for (&.{
+                "Suboptimal present of frame", // Suboptimal present is *desired* when resizing the window; alternative is ugly flickering
+            }) |ignore_pattern| {
+                if (std.mem.indexOf(u8, text, ignore_pattern) != null) {
+                    return;
+                }
+            }
+
+            const wgpu_log = std.log.scoped(.wgpu);
+            switch (level) {
+                .@"error" => wgpu_log.err("{s}", .{text}),
+                .warn => wgpu_log.warn("{s}", .{text}),
+                .info => wgpu_log.info("{s}", .{text}),
+                .debug => wgpu_log.debug("{s}", .{text}),
+                else => wgpu_log.debug("[{s}] {s}", .{ level_str, text }),
+            }
+        }
+    }.log_callback, null);
+
+    wgpu.setLogLevel(lvl: switch (std_options.log_level) {
+        .debug => {
+            std.debug.print("log level is debug\n", .{});
+            break :lvl .trace;
+        },
+        .info => {
+            std.debug.print("log level is info\n", .{});
+            break :lvl .info;
+        },
+        .warn => {
+            std.debug.print("log level is warn\n", .{});
+            break :lvl .warn;
+        },
+        .err => {
+            std.debug.print("log level is error\n", .{});
+            break :lvl .@"error";
+        },
+    });
+
+    if (comptime builtin.os.tag != .windows) {
+        // this call is required to force glfw to use X11 backend on wayland systems
+        glfw.initHint(.{ .platform = .x11 });
+    } else {
+        glfw.initHint(.{ .platform = .win32 });
+    }
 
     try glfw.init();
     defer glfw.deinit();
@@ -233,12 +96,39 @@ pub fn main() !void {
     defer wgpu.instanceRelease(demo.instance);
 
     glfw.windowHint(.{ .client_api = .none });
-    const window = try glfw.createWindow(640, 480, "textured-quad [wgpu + glfw]", null, null);
+    const window = try glfw.createWindow(640, 480, "textured-quad [zig / wgpu + glfw + stb_image]", null, null);
     defer glfw.destroyWindow(window);
 
     glfw.setWindowUserPointer(window, &demo);
-    _ = glfw.setKeyCallback(window, handle_glfw_key);
-    _ = glfw.setFramebufferSizeCallback(window, handle_glfw_framebuffer_size);
+    _ = glfw.setKeyCallback(window, &struct {
+        fn handle_glfw_key(w: *glfw.Window, key: glfw.Key, scancode: i32, action: glfw.KeyState32, mods: glfw.Modifier) callconv(.c) void {
+            _ = scancode;
+            _ = mods;
+            if (key == .r and (action == .press or action == .repeat)) {
+                const st: *Demo = @ptrCast(@alignCast(glfw.getWindowUserPointer(w) orelse return));
+                if (st.instance == null) return;
+
+                var report: wgpu.GlobalReport = undefined;
+                wgpu.generateReport(st.instance, &report);
+                wgpu.printGlobalReport(report);
+            }
+        }
+    }.handle_glfw_key);
+    _ = glfw.setFramebufferSizeCallback(window, &struct {
+        fn handle_glfw_framebuffer_size(w: *glfw.Window, width: i32, height: i32) callconv(.c) void {
+            if (width <= 0 and height <= 0) {
+                return;
+            }
+
+            const st: *Demo = @ptrCast(@alignCast(glfw.getWindowUserPointer(w) orelse return));
+            if (st.surface == null) return;
+
+            st.config.width = @intCast(width);
+            st.config.height = @intCast(height);
+
+            wgpu.surfaceConfigure(st.surface, &st.config);
+        }
+    }.handle_glfw_framebuffer_size);
 
     {
         const x11_display = glfw.getX11Display();
@@ -257,21 +147,40 @@ pub fn main() !void {
     std.debug.assert(demo.surface != null);
     defer wgpu.surfaceRelease(demo.surface);
 
-    // TODO: this doesn't seem like the right way to handle the future but it's from the examples
     _ = wgpu.instanceRequestAdapter(demo.instance, &wgpu.RequestAdapterOptions{
         .compatible_surface = demo.surface,
-    }, .{ .callback = handle_request_adapter, .userdata1 = &demo });
-    while (demo.adapter == null) {
-        wgpu.instanceProcessEvents(demo.instance);
-    }
+    }, .{ .callback = &struct {
+        fn handle_request_adapter(status: wgpu.RequestAdapterStatus, adapter: wgpu.Adapter, message: wgpu.StringView, userdata1: ?*anyopaque, userdata2: ?*anyopaque) callconv(.c) void {
+            _ = userdata2;
+            if (status == .success) {
+                const state: *Demo = @ptrCast(@alignCast(userdata1.?));
+                state.adapter = adapter;
+            } else {
+                if (message.data) |data| {
+                    std.debug.print("request_adapter status={any} message={s}\n", .{ status, data[0..message.length] });
+                }
+            }
+        }
+    }.handle_request_adapter, .userdata1 = &demo });
+    while (demo.adapter == null) wgpu.instanceProcessEvents(demo.instance);
     defer wgpu.adapterRelease(demo.adapter);
-    frmwrk_print_adapter_info(demo.adapter);
 
-    // TODO: this doesn't seem like the right way to handle the future but it's from the examples
-    _ = wgpu.adapterRequestDevice(demo.adapter, null, .{ .callback = handle_request_device, .userdata1 = &demo });
-    while (demo.device == null) {
-        wgpu.instanceProcessEvents(demo.instance);
-    }
+    wgpu.printAdapterInfo(demo.adapter);
+
+    _ = wgpu.adapterRequestDevice(demo.adapter, null, .{ .callback = &struct {
+        fn handle_request_device(status: wgpu.RequestDeviceStatus, device: wgpu.Device, message: wgpu.StringView, userdata1: ?*anyopaque, userdata2: ?*anyopaque) callconv(.c) void {
+            _ = userdata2;
+            if (status == .success) {
+                const state: *Demo = @ptrCast(@alignCast(userdata1.?));
+                state.device = device;
+            } else {
+                if (message.data) |data| {
+                    std.debug.print("request_device status={any} message={s}\n", .{ status, data[0..message.length] });
+                }
+            }
+        }
+    }.handle_request_device, .userdata1 = &demo });
+    while (demo.device == null) wgpu.instanceProcessEvents(demo.instance);
     defer wgpu.deviceRelease(demo.device);
 
     const queue = wgpu.deviceGetQueue(demo.device);
@@ -279,23 +188,14 @@ pub fn main() !void {
     defer wgpu.queueRelease(queue);
 
     // --- Load Texture ---
-    var image_width: i32 = 0;
-    var image_height: i32 = 0;
-    var image_channels: i32 = 0;
-    // Force 4 channels (RGBA) for alignment and format compatibility
-    const image_data = C.stbi_load("assets/wgpu-logo.png", &image_width, &image_height, &image_channels, 4);
-    const image_data_slice =
-        if (image_data) |data| data[0 .. @as(u64, @intCast(image_width)) * @as(u64, @intCast(image_height)) * 4] else {
-            std.debug.print("Failed to load image.\n", .{});
-            return error.ImageLoadFailed;
-        };
-    defer C.stbi_image_free(image_data);
-    std.debug.print("Loaded image with width={d} height={d} channels={d}\n", .{ image_width, image_height, image_channels });
+    var image = try stbi.Image8.fromPath("assets/wgpu-logo.png", .rgba);
+    defer image.deinit();
+    std.debug.print("Loaded image: {any}\n", .{image.info});
 
     // --- Create Texture, Sampler, and upload data ---
     const texture_size = wgpu.Extent3D{
-        .width = @intCast(image_width),
-        .height = @intCast(image_height),
+        .width = image.info.width,
+        .height = image.info.height,
         .depth_or_array_layers = 1,
     };
     const texture = wgpu.deviceCreateTexture(demo.device, &wgpu.TextureDescriptor{
@@ -313,12 +213,12 @@ pub fn main() !void {
     wgpu.queueWriteTexture(
         queue,
         &wgpu.TexelCopyTextureInfo{ .texture = texture, .mip_level = 0, .origin = .{} },
-        image_data,
-        image_data_slice.len,
+        image.buffer.ptr,
+        image.buffer.len,
         &wgpu.TexelCopyBufferLayout{
             .offset = 0,
-            .bytes_per_row = @intCast(4 * image_width),
-            .rows_per_image = @intCast(image_height),
+            .bytes_per_row = 4 * image.info.width,
+            .rows_per_image = image.info.height,
         },
         &texture_size,
     );
@@ -372,7 +272,7 @@ pub fn main() !void {
     defer wgpu.bindGroupRelease(bind_group);
 
     // --- Create Pipeline ---
-    const shader_module = try frmwrk_load_shader_module(demo.device, "assets/rect.wgsl");
+    const shader_module = try wgpu.loadShader(demo.device, "assets/rect.wgsl");
     defer wgpu.shaderModuleRelease(shader_module);
 
     const pipeline_layout = wgpu.deviceCreatePipelineLayout(demo.device, &wgpu.PipelineLayoutDescriptor{
@@ -404,7 +304,7 @@ pub fn main() !void {
         },
     };
 
-    // For premultiplied alpha textures (NOT what we need for stb, just for reference)
+    // For premultiplied alpha textures (note: stbi will automatically un-premultiply if we like; here for reference)
     // const premultiplied_blend_state = wgpu.BlendState{
     //     .color = .{
     //         // Formula: SourceColor + (DestinationColor * (1 - SourceAlpha))

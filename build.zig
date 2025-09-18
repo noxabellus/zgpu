@@ -17,7 +17,6 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
-    exe_mod.addIncludePath(b.path("c/"));
     exe_mod.addCSourceFile(.{ .file = b.path("c/stb_image.c") });
     exe_mod.addLibraryPath(wgpu_linux_x64.path("lib/"));
     exe_mod.linkSystemLibrary("wgpu_native", .{});

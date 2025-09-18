@@ -1,4 +1,10 @@
 const std = @import("std");
+const log = std.log.scoped(.glfw);
+
+test {
+    log.debug("semantic analysis for glfw.zig", .{});
+    std.testing.refAllDecls(@This());
+}
 
 pub const Proc = ?*const fn () callconv(.c) void;
 
