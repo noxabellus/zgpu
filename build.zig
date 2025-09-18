@@ -78,6 +78,24 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
     });
 
+    // --- STB_TRUETYPE Module ---
+    const stbtt_mod = b.createModule(.{
+        .root_source_file = b.path("libs/stbtt/stbtt.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    const stbtt_test = b.addTest(.{ .root_module = stbtt_mod });
+    check_step.dependOn(&stbtt_test.step);
+    test_step.dependOn(&b.addRunArtifact(stbtt_test).step);
+
+    stbtt_mod.addIncludePath(stb_dep.path("."));
+    stbtt_mod.addCSourceFile(.{
+        .file = b.path("libs/stbtt/stbtt.c"),
+        .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
+    });
+
     // --- GLFW Module (Zig bindings) ---
     const glfw_mod = b.createModule(.{
         .root_source_file = b.path("libs/glfw.zig"),
@@ -126,6 +144,7 @@ pub fn build(b: *std.Build) void {
 
     exe_mod.addImport("wgpu", wgpu_mod);
     exe_mod.addImport("stbi", stbi_mod);
+    exe_mod.addImport("stbtt", stbtt_mod);
     exe_mod.addImport("glfw", glfw_mod);
 
     b.installArtifact(exe);
