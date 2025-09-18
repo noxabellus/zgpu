@@ -247,7 +247,7 @@ pub fn main() !void {
     const vertex_buffer = wgpu.deviceCreateBuffer(demo.device, &wgpu.BufferDescriptor{
         .label = .fromSlice("vertex_buffer"),
         // Usage: It will be used as a vertex buffer and as a destination for copy operations.
-        .usage = wgpu.BufferUsage.vertexUsage.merge(.copyDstUsage),
+        .usage = wgpu.BufferUsage{ .vertex = true, .copy_dst = true },
         .size = vertex_data_size,
     });
     std.debug.assert(vertex_buffer != null);
@@ -260,7 +260,7 @@ pub fn main() !void {
     const staging_buffer = wgpu.deviceCreateBuffer(demo.device, &wgpu.BufferDescriptor{
         .label = .fromSlice("staging_buffer"),
         // Usage: It can be mapped for writing from the CPU and used as a source for copy operations.
-        .usage = wgpu.BufferUsage.mapWriteUsage.merge(.copySrcUsage),
+        .usage = wgpu.BufferUsage{ .copy_src = true, .map_write = true },
         .size = vertex_data_size,
     });
     std.debug.assert(staging_buffer != null);
@@ -271,7 +271,7 @@ pub fn main() !void {
     const uniform_buffer = wgpu.deviceCreateBuffer(demo.device, &wgpu.BufferDescriptor{
         .label = .fromSlice("uniform_buffer"),
         // Usage: It will be used as a uniform buffer in shaders and can be written to.
-        .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
+        .usage = wgpu.BufferUsage{ .uniform = true, .copy_dst = true },
         .size = @sizeOf(Uniforms),
     });
     std.debug.assert(uniform_buffer != null);
@@ -285,6 +285,7 @@ pub fn main() !void {
 
     // Create a WGPU texture on the GPU.
     const texture_size = wgpu.Extent3D{ .width = image.info.width, .height = image.info.height, .depth_or_array_layers = 1 };
+
     const texture = wgpu.deviceCreateTexture(demo.device, &wgpu.TextureDescriptor{
         .label = .fromSlice("texture"),
         .size = texture_size,
@@ -293,7 +294,7 @@ pub fn main() !void {
         .dimension = .@"2d",
         .format = .rgba8_unorm_srgb, // sRGB format is important for correct color display.
         // Usage: It can be bound in a shader and can be a destination for data copies.
-        .usage = wgpu.TextureUsage.textureBindingUsage.merge(.copyDstUsage),
+        .usage = wgpu.TextureUsage{ .texture_binding = true, .copy_dst = true },
     });
     std.debug.assert(texture != null);
     defer wgpu.textureRelease(texture);
@@ -306,7 +307,17 @@ pub fn main() !void {
     std.debug.assert(texture_view != null);
     defer wgpu.textureViewRelease(texture_view);
     // A Sampler describes how the shader will sample the texture (e.g., using linear filtering for smoothness).
-    const sampler = wgpu.deviceCreateSampler(demo.device, &wgpu.SamplerDescriptor{ .label = .fromSlice("sampler"), .mag_filter = .linear, .min_filter = .linear });
+    const sampler = wgpu.deviceCreateSampler(demo.device, &wgpu.SamplerDescriptor{
+        .label = .fromSlice("sampler"),
+        .mag_filter = .linear, // Use linear filtering when magnifying the texture.
+        .min_filter = .linear, // Use linear filtering when minifying the texture.
+        .mipmap_filter = .linear, // Use linear filtering between mip levels.
+
+        // NOTE: this does nothing without generating mip levels, which we aren't doing in this example yet.
+        // A clamp value > 1 enables anisotropic filtering.
+        // The device hardware will clamp this to its maximum supported level (often 16).
+        .max_anisotropy = 16, // this requires all filters to be .linear
+    });
     std.debug.assert(sampler != null);
     defer wgpu.samplerRelease(sampler);
 
@@ -453,8 +464,8 @@ pub fn main() !void {
             var cursor_y: f64 = 0;
             glfw.getCursorPos(window, &cursor_x, &cursor_y);
             // Define the size of the quad.
-            const quad_width: f32 = @as(f32, @floatFromInt(initial_width)) / 2.0;
-            const quad_height: f32 = @as(f32, @floatFromInt(initial_height)) / 2.0;
+            const quad_width: f32 = @as(f32, @floatFromInt(image.info.width)) * 0.25;
+            const quad_height: f32 = @as(f32, @floatFromInt(image.info.height)) * 0.25;
             // Calculate the quad's corners based on the cursor position.
             const x1: f32 = @as(f32, @floatCast(cursor_x)) - quad_width / 2.0;
             const y1: f32 = @as(f32, @floatCast(cursor_y)) - quad_height / 2.0;
