@@ -27,12 +27,12 @@ fn addSystemCFlags(b: *std.Build, lib: *std.Build.Step.Compile) void {
                     std.debug.print("Warning: -isystem flag without a path\n", .{});
                 }
             } else {
-                std.debug.print("Warning: ignoring unsupported NIX_CFLAGS_COMPILE flag: {s}\n", .{flag});
+                // std.debug.print("Warning: ignoring unsupported NIX_CFLAGS_COMPILE flag: {s}\n", .{flag});
             }
         }
     } else |err| {
         if (err != error.EnvironmentVariableNotFound) {
-            std.debug.print("Warning: could not read NIX_CFLAGS_COMPILE: {s}\n", .{@errorName(err)});
+            std.debug.print("Warning: could not read NIX_CFLAGS_COMPILE: {s}; if you are not on nix, ignore this.\n", .{@errorName(err)});
         }
     }
 }
@@ -40,11 +40,11 @@ fn addSystemCFlags(b: *std.Build, lib: *std.Build.Step.Compile) void {
 /// Helper to add a path, detecting if it's absolute or relative.
 fn addIncludePath(b: *std.Build, lib: *std.Build.Step.Compile, path: []const u8) void {
     if (std.fs.path.isAbsolute(path)) {
-        std.debug.print("Adding absolute system include path: {s}\n", .{path});
+        // std.debug.print("Adding absolute system include path: {s}\n", .{path});
         lib.addIncludePath(.{ .cwd_relative = path });
     } else {
         // This case is unlikely with Nix but good to have.
-        std.debug.print("Adding relative system include path: {s}\n", .{path});
+        // std.debug.print("Adding relative system include path: {s}\n", .{path});
         lib.addIncludePath(b.path(path));
     }
 }
