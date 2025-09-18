@@ -119,13 +119,19 @@ pub fn main() !void {
     // Create the top-level WGPU instance. This is the entry point to the API.
     const instance_extras = wgpu.InstanceExtras{
         .chain = .{ .s_type = .instance_extras },
-        .backends = wgpu.InstanceBackend.vulkanBackend,
+        .backends = switch (builtin.os.tag) {
+            .windows => if (glfw.isRunningInWine())
+                wgpu.InstanceBackend.vulkanBackend
+            else
+                wgpu.InstanceBackend.dx12Backend,
+            else => wgpu.InstanceBackend.vulkanBackend,
+        },
     };
     const instance_descriptor = wgpu.InstanceDescriptor{
         .next_in_chain = @ptrCast(&instance_extras),
     };
     // force using the vulkan backend in wine, the wgpu-native library has issues with the dx12 compatibility layer.
-    demo.instance = wgpu.createInstance(if (glfw.isRunningInWine()) &instance_descriptor else null);
+    demo.instance = wgpu.createInstance(&instance_descriptor);
     std.debug.assert(demo.instance != null);
     // Ensure the instance is released when the main function exits.
     defer wgpu.instanceRelease(demo.instance);
