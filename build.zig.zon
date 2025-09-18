@@ -9,14 +9,22 @@
             .hash = "N-V-__8AAJLttgMT05WocIA-7lzJ0aXNv39ddKg-uX_jpWd6",
             .lazy = true,
         },
+        .wgpu_native_windows_x64 = .{
+            .url = "https://github.com/gfx-rs/wgpu-native/releases/download/v25.0.2.2/wgpu-windows-x86_64-gnu-release.zip",
+            .hash = "N-V-__8AAAyVDwPr3Pkxq37dS6b6mUsUAA36kKDJZyjlUTII",
+            .lazy = true,
+        },
 
-        // TODO: windows wgpu
-
-        // TODO: https://github.com/google/dawn/releases emdawnwebgpu!
+        // TODO: https://github.com/google/dawn/releases emdawnwebgpu?
 
         .stb = .{
             .url = "git+https://github.com/nothings/stb#fede005abaf93d9d7f3a679d1999b2db341b360f",
             .hash = "N-V-__8AACIvTgCTqOj6KM32YnqNx1bcsaMuGAeKQEIWZ8Ph",
+        },
+        
+        .glfw = .{
+            .url = "https://github.com/glfw/glfw/releases/download/3.4/glfw-3.4.zip",
+            .hash = "N-V-__8AAGILeQBiX6fOeXM8aImETLAuofbkuBtGo_q6zsGB",
         },
     },
 

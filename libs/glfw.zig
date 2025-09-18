@@ -353,6 +353,37 @@ pub const getX11Window = @extern(*const fn (window: *Window) callconv(.c) u64, .
 pub const setX11SelectionString = @extern(*const fn (string: ?[*:0]const u8) callconv(.c) void, .{ .name = "glfwSetX11SelectionString" });
 pub const getX11SelectionString = @extern(*const fn () callconv(.c) ?[*:0]const u8, .{ .name = "glfwGetX11SelectionString" });
 
+pub const getWin32Window = @extern(*const fn (window: *Window) callconv(.c) ?*anyopaque, .{ .name = "glfwGetWin32Window" });
+
+extern "kernel32" fn GetModuleHandleA(lpModuleName: ?[*:0]const u8) callconv(.c) ?*anyopaque;
+
+// Bind to the necessary functions from ntdll.dll, which is always loaded.
+extern "ntdll" fn GetProcAddress(hModule: ?*anyopaque, lpProcName: [*:0]const u8) callconv(.c) ?*const fn () callconv(.c) void;
+
+pub fn getWin32ModuleHandle() ?*anyopaque {
+    return GetModuleHandleA(null);
+}
+
+pub fn isRunningInWine() bool {
+    if (comptime @import("builtin").os.tag != .windows) {
+        return false;
+    }
+
+    // Get a handle to ntdll.dll
+    const ntdll_handle = GetModuleHandleA("ntdll.dll");
+
+    // If we can't get a handle to ntdll for some reason, assume we're not in WINE.
+    if (ntdll_handle == null) {
+        return false;
+    }
+
+    // Try to get the address of the WINE-specific function.
+    const wine_get_version_ptr = GetProcAddress(ntdll_handle, "wine_get_version");
+
+    // If the pointer is not null, the function exists, and we are in WINE.
+    return wine_get_version_ptr != null;
+}
+
 pub const version = std.SemanticVersion{ .major = 3, .minor = 4, .patch = 0 };
 
 // TODO: no way to make these the same type without forcing all event handlers to comptime so that we can wrap and convert

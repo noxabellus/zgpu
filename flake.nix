@@ -81,11 +81,17 @@
           zig
           zls
           bashInteractive
-          xorg.libX11
-          xorg.libXrandr
           vulkan-tools
           vulkan-loader
-          glfw
+          # Add all required X11 development libraries for GLFW
+          xorg.libX11
+          xorg.libXrandr
+          xorg.libXinerama
+          xorg.libXcursor
+          xorg.libXi
+          libxkbcommon
+          # wine for testing windows builds
+          wineWowPackages.stable
         ];
 
         shellHook = ''
@@ -103,7 +109,6 @@
               vulkan-loader
               xorg.libX11
               xorg.libXrandr
-              glfw
             ])
           }:$LD_LIBRARY_PATH"
         '';

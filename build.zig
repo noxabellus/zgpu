@@ -1,90 +1,114 @@
+/// build.zig
 const std = @import("std");
+
+/// This helper function is the key to Nix integration.
+/// It reads the NIX_CFLAGS_COMPILE environment variable set by the dev shell,
+/// parses the `-I` flags, and adds them as include paths for a C library artifact.
+fn addSystemCFlags(b: *std.Build, lib: *std.Build.Step.Compile) void {
+    if (std.process.getEnvVarOwned(b.allocator, "NIX_CFLAGS_COMPILE")) |cflags| {
+        defer b.allocator.free(cflags);
+        var it = std.mem.splitScalar(u8, cflags, ' ');
+        while (it.next()) |flag| {
+            if (std.mem.startsWith(u8, flag, "-I")) {
+                lib.addIncludePath(b.path(flag[2..]));
+            }
+        }
+    } else |err| {
+        if (err != error.EnvironmentVariableNotFound) {
+            std.debug.print("Warning: could not read NIX_CFLAGS_COMPILE: {s}\n", .{@errorName(err)});
+        }
+    }
+}
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
+    if (target.result.cpu.arch != .x86_64) {
+        std.debug.panic("Cannot build for architecture `{s}`", .{@tagName(target.result.cpu.arch)});
+    }
+
     const run_step = b.step("run", "Run the app");
     const check_step = b.step("check", "Semantic analysis");
     const test_step = b.step("test", "Run tests");
+    const install_step = b.default_step;
 
-    const wgpu_dep = switch (target.result.os.tag) {
-        .linux => b.lazyDependency("wgpu_native_linux_x64", .{}).?,
-        else => @panic("NYI"),
-    };
+    const is_windows = target.result.os.tag == .windows;
+    if (!is_windows and target.result.os.tag != .linux) std.debug.panic("Cannot build for os `{s}`", .{@tagName(target.result.os.tag)});
+
+    // --- Dependencies ---
+    const wgpu_dep =
+        if (is_windows)
+            b.lazyDependency("wgpu_native_windows_x64", .{}).?
+        else
+            b.lazyDependency("wgpu_native_linux_x64", .{}).?;
+
     const stb_dep = b.dependency("stb", .{});
+    const glfw_dep = b.dependency("glfw", .{});
 
+    // --- WGPU Module ---
     const wgpu_mod = b.createModule(.{
         .root_source_file = b.path("libs/wgpu.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const wgpu_test = b.addTest(.{
-        .root_module = wgpu_mod,
-    });
-
+    const wgpu_test = b.addTest(.{ .root_module = wgpu_mod });
     check_step.dependOn(&wgpu_test.step);
     test_step.dependOn(&b.addRunArtifact(wgpu_test).step);
 
     wgpu_mod.addLibraryPath(wgpu_dep.path("lib/"));
     wgpu_mod.linkSystemLibrary("wgpu_native", .{});
-    wgpu_mod.linkSystemLibrary("m", .{});
-    wgpu_mod.linkSystemLibrary("dl", .{});
 
+    // --- STB_IMAGE Module ---
     const stbi_mod = b.createModule(.{
         .root_source_file = b.path("libs/stbi/stbi.zig"),
         .target = target,
         .optimize = optimize,
+        .link_libc = true,
     });
 
-    const stbi_test = b.addTest(.{
-        .root_module = stbi_mod,
-    });
-
+    const stbi_test = b.addTest(.{ .root_module = stbi_mod });
     check_step.dependOn(&stbi_test.step);
     test_step.dependOn(&b.addRunArtifact(stbi_test).step);
 
     stbi_mod.addIncludePath(stb_dep.path("."));
     stbi_mod.addCSourceFile(.{
         .file = b.path("libs/stbi/stbi.c"),
-        .flags = if (optimize == .Debug) &.{
-            "-std=c99",
-            "-fno-sanitize=undefined",
-            "-g",
-            "-O0",
-        } else &.{
-            "-std=c99",
-            "-fno-sanitize=undefined",
-            "-O2",
-        },
+        .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
     });
 
+    // --- GLFW Module (Zig bindings) ---
     const glfw_mod = b.createModule(.{
         .root_source_file = b.path("libs/glfw.zig"),
         .target = target,
         .optimize = optimize,
     });
 
-    const glfw_test = b.addTest(.{
-        .root_module = glfw_mod,
+    // --- GLFW Static Library (compiling the C source) ---
+    const glfw_lib = b.addStaticLibrary(.{
+        .name = "glfw",
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
     });
 
-    check_step.dependOn(&glfw_test.step);
-    test_step.dependOn(&b.addRunArtifact(glfw_test).step);
+    glfw_mod.linkLibrary(glfw_lib);
 
-    glfw_mod.linkSystemLibrary("glfw", .{});
+    if (!is_windows) addSystemCFlags(b, glfw_lib);
 
-    if (target.result.os.tag == .emscripten) {
-        wgpu_mod.addCMacro("WGPU_EMSCRIPTEN", @panic("NYI"));
-        stbi_mod.addIncludePath(.{
-            .cwd_relative = b.pathJoin(&.{ b.sysroot.?, "/include" }),
-        });
-    } else {
-        wgpu_mod.link_libc = true;
-        stbi_mod.link_libc = true;
-        glfw_mod.link_libc = true; // TODO: is this needed?
-    }
+    glfw_lib.addIncludePath(glfw_dep.path("include"));
+    glfw_lib.addCSourceFiles(.{
+        .files = &.{
+            "context.c",     "init.c",          "input.c",
+            "monitor.c",     "vulkan.c",        "window.c",
+            "platform.c",    "null_init.c",     "null_monitor.c",
+            "null_window.c", "null_joystick.c",
+        },
+        .root = glfw_dep.path("src"),
+    });
 
+    // --- Main Executable ---
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
         .target = target,
@@ -96,26 +120,67 @@ pub fn build(b: *std.Build) void {
         .root_module = exe_mod,
     });
 
+    const exe_test = b.addTest(.{ .root_module = exe_mod });
+    check_step.dependOn(&exe_test.step);
+    test_step.dependOn(&b.addRunArtifact(exe_test).step);
+
     exe_mod.addImport("wgpu", wgpu_mod);
     exe_mod.addImport("stbi", stbi_mod);
     exe_mod.addImport("glfw", glfw_mod);
 
-    const exe_unit_tests = b.addTest(.{
-        .root_module = exe_mod,
-    });
-
-    check_step.dependOn(&exe_unit_tests.step);
-    test_step.dependOn(&b.addRunArtifact(exe_unit_tests).step);
-
     b.installArtifact(exe);
 
+    // --- Run Step ---
     const run_cmd = b.addRunArtifact(exe);
-
-    run_cmd.step.dependOn(b.getInstallStep());
-
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
-
     run_step.dependOn(&run_cmd.step);
+
+    // --- Platform-specifics ---
+    if (is_windows) {
+        glfw_lib.root_module.addCMacro("_GLFW_WIN32", "");
+        glfw_lib.addCSourceFiles(.{
+            .files = &.{
+                "win32_init.c",     "win32_joystick.c", "win32_monitor.c", "win32_thread.c",
+                "win32_time.c",     "win32_window.c",   "wgl_context.c",   "egl_context.c",
+                "osmesa_context.c", "win32_module.c",
+            },
+            .root = glfw_dep.path("src"),
+        });
+
+        exe.linkSystemLibrary("dxgi");
+        exe.linkSystemLibrary("d3d12");
+
+        exe.linkSystemLibrary("gdi32");
+        exe.linkSystemLibrary("shell32");
+        exe.linkSystemLibrary("user32");
+        exe.linkSystemLibrary("kernel32");
+        exe.linkSystemLibrary("ntdll");
+
+        const dll_needed = wgpu_dep.path("lib/wgpu_native.dll");
+        const install = b.addInstallFile(dll_needed, "bin/wgpu_native.dll");
+        install_step.dependOn(&install.step);
+    } else {
+        glfw_lib.root_module.addCMacro("_GLFW_X11", "");
+        glfw_lib.addCSourceFiles(.{
+            .files = &.{
+                "x11_init.c",       "x11_monitor.c",    "x11_window.c",  "xkb_unicode.c",
+                "posix_thread.c",   "posix_time.c",     "glx_context.c", "egl_context.c",
+                "osmesa_context.c", "linux_joystick.c", "posix_poll.c",  "posix_module.c",
+            },
+            .root = glfw_dep.path("src"),
+        });
+
+        // for wgpu
+        exe.linkSystemLibrary("m");
+        exe.linkSystemLibrary("dl");
+
+        // for glfw
+        exe.linkSystemLibrary("X11");
+        exe.linkSystemLibrary("Xrandr");
+        exe.linkSystemLibrary("Xinerama");
+        exe.linkSystemLibrary("Xi");
+        exe.linkSystemLibrary("Xcursor");
+    }
 }

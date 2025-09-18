@@ -115,8 +115,17 @@ pub fn main() !void {
     // --- Core WGPU and Window Setup ---
     // Create an instance of our application state struct.
     var demo = Demo{};
+
     // Create the top-level WGPU instance. This is the entry point to the API.
-    demo.instance = wgpu.createInstance(null);
+    const instance_extras = wgpu.InstanceExtras{
+        .chain = .{ .s_type = .instance_extras },
+        .backends = wgpu.InstanceBackend.vulkanBackend,
+    };
+    const instance_descriptor = wgpu.InstanceDescriptor{
+        .next_in_chain = @ptrCast(&instance_extras),
+    };
+    // force using the vulkan backend in wine, the wgpu-native library has issues with the dx12 compatibility layer.
+    demo.instance = wgpu.createInstance(if (glfw.isRunningInWine()) &instance_descriptor else null);
     std.debug.assert(demo.instance != null);
     // Ensure the instance is released when the main function exits.
     defer wgpu.instanceRelease(demo.instance);
@@ -180,12 +189,11 @@ pub fn main() !void {
         demo.surface = wgpu.instanceCreateSurface(demo.instance, &wgpu.SurfaceDescriptor{ .next_in_chain = @ptrCast(&xlib_source) });
     } else {
         // On Windows
-        // TODO: glfw binding for windows is currently missing in the example's `glfw.zig`.
-        // const win32_hwnd = glfw.getWin32Window(window);
-        // std.debug.assert(win32_hwnd != null);
-        // var win32_source = wgpu.SurfaceSourceWindowsHWND{ .chain = .{ .s_type = .surface_source_win32_window }, .hwnd = win32_hwnd, .hinstance = null };
-        // demo.surface = wgpu.instanceCreateSurface(demo.instance, &wgpu.SurfaceDescriptor{ .next_in_chain = @ptrCast(&win32_source) });
-        @panic("NYI");
+        const win32_hwnd = glfw.getWin32Window(window);
+        const win32_hinstance = glfw.getWin32ModuleHandle();
+        std.debug.assert(win32_hwnd != null);
+        var win32_source = wgpu.SurfaceSourceWindowsHWND{ .chain = .{ .s_type = .surface_source_windows_hwnd }, .hwnd = win32_hwnd, .hinstance = win32_hinstance };
+        demo.surface = wgpu.instanceCreateSurface(demo.instance, &wgpu.SurfaceDescriptor{ .next_in_chain = @ptrCast(&win32_source) });
     }
     std.debug.assert(demo.surface != null);
     // Ensure the surface is released on exit.
