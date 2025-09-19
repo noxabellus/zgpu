@@ -379,12 +379,23 @@ pub fn drawTexturedQuad(self: *Batch2D, image_id: MultiAtlas.ImageId, pos: Vec2,
 pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.FontInfo, font_index: u32, pixel_height: f32, pos: Vec2, tint: Color) !void {
     const font_scale = stbtt.scaleForPixelHeight(font_info, pixel_height);
 
-    var asc: i32 = 0;
-    var desc: i32 = 0;
-    var line_gap: i32 = 0;
-    stbtt.getFontVMetrics(font_info, &asc, &desc, &line_gap);
+    // By calculating the baseline from the font's maximum ascent, text that doesn't
+    // contain the tallest glyphs appears lower than it should. The fix is to perform
+    // a pre-pass to find the actual ascent of the string being rendered.
+    var min_iy0: i32 = 0;
+    for (string) |char| {
+        var ix0: i32 = 0;
+        var iy0: i32 = 0;
+        var ix1: i32 = 0;
+        var iy1: i32 = 0;
+        // Note: The y-coordinates returned by stb_truetype are measured from the
+        // baseline, with positive y being downwards. The top of a glyph (iy0)
+        // will therefore be a negative number.
+        stbtt.getCodepointBitmapBox(font_info, @intCast(@as(u21, @intCast(char))), font_scale, font_scale, &ix0, &iy0, &ix1, &iy1);
+        min_iy0 = @min(min_iy0, iy0);
+    }
 
-    const baseline_y = pos.y + (@as(f32, @floatFromInt(asc)) * font_scale);
+    const baseline_y = pos.y - @as(f32, @floatFromInt(min_iy0));
 
     var xpos = pos.x;
     var prev_char: u21 = 0;
