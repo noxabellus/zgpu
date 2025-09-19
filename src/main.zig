@@ -58,18 +58,16 @@ fn createOrResizeMsaaTexture(d: *Demo) void {
 
 const ImageId = MultiAtlas.ImageId;
 const LOGO_ID: ImageId = 1;
-const FONT_ID_BASE: ImageId = 0x1000;
 
-// Use the most significant bit to flag glyph IDs.
-fn glyphId(char: u21) ImageId {
-    return Batch2D.GLYPH_ID_FLAG + FONT_ID_BASE + char;
-}
+const LoadedFont = struct {
+    info: stbtt.FontInfo,
+    data: []const u8,
+};
+
 pub const AppContext = struct {
     allocator: std.mem.Allocator,
     logo_image: stbi.Image,
-    font_info: stbtt.FontInfo,
-    font_data: []const u8,
-    font_scale: f32,
+    fonts: std.ArrayList(LoadedFont),
     frame_arena: *std.heap.ArenaAllocator,
 };
 
@@ -81,15 +79,19 @@ fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage 
 
     if ((image_id & Batch2D.GLYPH_ID_FLAG) != 0) {
         // This is a glyph request.
-        const char_code = @as(u21, @intCast(image_id & (Batch2D.GLYPH_ID_FLAG - 1) - FONT_ID_BASE));
-        const MASTER_GLYPH_HEIGHT: f32 = 64.0;
-        const master_scale = stbtt.scaleForPixelHeight(&app.font_info, MASTER_GLYPH_HEIGHT);
+        const decoded = Batch2D.decodeGlyphId(image_id);
+        if (decoded.font_index >= app.fonts.items.len) {
+            log.err("invalid font index {d} in glyph id", .{decoded.font_index});
+            return null;
+        }
+        const font = &app.fonts.items[decoded.font_index];
+        const scale = stbtt.scaleForPixelHeight(&font.info, decoded.pixel_height);
 
         var w: i32 = 0;
         var h: i32 = 0;
         var xoff: i32 = 0;
         var yoff: i32 = 0;
-        const grayscale_pixels = stbtt.getCodepointBitmap(&app.font_info, 0, master_scale, @intCast(char_code), &w, &h, &xoff, &yoff);
+        const grayscale_pixels = stbtt.getCodepointBitmap(&font.info, 0, scale, @intCast(decoded.char_code), &w, &h, &xoff, &yoff);
 
         if (grayscale_pixels == null or w == 0 or h == 0) return null;
         defer stbtt.freeBitmap(grayscale_pixels.?, null);
@@ -100,22 +102,25 @@ fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage 
         const padded_h: u32 = @as(u32, @intCast(h)) + (GLYPH_PADDING * 2);
         const master_rgba_padded_pixels = (frame_allocator.alloc(u8, padded_w * padded_h * 4) catch return null);
 
-        for (master_rgba_padded_pixels, 0..) |*p, i| {
-            const channel: u2 = @intCast(i % 4);
-            if (channel == 3) { // Alpha
-                p.* = 0;
-            } else { // R, G, B
-                p.* = 255;
-            }
+        // 1. Clear the entire buffer to WHITE {255, 255, 255, 0}.
+        //    The memset makes RGB white. We will then clear alpha manually.
+        @memset(master_rgba_padded_pixels, 0xFF);
+        for (0..padded_w * padded_h) |i| {
+            master_rgba_padded_pixels[i * 4 + 3] = 0;
         }
 
+        // 2. Copy the glyph data, setting only the Alpha channel over our white background.
         const original_pitch: usize = @intCast(w);
         const padded_pitch: usize = padded_w * 4;
         for (0..@as(usize, @intCast(h))) |row| {
             const src_row = grayscale_pixels.?[(row * original_pitch)..];
             const dst_row_start_idx = ((row + GLYPH_PADDING) * padded_pitch) + (GLYPH_PADDING * 4);
             for (0..original_pitch) |col| {
-                master_rgba_padded_pixels[dst_row_start_idx + (col * 4) + 3] = src_row[col];
+                const alpha = src_row[col];
+                const dst_pixel_start = dst_row_start_idx + (col * 4);
+
+                // RGB is already 255 from the memset above. We only need to write alpha.
+                master_rgba_padded_pixels[dst_pixel_start + 3] = alpha; // A
             }
         }
         return Atlas.InputImage{
@@ -124,8 +129,7 @@ fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage 
             .height = padded_h,
             .format = .rgba,
         };
-    } else if (image_id == LOGO_ID) {
-        // This is an image request.
+    } else {
         return Atlas.InputImage{
             .pixels = app.logo_image.data,
             .width = app.logo_image.width,
@@ -147,6 +151,22 @@ fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) [16]
     mat[14] = -(far + near) / (far - near);
     mat[15] = 1.0;
     return mat;
+}
+
+fn srgbToLinear(c: f32) f32 {
+    if (c <= 0.04045) {
+        return c / 12.92;
+    } else {
+        return std.math.pow(f32, (c + 0.055) / 1.055, 2.4);
+    }
+}
+
+fn linearToSrgb(c: f32) f32 {
+    if (c <= 0.0031308) {
+        return c * 12.92;
+    } else {
+        return 1.055 * std.math.pow(f32, c, 1.0 / 2.4) - 0.055;
+    }
 }
 
 pub fn main() !void {
@@ -246,11 +266,34 @@ pub fn main() !void {
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    var app_context = AppContext{ .allocator = gpa, .logo_image = try stbi.Image.loadFromFile("assets/images/wgpu-logo.png", 4), .font_data = try std.fs.cwd().readFileAlloc(gpa, "assets/fonts/roboto/regular.ttf", 10 * 1024 * 1024), .font_info = .{}, .font_scale = 0.0, .frame_arena = &arena_state };
+    var app_context = AppContext{
+        .allocator = gpa,
+        .logo_image = try stbi.Image.loadFromFile("assets/images/wgpu-logo.png", 4),
+        .fonts = .empty,
+        .frame_arena = &arena_state,
+    };
     defer app_context.logo_image.deinit();
-    defer gpa.free(app_context.font_data);
-    std.debug.assert(stbtt.initFont(&app_context.font_info, app_context.font_data.ptr, 0) != 0);
-    app_context.font_scale = stbtt.scaleForPixelHeight(&app_context.font_info, 40.0);
+    defer {
+        for (app_context.fonts.items) |font| {
+            gpa.free(font.data);
+        }
+        app_context.fonts.deinit(app_context.allocator);
+    }
+
+    // Load fonts
+    const font_paths = &[_][]const u8{
+        "assets/fonts/roboto/regular.ttf",
+        "assets/fonts/Calistoga-Regular.ttf",
+        "assets/fonts/Quicksand-Semibold.ttf",
+    };
+    for (font_paths) |path| {
+        const font_data = try std.fs.cwd().readFileAlloc(gpa, path, 10 * 1024 * 1024);
+        var font_info = stbtt.FontInfo{};
+        const success = stbtt.initFont(&font_info, font_data.ptr, 0).to();
+        std.debug.assert(success);
+        try app_context.fonts.append(app_context.allocator, .{ .data = font_data, .info = font_info });
+    }
+
     demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format, MSAA_SAMPLE_COUNT);
     defer demo.renderer.deinit();
 
@@ -258,6 +301,16 @@ pub fn main() !void {
     main_loop: while (!glfw.windowShouldClose(window)) {
         glfw.pollEvents();
         _ = app_context.frame_arena.reset(.free_all);
+
+        // --- DEBUG DUMP ---
+        // It will run once and then panic, which is fine for debugging.
+        if (glfw.getKey(window, .a) == .press) {
+            try demo.renderer.glyph_atlas.debugWriteAllAtlasesToPng("debug_glyph_atlas");
+            try demo.renderer.image_atlas.debugWriteAllAtlasesToPng("debug_image_atlas");
+            log.warn("Wrote atlases to disk, exiting.", .{});
+            std.process.exit(0);
+        }
+        // --- END DEBUG DUMP ---
 
         var surface_texture: wgpu.SurfaceTexture = undefined;
         wgpu.surfaceGetCurrentTexture(demo.surface, &surface_texture);
@@ -300,8 +353,16 @@ pub fn main() !void {
         const tint = Batch2D.Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
         try demo.renderer.drawTexturedQuad(LOGO_ID, quad_pos, quad_size, tint);
 
-        const text_pos = Batch2D.Vec2{ .x = 0.0, .y = 0.0 };
-        try demo.renderer.drawText("WGPU Batch Renderer", &app_context.font_info, app_context.font_scale, text_pos, tint);
+        const text_to_draw = "WGPU Batch Renderer";
+
+        // Draw with Roboto, 40px
+        try demo.renderer.drawText(text_to_draw, &app_context.fonts.items[0].info, 0, 40.0, .{ .x = 0, .y = 0 }, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
+
+        // Draw with Calistoga, 48px
+        try demo.renderer.drawText(text_to_draw, &app_context.fonts.items[1].info, 1, 48.0, .{ .x = 10, .y = 60 }, .{ .r = 0, .g = 1, .b = 1, .a = 1 });
+
+        // Draw with Quicksand, 32px
+        try demo.renderer.drawText(text_to_draw, &app_context.fonts.items[2].info, 2, 32.0, .{ .x = 20, .y = 120 }, .{ .r = 1, .g = 0, .b = 1, .a = 1 });
 
         try demo.renderer.endFrame();
 

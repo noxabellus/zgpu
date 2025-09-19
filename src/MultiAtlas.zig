@@ -150,7 +150,7 @@ pub fn flush(self: *MultiAtlas, context: ProviderContext) !void {
             var packed_indices = std.ArrayList(usize){};
             defer packed_indices.deinit(self.allocator);
 
-            const UV_INSET: f32 = 1.0;
+            const UV_INSET: f32 = 0.0;
 
             for (self.rect_buffer.items) |rect| {
                 if (!rect.was_packed.to()) continue;
@@ -206,6 +206,14 @@ pub fn flush(self: *MultiAtlas, context: ProviderContext) !void {
 pub fn getTextureView(self: *MultiAtlas, atlas_index: usize) ?wgpu.TextureView {
     if (atlas_index >= self.atlases.items.len) return null;
     return self.atlases.items[atlas_index].view;
+}
+
+pub fn debugWriteAllAtlasesToPng(self: *MultiAtlas, base_filename: []const u8) !void {
+    var file_buffer: [128]u8 = undefined;
+    for (self.atlases.items, 0..) |atlas, i| {
+        const filename = try std.fmt.bufPrint(&file_buffer, "{s}_{d}.png", .{ base_filename, i });
+        try atlas.debugWriteToPng(filename);
+    }
 }
 
 fn addNewAtlas(self: *MultiAtlas) !void {

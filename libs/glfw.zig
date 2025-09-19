@@ -267,9 +267,9 @@ pub fn rawMouseMotionSupported() bool {
     return glfwRawMouseMotionSupported() == 1;
 }
 
-pub const getKeyName = @extern(*const fn (key: i32, scancode: i32) callconv(.c) ?[*:0]const u8, .{ .name = "glfwGetKeyName" });
-pub const getKeyScancode = @extern(*const fn (key: i32) callconv(.c) i32, .{ .name = "glfwGetKeyScancode" });
-pub const getKey = @extern(*const fn (window: *Window, key: i32) callconv(.c) KeyState32, .{ .name = "glfwGetKey" });
+pub const getKeyName = @extern(*const fn (key: Key, scancode: i32) callconv(.c) ?[*:0]const u8, .{ .name = "glfwGetKeyName" });
+pub const getKeyScancode = @extern(*const fn (key: Key) callconv(.c) i32, .{ .name = "glfwGetKeyScancode" });
+pub const getKey = @extern(*const fn (window: *Window, key: Key) callconv(.c) KeyState32, .{ .name = "glfwGetKey" });
 
 pub const getMouseButton = @extern(*const fn (window: *Window, button: i32) callconv(.c) KeyState32, .{ .name = "glfwGetMouseButton" });
 

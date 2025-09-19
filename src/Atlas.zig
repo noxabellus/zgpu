@@ -9,6 +9,7 @@ const Atlas = @This();
 
 const std = @import("std");
 const wgpu = @import("wgpu");
+const stbi = @import("stbi");
 const stbrp = @import("stbrp");
 
 const log = std.log.scoped(.atlas);
@@ -152,7 +153,7 @@ pub fn init(
         .sample_count = 1,
         .dimension = .@"2d",
         .format = .rgba8_unorm_srgb,
-        .usage = wgpu.TextureUsage{ .texture_binding = true, .copy_dst = true },
+        .usage = wgpu.TextureUsage{ .texture_binding = true, .copy_dst = true, .copy_src = true }, // need copy_src for debug readback
     };
     const texture = wgpu.deviceCreateTexture(device, &texture_descriptor);
     if (texture == null) {
@@ -266,4 +267,104 @@ pub fn packAndUpload(
     }
 
     return .{ .packed_count = packed_count };
+}
+
+/// (DEBUG) Writes the current content of the GPU texture atlas to a PNG file.
+/// This is a slow, blocking operation intended only for debugging.
+pub fn debugWriteToPng(self: *Atlas, filename: []const u8) !void {
+    log.warn("writing atlas to '{s}' for debugging...", .{filename});
+
+    const bytes_per_pixel = 4;
+    const buffer_size = self.width * self.height * bytes_per_pixel;
+
+    // WGPU requires buffer-texture copies to have bytes_per_row aligned to 256.
+    const buffer_stride = std.mem.alignForward(u32, self.width * bytes_per_pixel, 256);
+    const aligned_buffer_size = buffer_stride * self.height;
+
+    // 1. Create a mappable buffer on the GPU to be the destination for the texture copy.
+    const readback_buffer = wgpu.deviceCreateBuffer(self.device, &.{
+        .label = .fromSlice("debug_readback_buffer"),
+        .usage = wgpu.BufferUsage{ .map_read = true, .copy_dst = true },
+        .size = aligned_buffer_size,
+    });
+    if (readback_buffer == null) return error.DebugBufferCreationFailed;
+    defer wgpu.bufferRelease(readback_buffer);
+
+    // 2. Create a command encoder to issue the copy command.
+    const encoder = wgpu.deviceCreateCommandEncoder(self.device, &.{ .label = .fromSlice("debug_readback_encoder") });
+    defer wgpu.commandEncoderRelease(encoder);
+
+    // 3. Command: Copy from the atlas texture to our new buffer.
+    wgpu.commandEncoderCopyTextureToBuffer(
+        encoder,
+        &.{ .texture = self.texture, .mip_level = 0, .origin = .{} },
+        &.{ .buffer = readback_buffer, .layout = .{ .offset = 0, .bytes_per_row = buffer_stride, .rows_per_image = self.height } },
+        &.{ .width = self.width, .height = self.height, .depth_or_array_layers = 1 },
+    );
+
+    const cmd = wgpu.commandEncoderFinish(encoder, null);
+    defer wgpu.commandBufferRelease(cmd);
+
+    // 4. Submit the command and wait for it to complete.
+    wgpu.queueSubmit(self.queue, 1, &.{cmd});
+
+    // 5. Asynchronously map the buffer and wait for the callback.
+    var map_finished = false;
+    _ = wgpu.bufferMapAsync(readback_buffer, .readMode, 0, aligned_buffer_size, .{
+        .callback = &struct {
+            fn handle_map(status: wgpu.MapAsyncStatus, _: wgpu.StringView, u: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+                if (status == .success) {
+                    const finished_flag: *bool = @ptrCast(@alignCast(u.?));
+                    finished_flag.* = true;
+                } else {
+                    log.err("failed to map debug readback buffer: {any}", .{status});
+                }
+            }
+        }.handle_map,
+        .userdata1 = &map_finished,
+    });
+
+    // This is a simple, blocking wait. In a real app, you'd want a better way to handle this.
+    while (!map_finished) {
+        // Yielding or sleeping would be better, but for a debug dump this is fine.
+        _ = wgpu.devicePoll(self.device, .from(true), null);
+    }
+
+    // 6. Get the mapped data.
+    const mapped_range: [*]const u8 = @ptrCast(@alignCast(wgpu.bufferGetMappedRange(readback_buffer, 0, aligned_buffer_size) orelse {
+        log.err("mapped range for debug buffer was null", .{});
+        return;
+    }));
+
+    // 7. The data is aligned. We need to create a new, contiguous buffer for stbi_write.
+    const cpu_pixels = try self.allocator.alloc(u8, buffer_size);
+    defer self.allocator.free(cpu_pixels);
+
+    for (0..self.height) |row| {
+        const src_start = row * buffer_stride;
+        const dst_start = row * self.width * bytes_per_pixel;
+        const row_bytes = self.width * bytes_per_pixel;
+        @memcpy(cpu_pixels[dst_start .. dst_start + row_bytes], mapped_range[src_start .. src_start + row_bytes]);
+    }
+
+    // 8. Write to PNG.
+    const image = stbi.Image{
+        .data = cpu_pixels,
+        .width = self.width,
+        .height = self.height,
+        .num_components = 4,
+        .bytes_per_component = 1,
+        .bytes_per_row = self.width * 4,
+        .is_hdr = false,
+    };
+
+    const filename_z = try self.allocator.dupeZ(u8, filename);
+
+    image.writeToFile(filename_z, .png) catch |err| {
+        log.err("failed to write atlas to png: {any}", .{err});
+    };
+
+    // 9. Unmap and clean up.
+    wgpu.bufferUnmap(readback_buffer);
+    log.info("successfully wrote atlas to '{s}'", .{filename});
 }

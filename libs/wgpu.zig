@@ -6,7 +6,23 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-pub const BigBool = enum(u32) { false = 0, true = 1 };
+pub const BigBool = enum(i32) {
+    False,
+    _,
+
+    const True: BigBool = @enumFromInt(1);
+
+    pub fn from(x: bool) BigBool {
+        return if (x) .True else .False;
+    }
+
+    pub fn to(self: BigBool) bool {
+        return switch (self) {
+            .False => false,
+            else => true,
+        };
+    }
+};
 
 pub const undefined_depth_slice = std.math.maxInt(u32);
 
@@ -923,7 +939,7 @@ pub const BlendComponent = extern struct {
 pub const BufferBindingLayout = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
     type: BufferBindingType = .binding_not_used,
-    has_dynamic_offset: BigBool = .false,
+    has_dynamic_offset: BigBool = .False,
     min_binding_size: u64 = 0,
 };
 
@@ -932,7 +948,7 @@ pub const BufferDescriptor = extern struct {
     label: StringView = .{},
     usage: BufferUsage = .none,
     size: u64 = 0,
-    mapped_at_creation: BigBool = .false,
+    mapped_at_creation: BigBool = .False,
 };
 
 pub const Color = extern struct {
@@ -986,7 +1002,7 @@ pub const Future = extern struct {
 
 pub const InstanceCapabilities = extern struct {
     next_in_chain: ?*ChainedStructOut = null,
-    timed_wait_any_enable: BigBool = .false,
+    timed_wait_any_enable: BigBool = .False,
     timed_wait_any_max_count: usize = 0,
 };
 
@@ -1029,7 +1045,7 @@ pub const MultisampleState = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
     count: u32 = 0,
     mask: u32 = 0,
-    alpha_to_coverage_enabled: BigBool = .false,
+    alpha_to_coverage_enabled: BigBool = .False,
 };
 
 pub const Origin3D = extern struct {
@@ -1051,7 +1067,7 @@ pub const PrimitiveState = extern struct {
     strip_index_format: IndexFormat = .undefined,
     front_face: FrontFace = .undefined,
     cull_mode: CullMode = .undefined,
-    unclipped_depth: BigBool = .false,
+    unclipped_depth: BigBool = .False,
 };
 
 pub const QuerySetDescriptor = extern struct {
@@ -1078,8 +1094,8 @@ pub const RenderBundleEncoderDescriptor = extern struct {
     color_formats: ?[*]const TextureFormat = null,
     depth_stencil_format: TextureFormat = .undefined,
     sample_count: u32 = 0,
-    depth_read_only: BigBool = .false,
-    stencil_read_only: BigBool = .false,
+    depth_read_only: BigBool = .False,
+    stencil_read_only: BigBool = .False,
 };
 
 pub const RenderPassDepthStencilAttachment = extern struct {
@@ -1087,11 +1103,11 @@ pub const RenderPassDepthStencilAttachment = extern struct {
     depth_load_op: LoadOp = .undefined,
     depth_store_op: StoreOp = .undefined,
     depth_clear_value: f32 = 0.0,
-    depth_read_only: BigBool = .false,
+    depth_read_only: BigBool = .False,
     stencil_load_op: LoadOp = .undefined,
     stencil_store_op: StoreOp = .undefined,
     stencil_clear_value: u32 = 0,
-    stencil_read_only: BigBool = .false,
+    stencil_read_only: BigBool = .False,
 };
 
 pub const RenderPassMaxDrawCount = extern struct {
@@ -1109,7 +1125,7 @@ pub const RequestAdapterOptions = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
     feature_level: FeatureLevel = .undefined,
     power_preference: PowerPreference = .undefined,
-    force_fallback_adapter: BigBool = .false,
+    force_fallback_adapter: BigBool = .False,
     backend_type: BackendType = .undefined,
     compatible_surface: Surface = null,
 };
@@ -1253,7 +1269,7 @@ pub const TextureBindingLayout = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
     sample_type: TextureSampleType = .binding_not_used,
     view_dimension: TextureViewDimension = .undefined,
-    multisampled: BigBool = .false,
+    multisampled: BigBool = .False,
 };
 
 pub const TextureViewDescriptor = extern struct {
@@ -1352,7 +1368,7 @@ pub const DeviceDescriptor = extern struct {
 
 pub const FutureWaitInfo = extern struct {
     future: Future = .{},
-    completed: BigBool = .false,
+    completed: BigBool = .False,
 };
 
 pub const InstanceDescriptor = extern struct {

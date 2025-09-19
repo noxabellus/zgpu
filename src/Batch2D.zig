@@ -20,15 +20,43 @@ test {
 }
 
 // --- Public Constants ---
-pub const GLYPH_ID_FLAG = 0x80000000;
+pub const GLYPH_ID_FLAG: u32 = 0x80000000;
 const ATLAS_INDEX_MASK = 0x7FFFFFFF;
 const IS_GLYPH_MASK = 0x80000000;
+
+// --- Glyph ID Encoding ---
+// We pack font index, pixel height, and char code into a 32-bit ID.
+// Bit 31: is_glyph flag
+// Bits 28-30 (3 bits): font_index (max 8 fonts)
+// Bits 21-27 (7 bits): pixel_height (max 127px)
+// Bits 0-20 (21 bits): char_code
+const FONT_INDEX_SHIFT = 28;
+const PIXEL_HEIGHT_SHIFT = 21;
+const CHAR_CODE_MASK: u32 = 0x1FFFFF;
+const PIXEL_HEIGHT_MASK: u32 = 0x7F;
+const FONT_INDEX_MASK: u32 = 0x7;
+
+pub fn encodeGlyphId(font_index: u32, pixel_height: f32, char_code: u21) MultiAtlas.ImageId {
+    const height_encoded = @as(u32, @intFromFloat(pixel_height));
+    return GLYPH_ID_FLAG |
+        ((font_index & FONT_INDEX_MASK) << FONT_INDEX_SHIFT) |
+        ((height_encoded & PIXEL_HEIGHT_MASK) << PIXEL_HEIGHT_SHIFT) |
+        (@as(u32, @intCast(char_code)) & CHAR_CODE_MASK);
+}
+
+pub const DecodedGlyphId = struct { font_index: u32, pixel_height: f32, char_code: u21 };
+pub fn decodeGlyphId(id: MultiAtlas.ImageId) DecodedGlyphId {
+    return .{
+        .font_index = @intCast((id >> FONT_INDEX_SHIFT) & FONT_INDEX_MASK),
+        .pixel_height = @as(f32, @floatFromInt((id >> PIXEL_HEIGHT_SHIFT) & PIXEL_HEIGHT_MASK)),
+        .char_code = @intCast(id & CHAR_CODE_MASK),
+    };
+}
 
 // --- Public API Structs ---
 pub const Mat4 = [16]f32;
 pub const Vec2 = struct { x: f32 = 0.0, y: f32 = 0.0 };
 pub const Color = struct { r: f32 = 0.0, g: f32 = 0.0, b: f32 = 0.0, a: f32 = 0.0 };
-const FONT_ID_BASE: MultiAtlas.ImageId = 0x1000;
 
 // --- Internal Structs ---
 
@@ -148,7 +176,7 @@ pub fn init(
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
 
     const blend_state = wgpu.BlendState{
-        .color = .{ .operation = .add, .src_factor = .src_alpha, .dst_factor = .one_minus_src_alpha },
+        .color = .{ .operation = .add, .src_factor = .one, .dst_factor = .one_minus_src_alpha },
         .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .one_minus_src_alpha },
     };
 
@@ -348,28 +376,20 @@ pub fn drawTexturedQuad(self: *Batch2D, image_id: MultiAtlas.ImageId, pos: Vec2,
     try self.pushTexturedQuad(location, is_glyph, pos, size, tint);
 }
 
-pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.FontInfo, font_scale: f32, pos: Vec2, tint: Color) !void {
-    var max_y1_unscaled: i32 = 0;
-    for (string) |char| {
-        const char_code = @as(u21, @intCast(char));
-        var x0: i32 = 0;
-        var y0: i32 = 0;
-        var x1: i32 = 0;
-        var y1: i32 = 0;
-        _ = stbtt.getCodepointBox(font_info, @intCast(char_code), &x0, &y0, &x1, &y1);
-        if (y1 > max_y1_unscaled) max_y1_unscaled = y1;
-    }
-    const final_ascent = @as(f32, @floatFromInt(max_y1_unscaled)) * font_scale;
-    const baseline_y = pos.y + final_ascent;
+pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.FontInfo, font_index: u32, pixel_height: f32, pos: Vec2, tint: Color) !void {
+    const font_scale = stbtt.scaleForPixelHeight(font_info, pixel_height);
+
+    var asc: i32 = 0;
+    var desc: i32 = 0;
+    var line_gap: i32 = 0;
+    stbtt.getFontVMetrics(font_info, &asc, &desc, &line_gap);
+
+    const baseline_y = pos.y + (@as(f32, @floatFromInt(asc)) * font_scale);
 
     var xpos = pos.x;
     var prev_char: u21 = 0;
 
-    const MASTER_GLYPH_HEIGHT: f32 = 64.0;
-    const master_scale = stbtt.scaleForPixelHeight(font_info, MASTER_GLYPH_HEIGHT);
-    const scale_ratio = font_scale / master_scale;
-
-    const GLYPH_PADDING: u32 = 2;
+    const GLYPH_PADDING: f32 = 2.0;
 
     for (string) |char| {
         const char_code = @as(u21, @intCast(char));
@@ -382,31 +402,40 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.Font
         var lsb: i32 = 0;
         stbtt.getCodepointHMetrics(font_info, @intCast(char_code), &adv, &lsb);
 
-        var master_ix0: i32 = 0;
-        var master_iy0: i32 = 0;
-        var master_ix1: i32 = 0;
-        var master_iy1: i32 = 0;
-        stbtt.getCodepointBitmapBox(font_info, @intCast(char_code), master_scale, master_scale, &master_ix0, &master_iy0, &master_ix1, &master_iy1);
+        var ix0: i32 = 0;
+        var iy0: i32 = 0;
+        var ix1: i32 = 0;
+        var iy1: i32 = 0;
+        stbtt.getCodepointBitmapBox(font_info, @intCast(char_code), font_scale, font_scale, &ix0, &iy0, &ix1, &iy1);
 
-        const master_width = master_ix1 - master_ix0;
-        const master_height = master_iy1 - master_iy0;
+        const width: f32 = @floatFromInt(ix1 - ix0);
+        const height: f32 = @floatFromInt(iy1 - iy0);
 
-        if (master_width > 0 and master_height > 0) {
-            const padded_width_f = @as(f32, @floatFromInt(master_width + GLYPH_PADDING * 2)) * scale_ratio;
-            const padded_height_f = @as(f32, @floatFromInt(master_height + GLYPH_PADDING * 2)) * scale_ratio;
+        if (width > 0 and height > 0) {
+            const padded_width = width + (GLYPH_PADDING * 2.0);
+            const padded_height = height + (GLYPH_PADDING * 2.0);
 
-            const char_pos = Vec2{
-                .x = xpos + (@as(f32, @floatFromInt(master_ix0 - @as(i32, @intCast(GLYPH_PADDING)))) * scale_ratio),
-                .y = baseline_y + (@as(f32, @floatFromInt(master_iy0 - @as(i32, @intCast(GLYPH_PADDING)))) * scale_ratio),
+            // 1. Calculate the ideal floating-point position for the glyph's top-left corner.
+            const ideal_x = xpos + @as(f32, @floatFromInt(ix0)) - GLYPH_PADDING;
+            const ideal_y = baseline_y + @as(f32, @floatFromInt(iy0)) - GLYPH_PADDING;
+
+            // 2. Round that ideal position to the nearest integer grid point.
+            const rounded_x = @floor(ideal_x + 0.5);
+            const rounded_y = @floor(ideal_y + 0.5);
+
+            // 3. CRITICAL: Adjust for the GPU's half-pixel rasterization rule.
+            //    This aligns the pre-rasterized bitmap grid with the GPU's pixel centers.
+            const final_pos = Vec2{
+                .x = rounded_x - 0.5,
+                .y = rounded_y - 0.5,
             };
 
-            const char_size = Vec2{ .x = padded_width_f, .y = padded_height_f };
-
-            // This now correctly uses the GLYPH_ID_FLAG via the helper function.
-            const glyph_id: MultiAtlas.ImageId = FONT_ID_BASE + GLYPH_ID_FLAG + char_code;
-            try self.drawTexturedQuad(glyph_id, char_pos, char_size, tint);
+            const char_size = Vec2{ .x = padded_width, .y = padded_height };
+            const glyph_id = encodeGlyphId(font_index, pixel_height, char_code);
+            try self.drawTexturedQuad(glyph_id, final_pos, char_size, tint);
         }
 
+        // IMPORTANT: Advance the high-precision, un-rounded cursor position.
         xpos += @as(f32, @floatFromInt(adv)) * font_scale;
         prev_char = char_code;
     }

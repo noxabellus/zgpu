@@ -541,7 +541,7 @@ extern fn stbi_set_flip_vertically_on_load(flag_true_if_should_flip: c_int) void
 extern fn stbi_flip_vertically_on_write(flag: c_int) void; // flag is non-zero to flip data vertically
 
 // TODO: utilize resize_float_linear and/or resize_uint8_srgb
-extern fn stbir_resize_uint8_linear(
+pub extern fn stbir_resize_uint8_linear(
     input_pixels: [*]const u8,
     input_w: c_int,
     input_h: c_int,
