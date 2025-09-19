@@ -20,8 +20,9 @@ test {
 
 // --- Public API Structs ---
 pub const Mat4 = [16]f32;
-pub const Vec2 = struct { x: f32, y: f32 };
-pub const Color = struct { r: f32, g: f32, b: f32, a: f32 };
+pub const Vec2 = struct { x: f32 = 0.0, y: f32 = 0.0 };
+pub const Color = struct { r: f32 = 0.0, g: f32 = 0.0, b: f32 = 0.0, a: f32 = 0.0 };
+const FONT_ID_BASE: MultiAtlas.ImageId = 0x1000;
 
 // --- Internal Structs ---
 
@@ -36,20 +37,17 @@ const Uniforms = extern struct {
     projection: Mat4,
 };
 
-const RenderCommand = union(enum) {
-    textured_quad: struct {
-        image_id: MultiAtlas.ImageId,
-        pos: Vec2,
-        size: Vec2,
-        tint: Color,
-    },
-    text: struct {
-        string: []const u8,
-        font_info: *const stbtt.FontInfo,
-        font_scale: f32,
-        pos: Vec2,
-        tint: Color,
-    },
+// NEW: A command to patch vertex data after textures are uploaded.
+const Patch = struct {
+    image_id: MultiAtlas.ImageId,
+    vertex_start_index: usize,
+    vertex_count: usize,
+};
+
+/// A context object required by draw calls to access application data.
+pub const ProviderContext = struct {
+    provider: MultiAtlas.DataProvider,
+    user_context: ?*anyopaque,
 };
 
 // --- WGPU Resources and State ---
@@ -64,7 +62,8 @@ vertices: std.array_list.Managed(Vertex),
 multi_atlas: *MultiAtlas,
 bind_groups: std.array_list.Managed(wgpu.BindGroup),
 sampler: wgpu.Sampler,
-command_queue: std.array_list.Managed(RenderCommand),
+patch_list: std.array_list.Managed(Patch), // REPLACES command_queue
+provider_context: ProviderContext, // Caches the context for the frame
 
 pub fn init(
     allocator: std.mem.Allocator,
@@ -98,7 +97,7 @@ pub fn init(
         .min_filter = .linear,
         .mipmap_filter = .linear,
         .lod_min_clamp = 0.0,
-        .lod_max_clamp = @as(f32, @floatFromInt(multi_atlas.mip_level_count)),
+        .lod_max_clamp = @as(f32, @floatFromInt(MultiAtlas.mip_level_count)),
     });
     std.debug.assert(sampler != null);
     errdefer wgpu.samplerRelease(sampler);
@@ -171,11 +170,12 @@ pub fn init(
         .multi_atlas = multi_atlas,
         .bind_groups = .init(allocator),
         .sampler = sampler,
-        .command_queue = .init(allocator),
+        .patch_list = .init(allocator),
+        .provider_context = .{ .provider = undefined, .user_context = null },
     };
 
     try self.vertices.ensureTotalCapacity(initial_capacity);
-    try self.command_queue.ensureTotalCapacity(128);
+    try self.patch_list.ensureTotalCapacity(128);
 
     return self;
 }
@@ -189,33 +189,52 @@ pub fn deinit(self: *Batch2D) void {
     wgpu.samplerRelease(self.sampler);
     wgpu.renderPipelineRelease(self.pipeline);
     self.vertices.deinit();
-    self.command_queue.deinit();
+    self.patch_list.deinit();
     self.allocator.destroy(self);
 }
 
 /// Prepares the renderer for a new frame. Must be called before any draw calls.
-pub fn beginFrame(self: *Batch2D, projection: Mat4) void {
+pub fn beginFrame(self: *Batch2D, projection: Mat4, context: ProviderContext) void {
     wgpu.queueWriteBuffer(self.queue, self.uniform_buffer, 0, &Uniforms{ .projection = projection }, @sizeOf(Uniforms));
     self.vertices.clearRetainingCapacity();
-    self.command_queue.clearRetainingCapacity();
+    self.patch_list.clearRetainingCapacity();
+    self.provider_context = context;
 }
 
-/// A context object required by `prepare` to access application data.
-pub const PrepareContext = struct {
-    provider: MultiAtlas.DataProvider,
-    provider_context: ?*anyopaque,
-};
+/// Processes all pending images, patches vertex data, and uploads to the GPU.
+/// This must be called after all draw calls and before `render`.
+pub fn endFrame(self: *Batch2D) !void {
+    // 1. Flush the atlas to upload any pending images.
+    try self.multi_atlas.flush(self.provider_context);
 
-/// Processes the command queue, flushes atlases, generates vertices, and uploads
-/// them to the GPU. This must be called after all draw calls and before `render`.
-pub fn prepare(self: *Batch2D, context: PrepareContext) !void {
-    if (self.command_queue.items.len == 0) return;
+    // 2. Process the patch list to fix vertex data for images that were just uploaded.
+    for (self.patch_list.items) |p| {
+        // Query again, this time it must be a cache hit.
+        const location = self.multi_atlas.query(p.image_id, self.provider_context) catch |err| {
+            log.err("image {any} not found in cache after flush. error: {any}", .{ p.image_id, err });
+            continue;
+        };
 
-    try self.precacheImages(context);
-    try self.flushAtlas(context);
-    try self.generateVertices(context);
+        const u_1 = location.uv_rect[0];
+        const v_1 = location.uv_rect[1];
+        const u_2 = location.uv_rect[2];
+        const v_2 = location.uv_rect[3];
+        const atlas_idx = @as(u32, @intCast(location.atlas_index));
 
-    // After generating vertices, upload them to the GPU buffer so it's ready for `render`.
+        // This is a quad, so patch 6 vertices
+        std.debug.assert(p.vertex_count == 6);
+        const verts = self.vertices.items[p.vertex_start_index .. p.vertex_start_index + 6];
+        verts[0].tex_coords = .{ u_1, v_1 };
+        verts[1].tex_coords = .{ u_2, v_1 };
+        verts[2].tex_coords = .{ u_1, v_2 };
+        verts[3].tex_coords = .{ u_1, v_2 };
+        verts[4].tex_coords = .{ u_2, v_1 };
+        verts[5].tex_coords = .{ u_2, v_2 };
+
+        for (verts) |*v| v.atlas_index = atlas_idx;
+    }
+
+    // 3. Upload the final, correct vertex data to the GPU.
     if (self.vertices.items.len > 0) {
         const required_size = self.vertices.items.len * @sizeOf(Vertex);
         if (self.vertex_buffer_capacity < required_size) {
@@ -234,7 +253,7 @@ pub fn prepare(self: *Batch2D, context: PrepareContext) !void {
 }
 
 /// Records all necessary draw calls into a pre-existing render pass.
-/// This should be called after `prepare`.
+/// This should be called after `endFrame`.
 pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
     if (self.vertices.items.len == 0) return;
 
@@ -270,164 +289,77 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
 }
 
 pub fn drawTexturedQuad(self: *Batch2D, image_id: MultiAtlas.ImageId, pos: Vec2, size: Vec2, tint: Color) !void {
-    try self.command_queue.append(.{ .textured_quad = .{ .image_id = image_id, .pos = pos, .size = size, .tint = tint } });
+    const location = self.multi_atlas.query(image_id, self.provider_context) catch |err| {
+        if (err == error.ImageNotYetPacked) {
+            // Cache miss: add a patch request and generate placeholder vertices.
+            const vertex_start_index = self.vertices.items.len;
+            try self.patch_list.append(.{
+                .image_id = image_id,
+                .vertex_start_index = vertex_start_index,
+                .vertex_count = 6,
+            });
+            // Use placeholder location for now.
+            return self.pushTexturedQuad(.{ .atlas_index = 0, .uv_rect = .{ 0, 0, 0, 0 } }, pos, size, tint);
+        }
+        return err;
+    };
+
+    // Cache hit: generate vertices with the correct data immediately.
+    try self.pushTexturedQuad(location, pos, size, tint);
 }
 
 pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.FontInfo, font_scale: f32, pos: Vec2, tint: Color) !void {
-    try self.command_queue.append(.{ .text = .{ .string = string, .font_info = font_info, .font_scale = font_scale, .pos = pos, .tint = tint } });
+    var max_y1_unscaled: i32 = 0;
+    for (string) |char| {
+        const char_code = @as(u21, @intCast(char));
+        var x0: i32 = 0;
+        var y0: i32 = 0;
+        var x1: i32 = 0;
+        var y1: i32 = 0;
+        _ = stbtt.getCodepointBox(font_info, @intCast(char_code), &x0, &y0, &x1, &y1);
+        if (y1 > max_y1_unscaled) max_y1_unscaled = y1;
+    }
+    const final_ascent = @as(f32, @floatFromInt(max_y1_unscaled)) * font_scale;
+    const baseline_y = pos.y + final_ascent;
+
+    var xpos = pos.x;
+    var prev_char: u21 = 0;
+
+    for (string) |char| {
+        const char_code = @as(u21, @intCast(char));
+        if (prev_char != 0) {
+            const kern = stbtt.getCodepointKernAdvance(font_info, prev_char, char_code);
+            xpos += @as(f32, @floatFromInt(kern)) * font_scale;
+        }
+
+        var adv: i32 = 0;
+        var lsb: i32 = 0;
+        stbtt.getCodepointHMetrics(font_info, @intCast(char_code), &adv, &lsb);
+
+        var ix0: i32 = 0;
+        var iy0: i32 = 0;
+        var ix1: i32 = 0;
+        var iy1: i32 = 0;
+        stbtt.getCodepointBitmapBox(font_info, @intCast(char_code), font_scale, font_scale, &ix0, &iy0, &ix1, &iy1);
+
+        const char_width = @as(f32, @floatFromInt(ix1 - ix0));
+        const char_height = @as(f32, @floatFromInt(iy1 - iy0));
+
+        if (char_width > 0 and char_height > 0) {
+            const char_pos = Vec2{
+                .x = xpos + @as(f32, @floatFromInt(ix0)),
+                .y = baseline_y + @as(f32, @floatFromInt(iy0)),
+            };
+            const char_size = Vec2{ .x = char_width, .y = char_height };
+            const glyph_id: MultiAtlas.ImageId = FONT_ID_BASE + char_code;
+            try self.drawTexturedQuad(glyph_id, char_pos, char_size, tint);
+        }
+        xpos += @as(f32, @floatFromInt(adv)) * font_scale;
+        prev_char = char_code;
+    }
 }
 
 // --- Internal Implementation ---
-
-fn precacheImages(self: *Batch2D, context: PrepareContext) !void {
-    for (self.command_queue.items) |cmd| {
-        switch (cmd) {
-            .textured_quad => |quad| {
-                _ = self.multi_atlas.query(quad.image_id, context.provider, context.provider_context) catch |err| if (err != error.ImageNotYetPacked) return err;
-            },
-            .text => |text| {
-                for (text.string) |char| {
-                    const char_code = @as(u21, @intCast(char));
-
-                    var ix0: i32 = 0;
-                    var iy0: i32 = 0;
-                    var ix1: i32 = 0;
-                    var iy1: i32 = 0;
-                    stbtt.getCodepointBitmapBox(text.font_info, @intCast(char_code), text.font_scale, text.font_scale, &ix0, &iy0, &ix1, &iy1);
-
-                    if ((ix1 - ix0) > 0 and (iy1 - iy0) > 0) {
-                        const glyph_id: MultiAtlas.ImageId = @intCast(FONT_ID_BASE + char_code);
-                        _ = self.multi_atlas.query(glyph_id, context.provider, context.provider_context) catch |err| if (err != error.ImageNotYetPacked) return err;
-                    }
-                }
-            },
-        }
-    }
-}
-
-const FONT_ID_BASE: MultiAtlas.ImageId = 0x1000;
-fn glyphId(char: u21) MultiAtlas.ImageId {
-    return FONT_ID_BASE + char;
-}
-
-fn flushAtlas(self: *Batch2D, context: PrepareContext) !void {
-    if (self.multi_atlas.pending_chains.items.len == 0) return;
-
-    const AppContext = @import("main.zig").AppContext;
-    const app: *AppContext = @ptrCast(@alignCast(context.provider_context.?));
-    const frame_allocator = app.frame_arena.allocator();
-
-    for (self.multi_atlas.pending_chains.items) |*item| {
-        if (item.chain.items.len > 1) continue;
-        const base_image = item.chain.items[0];
-        if (base_image.format != .rgba) continue;
-
-        var current_w = base_image.width;
-        var current_h = base_image.height;
-        var last_pixels = base_image.pixels;
-
-        while (@max(current_w, current_h) > 1 and item.chain.items.len < self.multi_atlas.mip_level_count) {
-            const next_w = @max(1, current_w / 2);
-            const next_h = @max(1, current_h / 2);
-
-            const resized_pixels = try frame_allocator.alloc(u8, next_w * next_h * 4);
-            @import("stbi").stbir_resize_uint8_srgb(
-                last_pixels.ptr,
-                @intCast(current_w),
-                @intCast(current_h),
-                0,
-                resized_pixels.ptr,
-                @intCast(next_w),
-                @intCast(next_h),
-                0,
-                4,
-            );
-
-            try item.chain.append(.{
-                .pixels = resized_pixels,
-                .width = next_w,
-                .height = next_h,
-                .format = .rgba,
-            });
-
-            current_w = next_w;
-            current_h = next_h;
-            last_pixels = resized_pixels;
-        }
-    }
-
-    try self.multi_atlas.flush();
-}
-
-fn generateVertices(self: *Batch2D, context: PrepareContext) !void {
-    for (self.command_queue.items) |cmd| {
-        switch (cmd) {
-            .textured_quad => |quad| {
-                const location = self.multi_atlas.query(quad.image_id, context.provider, context.provider_context) catch |err| {
-                    log.err("image {any} was not packed after flush. error: {any}", .{ quad.image_id, err });
-                    return err;
-                };
-                try self.pushTexturedQuad(location, quad.pos, quad.size, quad.tint);
-            },
-            .text => |text| {
-                var max_y1_unscaled: i32 = 0;
-                for (text.string) |char| {
-                    const char_code = @as(u21, @intCast(char));
-                    var x0: i32 = 0;
-                    var y0: i32 = 0;
-                    var x1: i32 = 0;
-                    var y1: i32 = 0;
-                    _ = stbtt.getCodepointBox(text.font_info, @intCast(char_code), &x0, &y0, &x1, &y1);
-                    if (y1 > max_y1_unscaled) {
-                        max_y1_unscaled = y1;
-                    }
-                }
-                const final_ascent = @as(f32, @floatFromInt(max_y1_unscaled)) * text.font_scale;
-                const baseline_y = text.pos.y + final_ascent;
-
-                var xpos = text.pos.x;
-                var prev_char: u21 = 0;
-
-                for (text.string) |char| {
-                    const char_code = @as(u21, @intCast(char));
-                    if (prev_char != 0) {
-                        const kern = stbtt.getCodepointKernAdvance(text.font_info, prev_char, char_code);
-                        xpos += @as(f32, @floatFromInt(kern)) * text.font_scale;
-                    }
-
-                    var adv: i32 = 0;
-                    var lsb: i32 = 0;
-                    stbtt.getCodepointHMetrics(text.font_info, @intCast(char_code), &adv, &lsb);
-
-                    var ix0: i32 = 0;
-                    var iy0: i32 = 0;
-                    var ix1: i32 = 0;
-                    var iy1: i32 = 0;
-                    stbtt.getCodepointBitmapBox(text.font_info, @intCast(char_code), text.font_scale, text.font_scale, &ix0, &iy0, &ix1, &iy1);
-
-                    const char_width = @as(f32, @floatFromInt(ix1 - ix0));
-                    const char_height = @as(f32, @floatFromInt(iy1 - iy0));
-
-                    if (char_width > 0 and char_height > 0) {
-                        const char_pos = Vec2{
-                            .x = xpos + @as(f32, @floatFromInt(ix0)),
-                            .y = baseline_y + @as(f32, @floatFromInt(iy0)),
-                        };
-                        const char_size = Vec2{ .x = char_width, .y = char_height };
-
-                        const glyph_location = self.multi_atlas.query(glyphId(char_code), context.provider, context.provider_context) catch |err| {
-                            log.err("glyph {c} was not packed after flush. error: {any}", .{ char, err });
-                            return err;
-                        };
-                        try self.pushTexturedQuad(glyph_location, char_pos, char_size, text.tint);
-                    }
-                    xpos += @as(f32, @floatFromInt(adv)) * text.font_scale;
-                    prev_char = char_code;
-                }
-            },
-        }
-    }
-}
 
 fn pushTexturedQuad(self: *Batch2D, location: MultiAtlas.ImageLocation, pos: Vec2, size: Vec2, tint: Color) !void {
     const x1 = pos.x;
@@ -455,11 +387,15 @@ fn pushTexturedQuad(self: *Batch2D, location: MultiAtlas.ImageLocation, pos: Vec
 
 fn getOrCreateBindGroup(self: *Batch2D, atlas_index: u32) !wgpu.BindGroup {
     const idx = @as(usize, @intCast(atlas_index));
-    if (idx < self.bind_groups.items.len) {
+    if (idx < self.bind_groups.items.len and self.bind_groups.items[idx] != null) {
         return self.bind_groups.items[idx];
     }
 
-    std.debug.assert(idx == self.bind_groups.items.len);
+    if (idx >= self.bind_groups.capacity) {
+        try self.bind_groups.resize(idx + 1);
+        @memset(self.bind_groups.items[idx..], null);
+    }
+    self.bind_groups.items.len = @max(self.bind_groups.items.len, idx + 1);
 
     const texture_view = self.multi_atlas.getTextureView(idx) orelse {
         log.err("multi-atlas has no texture view for index {d}", .{idx});
@@ -479,6 +415,6 @@ fn getOrCreateBindGroup(self: *Batch2D, atlas_index: u32) !wgpu.BindGroup {
     });
     std.debug.assert(bg != null);
 
-    try self.bind_groups.append(bg);
+    self.bind_groups.items[idx] = bg;
     return bg;
 }

@@ -71,16 +71,58 @@ pub const AppContext = struct {
     font_scale: f32,
     frame_arena: *std.heap.ArenaAllocator,
 };
-fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage {
+
+// DataProvider now returns a MipChain. For single images, it's a chain of one.
+fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?MultiAtlas.ProviderResult {
     const app: *AppContext = @ptrCast(@alignCast(user_context.?));
+    const frame_allocator = app.frame_arena.allocator();
 
     if (image_id == LOGO_ID) {
-        return Atlas.InputImage{
+        // For the logo, we generate a full mip chain.
+        var chain = std.array_list.Managed(Atlas.InputImage).init(frame_allocator);
+
+        // Append the base image
+        chain.append(.{
             .pixels = app.logo_image.data,
             .width = app.logo_image.width,
             .height = app.logo_image.height,
             .format = .rgba,
-        };
+        }) catch return null;
+
+        var current_w = app.logo_image.width;
+        var current_h = app.logo_image.height;
+        var last_pixels = app.logo_image.data;
+
+        while (@max(current_w, current_h) > 1) {
+            const next_w = @max(1, current_w / 2);
+            const next_h = @max(1, current_h / 2);
+
+            const resized_pixels = frame_allocator.alloc(u8, next_w * next_h * 4) catch return null;
+            stbi.stbir_resize_uint8_srgb(
+                last_pixels.ptr,
+                @intCast(current_w),
+                @intCast(current_h),
+                0,
+                resized_pixels.ptr,
+                @intCast(next_w),
+                @intCast(next_h),
+                0,
+                4,
+            );
+
+            chain.append(.{
+                .pixels = resized_pixels,
+                .width = next_w,
+                .height = next_h,
+                .format = .rgba,
+            }) catch return null;
+
+            current_w = next_w;
+            current_h = next_h;
+            last_pixels = resized_pixels;
+        }
+
+        return .{ .chain = chain.toOwnedSlice() catch return null };
     } else if (image_id >= FONT_ID_BASE and image_id < FONT_ID_BASE + 0x10000) {
         const char_code = @as(u21, @intCast(image_id - FONT_ID_BASE));
         var w: i32 = 0;
@@ -107,7 +149,7 @@ fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage 
         const padded_w: u32 = @intCast(w + 2);
         const padded_h: u32 = @intCast(h + 2);
 
-        const padded_bitmap = app.frame_arena.allocator().alloc(u8, padded_w * padded_h) catch {
+        const padded_bitmap = frame_allocator.alloc(u8, padded_w * padded_h) catch {
             log.err("out of memory for padded glyph bitmap", .{});
             return null;
         };
@@ -121,16 +163,19 @@ fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage 
             @memcpy(dst, src);
         }
 
-        return Atlas.InputImage{
+        const single_image = frame_allocator.create(Atlas.InputImage) catch return null;
+        single_image.* = .{
             .pixels = padded_bitmap,
             .width = padded_w,
             .height = padded_h,
             .format = .grayscale,
         };
+        return .{ .chain = @as([*]Atlas.InputImage, @ptrCast(single_image))[0..1] };
     }
 
     return null;
 }
+
 fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) [16]f32 {
     var mat: [16]f32 = std.mem.zeroes([16]f32);
     mat[0] = 2.0 / (right - left);
@@ -281,7 +326,8 @@ pub fn main() !void {
         defer wgpu.textureViewRelease(frame_view);
 
         const proj = ortho(0, @floatFromInt(demo.config.width), @floatFromInt(demo.config.height), 0, -1, 1);
-        demo.renderer.beginFrame(proj);
+        const provider_ctx = Batch2D.ProviderContext{ .provider = dataProvider, .user_context = &app_context };
+        demo.renderer.beginFrame(proj, provider_ctx);
 
         var cursor_x: f64 = 0;
         var cursor_y: f64 = 0;
@@ -295,17 +341,17 @@ pub fn main() !void {
         try demo.renderer.drawTexturedQuad(LOGO_ID, quad_pos, quad_size, tint);
 
         const text_pos = Batch2D.Vec2{ .x = 0.0, .y = 0.0 };
-        try demo.renderer.drawText("WGpu Test", &app_context.font_info, app_context.font_scale, text_pos, tint);
+        try demo.renderer.drawText("WGPU Batch Renderer", &app_context.font_info, app_context.font_scale, text_pos, tint);
 
-        const prepare_context = Batch2D.PrepareContext{ .provider = dataProvider, .provider_context = &app_context };
-        try demo.renderer.prepare(prepare_context);
+        // Renamed from 'prepare' to 'endFrame'
+        try demo.renderer.endFrame();
 
         const encoder = wgpu.deviceCreateCommandEncoder(demo.device, &.{ .label = .fromSlice("main_encoder") });
         defer wgpu.commandEncoderRelease(encoder);
 
         const render_target_view = if (demo.msaa_view != null) demo.msaa_view else frame_view;
         const resolve_target_view = if (demo.msaa_view != null) frame_view else null;
-        const clear_color = Batch2D.Color{ .r = 0, .g = 0, .b = 1, .a = 1 };
+        const clear_color = Batch2D.Color{ .b = 0.1, .a = 1 };
 
         const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &.{
             .color_attachment_count = 1,
@@ -318,6 +364,7 @@ pub fn main() !void {
             }},
         });
 
+        // The render call is now much simpler.
         try demo.renderer.render(render_pass);
 
         wgpu.renderPassEncoderEnd(render_pass);
