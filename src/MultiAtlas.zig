@@ -211,7 +211,7 @@ pub fn getTextureView(self: *MultiAtlas, atlas_index: usize) ?wgpu.TextureView {
 pub fn debugWriteAllAtlasesToPng(self: *MultiAtlas, base_filename: []const u8) !void {
     var file_buffer: [128]u8 = undefined;
     for (self.atlases.items, 0..) |atlas, i| {
-        const filename = try std.fmt.bufPrint(&file_buffer, "{s}_{d}.png", .{ base_filename, i });
+        const filename = try std.fmt.bufPrint(&file_buffer, "zig-out/{s}_{d}.png", .{ base_filename, i });
         try atlas.debugWriteToPng(filename);
     }
 }

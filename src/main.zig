@@ -205,14 +205,10 @@ pub fn main() !void {
         glfw.pollEvents();
         _ = arena_state.reset(.free_all);
 
-        // --- DEBUG DUMP ---
         if (glfw.getKey(window, .a) == .press) {
             try demo.renderer.glyph_atlas.debugWriteAllAtlasesToPng("debug_glyph_atlas");
             try demo.renderer.image_atlas.debugWriteAllAtlasesToPng("debug_image_atlas");
-            log.warn("Wrote atlases to disk, exiting.", .{});
-            std.process.exit(0);
         }
-        // --- END DEBUG DUMP ---
 
         var surface_texture: wgpu.SurfaceTexture = undefined;
         wgpu.surfaceGetCurrentTexture(demo.surface, &surface_texture);
@@ -296,7 +292,7 @@ pub fn main() !void {
 
         const render_target_view = if (demo.msaa_view != null) demo.msaa_view else frame_view;
         const resolve_target_view = if (demo.msaa_view != null) frame_view else null;
-        const clear_color = wgpu.Color{ .g = 0.55, .b = 0.85, .a = 1 };
+        const clear_color = wgpu.Color{ .b = 0.5, .a = 1 };
 
         const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
             .color_attachment_count = 1,
