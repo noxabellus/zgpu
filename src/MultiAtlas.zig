@@ -33,8 +33,6 @@ pub const DataProvider = *const fn (image_id: ImageId, user_context: ?*anyopaque
 
 pub const ProviderContext = @import("Batch2D.zig").ProviderContext;
 
-pub const mip_level_count: u32 = 12;
-
 const PendingItem = struct {
     id: ImageId,
     chain: []const Atlas.InputImage, // owned by MultiAtlas
@@ -49,6 +47,7 @@ pending_items: std.ArrayList(PendingItem),
 rect_buffer: std.ArrayList(stbrp.Rect),
 atlas_width: u32,
 atlas_height: u32,
+mip_level_count: u32,
 
 pub fn init(
     allocator: std.mem.Allocator,
@@ -56,6 +55,7 @@ pub fn init(
     queue: wgpu.Queue,
     atlas_width: u32,
     atlas_height: u32,
+    mip_level_count: u32,
 ) !*MultiAtlas {
     const self = try allocator.create(MultiAtlas);
     errdefer allocator.destroy(self);
@@ -70,10 +70,11 @@ pub fn init(
         .rect_buffer = .empty,
         .atlas_width = atlas_width,
         .atlas_height = atlas_height,
+        .mip_level_count = mip_level_count,
     };
 
     try self.addNewAtlas();
-    log.info("multi-atlas system initialized.", .{});
+    log.info("multi-atlas system initialized with {d} mip levels.", .{mip_level_count});
 
     return self;
 }
@@ -115,20 +116,12 @@ pub fn query(
 
     const chain = try generateMipChain(self, source_image);
 
-    // We only want to clean up the 'chain' if appending it to our list fails
-    // (e.g., out of memory). If the append succeeds, the chain is now owned by
-    // the list and must not be freed. A `try...catch` block scopes this
-    // cleanup logic correctly, unlike the `errdefer` which would have fired
-    // on the subsequent `return error.ImageNotYetPacked`.
     self.pending_items.append(self.allocator, .{ .id = id, .chain = chain }) catch |err| {
-        // Cleanup only happens on a *real* error from `append`.
         for (chain) |mip| self.allocator.free(mip.pixels);
         self.allocator.free(chain);
-        return err; // Propagate the actual error (e.g., OOM).
+        return err;
     };
 
-    // If we reach here, the append succeeded. We can now safely return our
-    // "soft error" to signal a cache miss without triggering the cleanup.
     return error.ImageNotYetPacked;
 }
 
@@ -157,8 +150,6 @@ pub fn flush(self: *MultiAtlas, context: ProviderContext) !void {
             var packed_indices = std.ArrayList(usize){};
             defer packed_indices.deinit(self.allocator);
 
-            // We will inset the UVs by half the padding amount (1 pixel)
-            // to create a safe-zone for the texture sampler.
             const UV_INSET: f32 = 1.0;
 
             for (self.rect_buffer.items) |rect| {
@@ -167,11 +158,9 @@ pub fn flush(self: *MultiAtlas, context: ProviderContext) !void {
                 const original_index: usize = @intCast(rect.id);
                 const item = self.pending_items.items[original_index];
 
-                // The top-left corner is moved IN by the inset.
                 const u_0 = (@as(f32, @floatFromInt(rect.x)) + UV_INSET) / @as(f32, @floatFromInt(self.atlas_width));
                 const v_0 = (@as(f32, @floatFromInt(rect.y)) + UV_INSET) / @as(f32, @floatFromInt(self.atlas_height));
 
-                // The bottom-right corner is also moved IN by the inset.
                 const u_1 = (@as(f32, @floatFromInt(rect.x + rect.w)) - UV_INSET) / @as(f32, @floatFromInt(self.atlas_width));
                 const v_1 = (@as(f32, @floatFromInt(rect.y + rect.h)) - UV_INSET) / @as(f32, @floatFromInt(self.atlas_height));
 
@@ -226,7 +215,7 @@ fn addNewAtlas(self: *MultiAtlas) !void {
         self.queue,
         self.atlas_width,
         self.atlas_height,
-        mip_level_count,
+        self.mip_level_count,
     );
     try self.atlases.append(self.allocator, new_atlas);
 }
@@ -235,32 +224,33 @@ fn addNewAtlas(self: *MultiAtlas) !void {
 fn generateMipChain(self: *MultiAtlas, source: Atlas.InputImage) ![]const Atlas.InputImage {
     var chain = std.ArrayList(Atlas.InputImage).empty;
     errdefer {
-        // If anything fails, free any images we've already allocated in the chain.
         for (chain.items) |item| self.allocator.free(item.pixels);
         chain.deinit(self.allocator);
     }
 
-    // The first mip level is a direct copy of the source pixels.
     const source_copy = try self.allocator.dupe(u8, source.pixels);
-    errdefer self.allocator.free(source_copy);
 
-    try chain.append(self.allocator, .{
+    chain.append(self.allocator, .{
         .pixels = source_copy,
         .width = source.width,
         .height = source.height,
         .format = source.format,
-    });
+    }) catch |err| {
+        self.allocator.free(source_copy);
+        return err;
+    };
 
     var current_w = source.width;
     var current_h = source.height;
     var last_pixels = source_copy;
 
-    while (@max(current_w, current_h) > 1) {
+    // This loop generates smaller mip levels until the image is 1x1,
+    // or until we've generated the number of mips requested during initialization.
+    while (@max(current_w, current_h) > 1 and chain.items.len < self.mip_level_count) {
         const next_w = @max(1, current_w / 2);
         const next_h = @max(1, current_h / 2);
 
         const resized_pixels = try self.allocator.alloc(u8, next_w * next_h * 4);
-        // We assume all sources are converted to RGBA before mip generation.
         stbi.stbir_resize_uint8_srgb(last_pixels.ptr, @intCast(current_w), @intCast(current_h), 0, resized_pixels.ptr, @intCast(next_w), @intCast(next_h), 0, 4);
 
         try chain.append(self.allocator, .{

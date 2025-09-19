@@ -19,7 +19,6 @@ pub const std_options = std.Options{
 
 const MSAA_SAMPLE_COUNT: u32 = 4;
 
-// Demo struct and other helpers are unchanged...
 const Demo = struct {
     instance: wgpu.Instance = null,
     surface: wgpu.Surface = null,
@@ -60,8 +59,10 @@ fn createOrResizeMsaaTexture(d: *Demo) void {
 const ImageId = MultiAtlas.ImageId;
 const LOGO_ID: ImageId = 1;
 const FONT_ID_BASE: ImageId = 0x1000;
+
+// Use the most significant bit to flag glyph IDs.
 fn glyphId(char: u21) ImageId {
-    return FONT_ID_BASE + char;
+    return Batch2D.GLYPH_ID_FLAG + FONT_ID_BASE + char;
 }
 pub const AppContext = struct {
     allocator: std.mem.Allocator,
@@ -73,20 +74,14 @@ pub const AppContext = struct {
 };
 
 // The dataProvider returns a single InputImage.
-// The pixel data it returns is allocated on the frame_arena. MultiAtlas will copy it.
+// It now checks the ImageId to see if it's a glyph or a standard image.
 fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage {
     const app: *AppContext = @ptrCast(@alignCast(user_context.?));
     const frame_allocator = app.frame_arena.allocator();
 
-    if (image_id == LOGO_ID) {
-        return Atlas.InputImage{
-            .pixels = app.logo_image.data,
-            .width = app.logo_image.width,
-            .height = app.logo_image.height,
-            .format = .rgba,
-        };
-    } else if (image_id >= FONT_ID_BASE and image_id < FONT_ID_BASE + 0x10000) {
-        const char_code = @as(u21, @intCast(image_id - FONT_ID_BASE));
+    if ((image_id & Batch2D.GLYPH_ID_FLAG) != 0) {
+        // This is a glyph request.
+        const char_code = @as(u21, @intCast(image_id & (Batch2D.GLYPH_ID_FLAG - 1) - FONT_ID_BASE));
         const MASTER_GLYPH_HEIGHT: f32 = 64.0;
         const master_scale = stbtt.scaleForPixelHeight(&app.font_info, MASTER_GLYPH_HEIGHT);
 
@@ -99,15 +94,12 @@ fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage 
         if (grayscale_pixels == null or w == 0 or h == 0) return null;
         defer stbtt.freeBitmap(grayscale_pixels.?, null);
 
-        // Define and use a constant for padding. 2 pixels is a safer value.
         const GLYPH_PADDING: u32 = 2;
 
         const padded_w: u32 = @as(u32, @intCast(w)) + (GLYPH_PADDING * 2);
         const padded_h: u32 = @as(u32, @intCast(h)) + (GLYPH_PADDING * 2);
         const master_rgba_padded_pixels = (frame_allocator.alloc(u8, padded_w * padded_h * 4) catch return null);
 
-        // Initialize the buffer to transparent WHITE, not transparent black.
-        // This "bleeds" the color into the padding area.
         for (master_rgba_padded_pixels, 0..) |*p, i| {
             const channel: u2 = @intCast(i % 4);
             if (channel == 3) { // Alpha
@@ -117,15 +109,12 @@ fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage 
             }
         }
 
-        // "Stamp" the glyph's alpha, offsetting by the new padding amount.
         const original_pitch: usize = @intCast(w);
         const padded_pitch: usize = padded_w * 4;
         for (0..@as(usize, @intCast(h))) |row| {
             const src_row = grayscale_pixels.?[(row * original_pitch)..];
-            // The destination must be offset by GLYPH_PADDING in both X and Y.
             const dst_row_start_idx = ((row + GLYPH_PADDING) * padded_pitch) + (GLYPH_PADDING * 4);
             for (0..original_pitch) |col| {
-                // We only need to write the alpha channel now.
                 master_rgba_padded_pixels[dst_row_start_idx + (col * 4) + 3] = src_row[col];
             }
         }
@@ -133,6 +122,14 @@ fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage 
             .pixels = master_rgba_padded_pixels,
             .width = padded_w,
             .height = padded_h,
+            .format = .rgba,
+        };
+    } else if (image_id == LOGO_ID) {
+        // This is an image request.
+        return Atlas.InputImage{
+            .pixels = app.logo_image.data,
+            .width = app.logo_image.width,
+            .height = app.logo_image.height,
             .format = .rgba,
         };
     }
@@ -155,7 +152,6 @@ fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) [16]
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
 
-    // --- WGPU, GLFW, STB Initialization (unchanged) ---
     if (comptime builtin.os.tag != .windows) {
         glfw.initHint(.{ .platform = .x11 });
     } else {
@@ -307,7 +303,6 @@ pub fn main() !void {
         const text_pos = Batch2D.Vec2{ .x = 0.0, .y = 0.0 };
         try demo.renderer.drawText("WGPU Batch Renderer", &app_context.font_info, app_context.font_scale, text_pos, tint);
 
-        // Renamed from 'prepare' to 'endFrame'
         try demo.renderer.endFrame();
 
         const encoder = wgpu.deviceCreateCommandEncoder(demo.device, &.{ .label = .fromSlice("main_encoder") });
@@ -328,7 +323,6 @@ pub fn main() !void {
             }},
         });
 
-        // The render call is now much simpler.
         try demo.renderer.render(render_pass);
 
         wgpu.renderPassEncoderEnd(render_pass);
