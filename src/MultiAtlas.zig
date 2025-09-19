@@ -286,7 +286,6 @@ pub fn getTextureView(self: *MultiAtlas, atlas_index: usize) ?wgpu.TextureView {
 
 /// Private helper to create a new, empty Atlas page and add it to our list.
 fn addNewAtlas(self: *MultiAtlas) !void {
-    log.info("atlas page {d} is full. creating new page...", .{self.atlases.items.len -| 1});
     const new_atlas = try Atlas.init(
         self.allocator,
         self.device,
