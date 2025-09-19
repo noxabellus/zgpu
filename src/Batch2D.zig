@@ -37,7 +37,7 @@ const Uniforms = extern struct {
     projection: Mat4,
 };
 
-// NEW: A command to patch vertex data after textures are uploaded.
+// A command to patch vertex data after textures are uploaded.
 const Patch = struct {
     image_id: MultiAtlas.ImageId,
     vertex_start_index: usize,
@@ -58,12 +58,12 @@ pipeline: wgpu.RenderPipeline,
 uniform_buffer: wgpu.Buffer,
 vertex_buffer: wgpu.Buffer,
 vertex_buffer_capacity: usize,
-vertices: std.array_list.Managed(Vertex),
+vertices: std.ArrayList(Vertex),
 multi_atlas: *MultiAtlas,
-bind_groups: std.array_list.Managed(wgpu.BindGroup),
+bind_groups: std.ArrayList(wgpu.BindGroup),
 sampler: wgpu.Sampler,
-patch_list: std.array_list.Managed(Patch), // REPLACES command_queue
-provider_context: ProviderContext, // Caches the context for the frame
+patch_list: std.ArrayList(Patch),
+provider_context: ProviderContext,
 
 pub fn init(
     allocator: std.mem.Allocator,
@@ -166,16 +166,16 @@ pub fn init(
         .uniform_buffer = uniform_buffer,
         .vertex_buffer = undefined,
         .vertex_buffer_capacity = 0,
-        .vertices = .init(allocator),
+        .vertices = .empty,
         .multi_atlas = multi_atlas,
-        .bind_groups = .init(allocator),
+        .bind_groups = .empty,
         .sampler = sampler,
-        .patch_list = .init(allocator),
+        .patch_list = .empty,
         .provider_context = .{ .provider = undefined, .user_context = null },
     };
 
-    try self.vertices.ensureTotalCapacity(initial_capacity);
-    try self.patch_list.ensureTotalCapacity(128);
+    try self.vertices.ensureTotalCapacity(self.allocator, initial_capacity);
+    try self.patch_list.ensureTotalCapacity(self.allocator, 128);
 
     return self;
 }
@@ -183,13 +183,13 @@ pub fn init(
 pub fn deinit(self: *Batch2D) void {
     self.multi_atlas.deinit();
     for (self.bind_groups.items) |bg| wgpu.bindGroupRelease(bg);
-    self.bind_groups.deinit();
+    self.bind_groups.deinit(self.allocator);
     if (self.vertex_buffer_capacity > 0) wgpu.bufferRelease(self.vertex_buffer);
     wgpu.bufferRelease(self.uniform_buffer);
     wgpu.samplerRelease(self.sampler);
     wgpu.renderPipelineRelease(self.pipeline);
-    self.vertices.deinit();
-    self.patch_list.deinit();
+    self.vertices.deinit(self.allocator);
+    self.patch_list.deinit(self.allocator);
     self.allocator.destroy(self);
 }
 
@@ -293,7 +293,7 @@ pub fn drawTexturedQuad(self: *Batch2D, image_id: MultiAtlas.ImageId, pos: Vec2,
         if (err == error.ImageNotYetPacked) {
             // Cache miss: add a patch request and generate placeholder vertices.
             const vertex_start_index = self.vertices.items.len;
-            try self.patch_list.append(.{
+            try self.patch_list.append(self.allocator, .{
                 .image_id = image_id,
                 .vertex_start_index = vertex_start_index,
                 .vertex_count = 6,
@@ -375,7 +375,7 @@ fn pushTexturedQuad(self: *Batch2D, location: MultiAtlas.ImageLocation, pos: Vec
     const atlas_idx: u32 = @intCast(location.atlas_index);
     const c: [4]f32 = .{ tint.r, tint.g, tint.b, tint.a };
 
-    try self.vertices.appendSlice(&[_]Vertex{
+    try self.vertices.appendSlice(self.allocator, &[_]Vertex{
         .{ .position = .{ x1, y1 }, .tex_coords = .{ u_1, v_1 }, .color = c, .atlas_index = atlas_idx },
         .{ .position = .{ x2, y1 }, .tex_coords = .{ u_2, v_1 }, .color = c, .atlas_index = atlas_idx },
         .{ .position = .{ x1, y2 }, .tex_coords = .{ u_1, v_2 }, .color = c, .atlas_index = atlas_idx },
@@ -392,7 +392,7 @@ fn getOrCreateBindGroup(self: *Batch2D, atlas_index: u32) !wgpu.BindGroup {
     }
 
     if (idx >= self.bind_groups.capacity) {
-        try self.bind_groups.resize(idx + 1);
+        try self.bind_groups.resize(self.allocator, idx + 1);
         @memset(self.bind_groups.items[idx..], null);
     }
     self.bind_groups.items.len = @max(self.bind_groups.items.len, idx + 1);

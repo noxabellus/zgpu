@@ -79,10 +79,12 @@ fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?MultiAtlas.Provid
 
     if (image_id == LOGO_ID) {
         // For the logo, we generate a full mip chain.
-        var chain = std.array_list.Managed(Atlas.InputImage).init(frame_allocator);
+        var chain = std.ArrayList(Atlas.InputImage).empty;
+        // Since this is using an arena, we don't need to deinit.
+        // The entire arena's memory will be freed at once.
 
         // Append the base image
-        chain.append(.{
+        chain.append(frame_allocator, .{
             .pixels = app.logo_image.data,
             .width = app.logo_image.width,
             .height = app.logo_image.height,
@@ -110,7 +112,7 @@ fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?MultiAtlas.Provid
                 4,
             );
 
-            chain.append(.{
+            chain.append(frame_allocator, .{
                 .pixels = resized_pixels,
                 .width = next_w,
                 .height = next_h,
@@ -122,7 +124,7 @@ fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?MultiAtlas.Provid
             last_pixels = resized_pixels;
         }
 
-        return .{ .chain = chain.toOwnedSlice() catch return null };
+        return .{ .chain = chain.toOwnedSlice(frame_allocator) catch return null };
     } else if (image_id >= FONT_ID_BASE and image_id < FONT_ID_BASE + 0x10000) {
         const char_code = @as(u21, @intCast(image_id - FONT_ID_BASE));
         var w: i32 = 0;

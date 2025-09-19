@@ -35,8 +35,9 @@ pub const ProviderResult = struct {
 
 pub const DataProvider = *const fn (image_id: ImageId, user_context: ?*anyopaque) ?ProviderResult;
 
-// Renamed from PrepareContext for clarity.
 pub const ProviderContext = @import("Batch2D.zig").ProviderContext;
+
+pub const mip_level_count: u32 = 12;
 
 const PendingItem = struct {
     id: ImageId,
@@ -46,13 +47,12 @@ const PendingItem = struct {
 allocator: std.mem.Allocator,
 device: wgpu.Device,
 queue: wgpu.Queue,
-atlases: std.array_list.Managed(*Atlas),
-cache: std.AutoHashMap(ImageId, ImageLocation),
-pending_items: std.array_list.Managed(PendingItem),
-rect_buffer: std.array_list.Managed(stbrp.Rect),
+atlases: std.ArrayList(*Atlas),
+cache: std.AutoHashMapUnmanaged(ImageId, ImageLocation),
+pending_items: std.ArrayList(PendingItem),
+rect_buffer: std.ArrayList(stbrp.Rect),
 atlas_width: u32,
 atlas_height: u32,
-pub const mip_level_count: u32 = 12; // Make this public for sampler setup
 
 pub fn init(
     allocator: std.mem.Allocator,
@@ -68,10 +68,10 @@ pub fn init(
         .allocator = allocator,
         .device = device,
         .queue = queue,
-        .atlases = .init(allocator),
-        .cache = .init(allocator),
-        .pending_items = .init(allocator),
-        .rect_buffer = .init(allocator),
+        .atlases = .empty,
+        .cache = .empty,
+        .pending_items = .empty,
+        .rect_buffer = .empty,
         .atlas_width = atlas_width,
         .atlas_height = atlas_height,
     };
@@ -84,10 +84,10 @@ pub fn init(
 
 pub fn deinit(self: *MultiAtlas) void {
     for (self.atlases.items) |atlas| atlas.deinit();
-    self.pending_items.deinit();
-    self.atlases.deinit();
-    self.cache.deinit();
-    self.rect_buffer.deinit();
+    self.pending_items.deinit(self.allocator);
+    self.atlases.deinit(self.allocator);
+    self.cache.deinit(self.allocator);
+    self.rect_buffer.deinit(self.allocator);
     self.allocator.destroy(self);
     log.info("multi-atlas system deinitialized.", .{});
 }
@@ -110,7 +110,7 @@ pub fn query(
         return error.InvalidImageId;
     };
 
-    try self.pending_items.append(.{ .id = id, .chain = result.chain });
+    try self.pending_items.append(self.allocator, .{ .id = id, .chain = result.chain });
 
     return error.ImageNotYetPacked;
 }
@@ -132,13 +132,13 @@ pub fn flush(self: *MultiAtlas, context: ProviderContext) !void {
             chain_batch[i] = .{ .mips = item.chain };
         }
 
-        try self.rect_buffer.resize(pending_count);
+        try self.rect_buffer.resize(self.allocator, pending_count);
 
         const result = try current_atlas.packAndUpload(chain_batch, self.rect_buffer.items);
 
         if (result.packed_count > 0) {
-            var packed_indices = std.array_list.Managed(usize).init(self.allocator);
-            defer packed_indices.deinit();
+            var packed_indices = std.ArrayList(usize){};
+            defer packed_indices.deinit(self.allocator);
 
             for (self.rect_buffer.items) |rect| {
                 if (!rect.was_packed.to()) continue;
@@ -168,8 +168,8 @@ pub fn flush(self: *MultiAtlas, context: ProviderContext) !void {
                     .uv_rect = .{ u_0, v_0, u_1, v_1 },
                 };
 
-                try self.cache.put(item.id, location);
-                try packed_indices.append(original_index);
+                try self.cache.put(self.allocator, item.id, location);
+                try packed_indices.append(self.allocator, original_index);
             }
 
             std.mem.sort(usize, packed_indices.items, {}, std.sort.desc(usize));
@@ -208,5 +208,5 @@ fn addNewAtlas(self: *MultiAtlas) !void {
         self.atlas_height,
         mip_level_count,
     );
-    try self.atlases.append(new_atlas);
+    try self.atlases.append(self.allocator, new_atlas);
 }
