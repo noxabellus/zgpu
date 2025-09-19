@@ -36,6 +36,11 @@ pub const InputImage = struct {
     format: PixelFormat,
 };
 
+/// Represents one image and all of its smaller mipmap levels.
+pub const InputMipChain = struct {
+    mips: []const InputImage,
+};
+
 /// The result of a packing operation, indicating how many of the submitted
 /// images were successfully packed and uploaded.
 pub const PackResult = struct {
@@ -54,6 +59,7 @@ texture: wgpu.Texture,
 view: wgpu.TextureView,
 width: u32,
 height: u32,
+mip_level_count: u32,
 
 pack_context: stbrp.Context,
 pack_nodes: []stbrp.Node,
@@ -66,10 +72,11 @@ fn uploadImage(
     image: InputImage,
     x: u32,
     y: u32,
+    mip_level: u32,
 ) !void {
     const copy_destination = wgpu.TexelCopyTextureInfo{
         .texture = self.texture,
-        .mip_level = 0,
+        .mip_level = mip_level,
         .origin = .{ .x = x, .y = y, .z = 0 },
     };
 
@@ -124,8 +131,9 @@ pub fn init(
     queue: wgpu.Queue,
     width: u32,
     height: u32,
+    mip_level_count: u32,
 ) !*Atlas {
-    log.info("initializing atlas with size {d}x{d}", .{ width, height });
+    log.info("initializing atlas with size {d}x{d} and {d} mip levels", .{ width, height, mip_level_count });
     const self = try allocator.create(Atlas);
     errdefer allocator.destroy(self);
 
@@ -140,7 +148,7 @@ pub fn init(
     const texture_descriptor = wgpu.TextureDescriptor{
         .label = .fromSlice("texture_atlas"),
         .size = .{ .width = width, .height = height, .depth_or_array_layers = 1 },
-        .mip_level_count = 1,
+        .mip_level_count = mip_level_count,
         .sample_count = 1,
         .dimension = .@"2d",
         .format = .rgba8_unorm_srgb,
@@ -155,7 +163,17 @@ pub fn init(
     }
     errdefer wgpu.textureRelease(texture);
 
-    const view = wgpu.textureCreateView(texture, null);
+    const texture_view_descriptor = wgpu.TextureViewDescriptor{
+        .label = .fromSlice("atlas_texture_view"),
+        .format = .rgba8_unorm_srgb,
+        .dimension = .@"2d",
+        .base_mip_level = 0,
+        .mip_level_count = mip_level_count, // Explicitly include all mips
+        .base_array_layer = 0,
+        .array_layer_count = 1,
+    };
+
+    const view = wgpu.textureCreateView(texture, &texture_view_descriptor);
     if (view == null) {
         log.err("failed to create WGPU texture view for atlas", .{});
         wgpu.textureRelease(texture);
@@ -173,6 +191,7 @@ pub fn init(
         .view = view,
         .width = width,
         .height = height,
+        .mip_level_count = mip_level_count,
         .pack_context = .{},
         .pack_nodes = pack_nodes,
     };
@@ -192,48 +211,56 @@ pub fn deinit(self: *Atlas) void {
     self.allocator.destroy(self);
 }
 
-/// Attempts to pack and upload a batch of images into the atlas.
+/// Attempts to pack and upload a batch of images (with their mip chains) into the atlas.
 ///
 /// - `self`: A pointer to the Atlas state.
-/// - `images`: A slice of `InputImage` structs to add to the atlas.
-/// - `out_rects`: A slice of `stbrp.Rect` of the same length as `images`.
-///   On return, this will be filled with the positions of the packed images.
-///   The caller is responsible for converting these pixel coordinates to UVs.
+/// - `chains`: A slice of `InputMipChain` structs to add to the atlas.
+/// - `out_rects`: A slice of `stbrp.Rect` of the same length as `chains`.
+///   On return, this will be filled with the positions of the packed images at mip level 0.
 ///
 /// Returns a `PackResult` indicating how many images were successfully packed.
-/// If `result.packed_count < images.len`, the atlas is considered full.
+/// If `result.packed_count < chains.len`, the atlas is considered full.
 pub fn packAndUpload(
     self: *Atlas,
-    images: []const InputImage,
+    chains: []const InputMipChain,
     out_rects: []stbrp.Rect,
 ) !PackResult {
-    if (images.len == 0) return .{ .packed_count = 0 };
-    std.debug.assert(images.len == out_rects.len);
+    if (chains.len == 0) return .{ .packed_count = 0 };
+    std.debug.assert(chains.len == out_rects.len);
 
-    // 1. Populate the rects array with dimensions for the packer.
-    for (images, 0..) |image, i| {
+    // 1. Populate the rects array with dimensions for the packer using only mip level 0.
+    for (chains, 0..) |chain, i| {
+        const base_image = chain.mips[0];
         out_rects[i] = .{
             .id = @intCast(i),
-            .w = @intCast(image.width),
-            .h = @intCast(image.height),
+            .w = @intCast(base_image.width),
+            .h = @intCast(base_image.height),
         };
     }
 
-    // 2. Run the packing algorithm.
+    // 2. Run the packing algorithm on mip level 0.
     _ = stbrp.packRects(&self.pack_context, out_rects.ptr, @intCast(out_rects.len));
 
-    // 3. Iterate through the results, upload packed images, and count successes.
+    // 3. Iterate through the results, upload the full mip chain for packed images, and count successes.
     var packed_count: usize = 0;
     for (out_rects) |rect| {
         if (rect.was_packed.to()) {
-            const image = images[@intCast(rect.id)];
-            try uploadImage(self, image, @intCast(rect.x), @intCast(rect.y));
+            const chain = chains[@intCast(rect.id)];
+            std.debug.assert(chain.mips.len <= self.mip_level_count);
+
+            // Upload each mip level, calculating its position from the base level rect.
+            for (chain.mips, 0..) |mip_image, mip_level| {
+                const divisor: u32 = @as(u32, 1) << @intCast(mip_level);
+                const mip_x = @as(u32, @intCast(rect.x)) / divisor;
+                const mip_y = @as(u32, @intCast(rect.y)) / divisor;
+                try uploadImage(self, mip_image, mip_x, mip_y, @intCast(mip_level));
+            }
             packed_count += 1;
         }
     }
 
-    if (packed_count != images.len) {
-        log.warn("atlas is full. packed {d}/{d} images.", .{ packed_count, images.len });
+    if (packed_count != chains.len) {
+        log.warn("atlas is full. packed {d}/{d} images.", .{ packed_count, chains.len });
     } else {
         log.debug("packed {d} images successfully.", .{packed_count});
     }

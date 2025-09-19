@@ -553,7 +553,7 @@ extern fn stbir_resize_uint8_linear(
     num_channels: c_int,
 ) void;
 
-extern fn stbir_resize_uint8_srgb(
+pub extern fn stbir_resize_uint8_srgb(
     input_pixels: [*]const u8,
     input_w: c_int,
     input_h: c_int,

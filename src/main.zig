@@ -1,4 +1,3 @@
-/// src/main.zig
 const std = @import("std");
 const log = std.log.scoped(.main);
 const builtin = @import("builtin");
@@ -16,6 +15,9 @@ pub const std_options = std.Options{
     .log_level = .info,
 };
 
+/// The number of samples to use for MSAA. Set to 1 to disable.
+const MSAA_SAMPLE_COUNT: u32 = 4;
+
 /// --- Application State Struct ---
 const Demo = struct {
     instance: wgpu.Instance = null,
@@ -24,7 +26,36 @@ const Demo = struct {
     device: wgpu.Device = null,
     config: wgpu.SurfaceConfiguration = .{},
     renderer: *Batch2D = undefined,
+    msaa_texture: wgpu.Texture = null,
+    msaa_view: wgpu.TextureView = null,
 };
+
+/// Helper to create or resize the MSAA texture and view.
+fn createOrResizeMsaaTexture(d: *Demo) void {
+    if (d.msaa_view != null) wgpu.textureViewRelease(d.msaa_view);
+    if (d.msaa_texture != null) wgpu.textureRelease(d.msaa_texture);
+
+    if (MSAA_SAMPLE_COUNT <= 1) { // Don't create if MSAA is off
+        d.msaa_texture = null;
+        d.msaa_view = null;
+        return;
+    }
+
+    const msaa_descriptor = wgpu.TextureDescriptor{
+        .label = .fromSlice("msaa_texture"),
+        .size = .{ .width = d.config.width, .height = d.config.height, .depth_or_array_layers = 1 },
+        .mip_level_count = 1,
+        .sample_count = MSAA_SAMPLE_COUNT,
+        .dimension = .@"2d",
+        .format = d.config.format,
+        .usage = wgpu.TextureUsage{ .render_attachment = true },
+    };
+
+    d.msaa_texture = wgpu.deviceCreateTexture(d.device, &msaa_descriptor);
+    std.debug.assert(d.msaa_texture != null);
+    d.msaa_view = wgpu.textureCreateView(d.msaa_texture, null);
+    std.debug.assert(d.msaa_view != null);
+}
 
 /// --- Data Provider and Image Management ---
 const ImageId = MultiAtlas.ImageId;
@@ -78,20 +109,75 @@ fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage 
         }
         defer stbtt.freeBitmap(grayscale_pixels.?, null);
 
-        const bitmap_data = app.frame_arena.allocator().dupe(u8, grayscale_pixels.?[0..@as(usize, @intCast(w * h))]) catch {
-            log.err("out of memory for glyph bitmap", .{});
+        // --- PADDING LOGIC ---
+        // Create a 1-pixel transparent border around the glyph to prevent texture bleeding.
+        const padded_w: u32 = @intCast(w + 2);
+        const padded_h: u32 = @intCast(h + 2);
+
+        const padded_bitmap = app.frame_arena.allocator().alloc(u8, padded_w * padded_h) catch {
+            log.err("out of memory for padded glyph bitmap", .{});
             return null;
         };
+        // Zero-initialize to create the transparent border.
+        @memset(padded_bitmap, 0);
+
+        // Copy the original glyph data into the center of the padded buffer.
+        const original_pitch: usize = @intCast(w);
+        const padded_pitch: usize = @intCast(padded_w);
+        for (0..@as(usize, @intCast(h))) |row| {
+            const src = grayscale_pixels.?[row * original_pitch .. (row + 1) * original_pitch];
+            const dst = padded_bitmap[(row + 1) * padded_pitch + 1 .. (row + 1) * padded_pitch + 1 + original_pitch];
+            @memcpy(dst, src);
+        }
 
         return Atlas.InputImage{
-            .pixels = bitmap_data,
-            .width = @intCast(w),
-            .height = @intCast(h),
+            .pixels = padded_bitmap,
+            .width = padded_w,
+            .height = padded_h,
             .format = .grayscale,
         };
     }
 
     return null;
+}
+
+/// Pre-caches all images and glyphs needed for a frame.
+/// This function iterates through all drawable elements and calls `multi_atlas.query`
+/// for them. The goal is not to get the location, but to populate the
+/// multi_atlas's `pending_chains` list with everything that is currently missing.
+fn precacheRequiredImages(
+    renderer: *Batch2D,
+    app_context: *AppContext,
+) void {
+    // 1. Precache the logo
+    _ = renderer.multi_atlas.query(LOGO_ID, dataProvider, app_context) catch |err| {
+        // We expect ImageNotYetPacked, so we can ignore it.
+        // Any other error would be a real problem.
+        if (err != error.ImageNotYetPacked) {
+            log.err("unexpected error during logo precache: {any}", .{err});
+        }
+    };
+
+    // 2. Precache the text glyphs
+    const text_to_render = "WGpu Test";
+    for (text_to_render) |char| {
+        const char_code = @as(u21, @intCast(char));
+
+        // Only query for glyphs that actually have a visual representation.
+        var ix0: i32 = 0;
+        var iy0: i32 = 0;
+        var ix1: i32 = 0;
+        var iy1: i32 = 0;
+        stbtt.getCodepointBitmapBox(&app_context.font_info, @intCast(char_code), app_context.font_scale, app_context.font_scale, &ix0, &iy0, &ix1, &iy1);
+
+        if ((ix1 - ix0) > 0 and (iy1 - iy0) > 0) {
+            _ = renderer.multi_atlas.query(glyphId(char_code), dataProvider, app_context) catch |err| {
+                if (err != error.ImageNotYetPacked) {
+                    log.err("unexpected error during glyph precache: {any}", .{err});
+                }
+            };
+        }
+    }
 }
 
 /// --- Main Drawing Logic ---
@@ -271,6 +357,7 @@ pub fn main() !void {
             d.config.width = @intCast(width);
             d.config.height = @intCast(height);
             wgpu.surfaceConfigure(d.surface, &d.config);
+            createOrResizeMsaaTexture(d);
         }
     }.handle_glfw_framebuffer_size);
 
@@ -320,7 +407,11 @@ pub fn main() !void {
         .userdata1 = &demo,
     });
     while (demo.device == null) wgpu.instanceProcessEvents(demo.instance);
-    defer wgpu.deviceRelease(demo.device);
+    defer {
+        if (demo.msaa_view != null) wgpu.textureViewRelease(demo.msaa_view);
+        if (demo.msaa_texture != null) wgpu.textureRelease(demo.msaa_texture);
+        wgpu.deviceRelease(demo.device);
+    }
 
     const queue = wgpu.deviceGetQueue(demo.device);
     defer wgpu.queueRelease(queue);
@@ -345,6 +436,7 @@ pub fn main() !void {
         demo.config.height = @intCast(height);
     }
     wgpu.surfaceConfigure(demo.surface, &demo.config);
+    createOrResizeMsaaTexture(&demo);
 
     // --- Initialize Renderer and AppContext ---
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -364,7 +456,7 @@ pub fn main() !void {
     std.debug.assert(stbtt.initFont(&app_context.font_info, app_context.font_data.ptr, 0) != 0);
     app_context.font_scale = stbtt.scaleForPixelHeight(&app_context.font_info, 40.0);
 
-    demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format);
+    demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format, MSAA_SAMPLE_COUNT);
     defer demo.renderer.deinit();
 
     // --- Main Loop ---
@@ -385,6 +477,7 @@ pub fn main() !void {
                     demo.config.width = @intCast(width);
                     demo.config.height = @intCast(height);
                     wgpu.surfaceConfigure(demo.surface, &demo.config);
+                    createOrResizeMsaaTexture(&demo);
                 }
                 continue :main_loop;
             },
@@ -401,28 +494,73 @@ pub fn main() !void {
         const proj = ortho(0, @floatFromInt(demo.config.width), @floatFromInt(demo.config.height), 0, -1, 1);
         demo.renderer.beginFrame(proj);
 
-        // Loop until the entire frame can be recorded without needing to pack new images.
-        var retries: u8 = 0;
-        while (retries < 10) : (retries += 1) { // Increased retries slightly for safety
-            if (recordDrawCommands(demo.renderer, &app_context, window)) |_| {
-                // Success! The frame was recorded without any missing images.
-                break;
-            } else |err| {
-                if (err == error.ImageNotYetPacked) {
-                    // An image was not in the atlas. Flush to upload it to the GPU.
-                    try demo.renderer.multi_atlas.flush();
-                    // Clear the vertices from the failed attempt and try again.
-                    demo.renderer.vertices.clearRetainingCapacity();
-                    continue;
-                } else {
-                    // An actual, unrecoverable error occurred.
-                    return err;
+        // --- PASS 1: Pre-cache all required images ---
+        // This populates the pending_chains list with everything we need for this frame.
+        precacheRequiredImages(demo.renderer, &app_context);
+
+        // --- PASS 2: Flush if necessary ---
+        // If the pre-cache pass found any missing images, we generate their mipmaps
+        // and upload them to the GPU in a single batch.
+        if (demo.renderer.multi_atlas.pending_chains.items.len > 0) {
+            // Mipmap Generation (this logic is moved from the old loop)
+            const multi_atlas = demo.renderer.multi_atlas;
+            for (multi_atlas.pending_chains.items) |*item| {
+                if (item.chain.items.len > 1) continue;
+                const base_image = item.chain.items[0];
+                if (base_image.format != .rgba) continue;
+
+                var current_w = base_image.width;
+                var current_h = base_image.height;
+                var last_pixels = base_image.pixels;
+
+                while (@max(current_w, current_h) > 1 and item.chain.items.len < multi_atlas.mip_level_count) {
+                    const next_w = @max(1, current_w / 2);
+                    const next_h = @max(1, current_h / 2);
+
+                    const resized_pixels = try app_context.frame_arena.allocator().alloc(u8, next_w * next_h * 4);
+                    stbi.stbir_resize_uint8_srgb(
+                        last_pixels.ptr,
+                        @intCast(current_w),
+                        @intCast(current_h),
+                        0,
+                        resized_pixels.ptr,
+                        @intCast(next_w),
+                        @intCast(next_h),
+                        0,
+                        4,
+                    );
+
+                    try item.chain.append(Atlas.InputImage{
+                        .pixels = resized_pixels,
+                        .width = next_w,
+                        .height = next_h,
+                        .format = .rgba,
+                    });
+
+                    current_w = next_w;
+                    current_h = next_h;
+                    last_pixels = resized_pixels;
                 }
             }
+
+            // Now that mip chains are complete, flush them all to the GPU.
+            try multi_atlas.flush();
         }
 
+        // --- PASS 3: Draw the frame ---
+        // At this point, all required images are guaranteed to be in the atlas.
+        // This section should no longer fail with `ImageNotYetPacked`.
+
+        recordDrawCommands(demo.renderer, &app_context, window) catch |err| {
+            // This should now be an unrecoverable error.
+            log.err("unrecoverable error during recordDrawCommands: {any}", .{err});
+            return err;
+        };
+
+        const render_target_view = if (demo.msaa_view != null) demo.msaa_view else frame_view;
+        const resolve_target_view = if (demo.msaa_view != null) frame_view else null;
         const clear_color = Batch2D.Color{ .r = 0, .g = 0, .b = 1, .a = 1 };
-        try demo.renderer.endFrame(frame_view, clear_color);
+        try demo.renderer.endFrame(render_target_view, resolve_target_view, clear_color);
 
         _ = wgpu.surfacePresent(demo.surface);
     }

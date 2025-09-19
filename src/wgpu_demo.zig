@@ -1,5 +1,5 @@
 const std = @import("std");
-const log = std.log.scoped(.main);
+const log = std.log.scoped(.wgpu_example);
 
 const builtin = @import("builtin");
 
@@ -18,7 +18,7 @@ pub const std_options = std.Options{
 };
 
 test {
-    log.debug("semantic analysis for main.zig", .{});
+    log.debug("semantic analysis for wgpu_example.zig", .{});
     std.testing.refAllDecls(@This());
 }
 

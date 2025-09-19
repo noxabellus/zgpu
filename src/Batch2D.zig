@@ -67,11 +67,13 @@ sampler: wgpu.Sampler,
 /// - `allocator`, `device`, `queue`: Standard setup components.
 /// - `surface_format`: The format of the render target (e.g., the window's swapchain).
 ///   This is required to create a compatible render pipeline.
+/// - `sample_count`: The number of MSAA samples the pipeline should be configured for.
 pub fn init(
     allocator: std.mem.Allocator,
     device: wgpu.Device,
     queue: wgpu.Queue,
     surface_format: wgpu.TextureFormat,
+    sample_count: u32,
 ) !*Batch2D {
     const self = try allocator.create(Batch2D);
     errdefer allocator.destroy(self);
@@ -94,8 +96,16 @@ pub fn init(
 
     const sampler = wgpu.deviceCreateSampler(device, &.{
         .label = .fromSlice("texture_sampler"),
-        .mag_filter = .nearest,
-        .min_filter = .nearest,
+        .address_mode_u = .clamp_to_edge,
+        .address_mode_v = .clamp_to_edge,
+        .mag_filter = .linear,
+        .min_filter = .linear,
+        // Add these three lines to enable mipmapping
+        .mipmap_filter = .linear, // Smoothly blends between two mip levels.
+        .lod_min_clamp = 0.0,
+        // This tells the sampler the maximum mip level it can use.
+        // We get this value from the multi_atlas instance.
+        .lod_max_clamp = @as(f32, @floatFromInt(multi_atlas.mip_level_count)),
     });
     std.debug.assert(sampler != null);
     errdefer wgpu.samplerRelease(sampler);
@@ -151,7 +161,7 @@ pub fn init(
             .targets = &.{.{ .format = surface_format, .blend = &blend_state, .write_mask = .all }},
         },
         .primitive = .{ .topology = .triangle_list },
-        .multisample = .{ .count = 1, .mask = 0xFFFFFFFF },
+        .multisample = .{ .count = sample_count, .mask = 0xFFFFFFFF },
     });
     std.debug.assert(pipeline != null);
 
@@ -197,9 +207,10 @@ pub fn beginFrame(self: *Batch2D, projection: Mat4) void {
 }
 
 /// Flushes all batched geometry to the GPU and executes the draw calls.
-/// - `target_view`: The WGPU texture view to render to (e.g., the swapchain frame).
+/// - `view`: The WGPU texture view to render to (e.g., the MSAA texture or the swapchain frame).
+/// - `resolve_target`: The view to resolve MSAA to. Should be `null` if not using MSAA.
 /// - `clear_color`: The color to clear the screen with, or null to not clear.
-pub fn endFrame(self: *Batch2D, target_view: wgpu.TextureView, clear_color: ?Color) !void {
+pub fn endFrame(self: *Batch2D, view: wgpu.TextureView, resolve_target: wgpu.TextureView, clear_color: ?Color) !void {
     if (self.vertices.items.len == 0) return;
 
     // --- Ensure GPU vertex buffer is large enough ---
@@ -229,7 +240,8 @@ pub fn endFrame(self: *Batch2D, target_view: wgpu.TextureView, clear_color: ?Col
     const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &.{
         .color_attachment_count = 1,
         .color_attachments = &.{.{
-            .view = target_view,
+            .view = view,
+            .resolve_target = resolve_target,
             .load_op = load_op,
             .store_op = .store,
             .clear_value = clear_val,
