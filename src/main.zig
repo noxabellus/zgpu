@@ -12,6 +12,7 @@ const glfw = @import("glfw");
 const Batch2D = @import("Batch2D.zig");
 const Atlas = @import("Atlas.zig");
 const MultiAtlas = @import("MultiAtlas.zig");
+const AssetCache = @import("AssetCache.zig");
 
 pub const std_options = std.Options{
     .log_level = .info,
@@ -54,91 +55,6 @@ fn createOrResizeMsaaTexture(d: *Demo) void {
     std.debug.assert(d.msaa_texture != null);
     d.msaa_view = wgpu.textureCreateView(d.msaa_texture, null);
     std.debug.assert(d.msaa_view != null);
-}
-
-const ImageId = MultiAtlas.ImageId;
-const LOGO_ID: ImageId = 1;
-
-const LoadedFont = struct {
-    info: stbtt.FontInfo,
-    data: []const u8,
-};
-
-pub const AppContext = struct {
-    allocator: std.mem.Allocator,
-    logo_image: stbi.Image,
-    fonts: std.ArrayList(LoadedFont),
-    frame_arena: *std.heap.ArenaAllocator,
-};
-
-// The dataProvider returns a single InputImage.
-// It now checks the ImageId to see if it's a glyph or a standard image.
-fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage {
-    const app: *AppContext = @ptrCast(@alignCast(user_context.?));
-    const frame_allocator = app.frame_arena.allocator();
-
-    if ((image_id & Batch2D.GLYPH_ID_FLAG) != 0) {
-        // This is a glyph request.
-        const decoded = Batch2D.decodeGlyphId(image_id);
-        if (decoded.font_index >= app.fonts.items.len) {
-            log.err("invalid font index {d} in glyph id", .{decoded.font_index});
-            return null;
-        }
-        const font = &app.fonts.items[decoded.font_index];
-        const scale = stbtt.scaleForPixelHeight(&font.info, decoded.pixel_height);
-
-        var w: i32 = 0;
-        var h: i32 = 0;
-        var xoff: i32 = 0;
-        var yoff: i32 = 0;
-        const grayscale_pixels = stbtt.getCodepointBitmap(&font.info, 0, scale, @intCast(decoded.char_code), &w, &h, &xoff, &yoff);
-
-        if (grayscale_pixels == null or w == 0 or h == 0) return null;
-        defer stbtt.freeBitmap(grayscale_pixels.?, null);
-
-        const GLYPH_PADDING: u32 = 2;
-
-        const padded_w: u32 = @as(u32, @intCast(w)) + (GLYPH_PADDING * 2);
-        const padded_h: u32 = @as(u32, @intCast(h)) + (GLYPH_PADDING * 2);
-        const master_rgba_padded_pixels = (frame_allocator.alloc(u8, padded_w * padded_h * 4) catch return null);
-
-        // 1. Clear the entire buffer to WHITE {255, 255, 255, 0}.
-        //    The memset makes RGB white. We will then clear alpha manually.
-        @memset(master_rgba_padded_pixels, 0xFF);
-        for (0..padded_w * padded_h) |i| {
-            master_rgba_padded_pixels[i * 4 + 3] = 0;
-        }
-
-        // 2. Copy the glyph data, setting only the Alpha channel over our white background.
-        const original_pitch: usize = @intCast(w);
-        const padded_pitch: usize = padded_w * 4;
-        for (0..@as(usize, @intCast(h))) |row| {
-            const src_row = grayscale_pixels.?[(row * original_pitch)..];
-            const dst_row_start_idx = ((row + GLYPH_PADDING) * padded_pitch) + (GLYPH_PADDING * 4);
-            for (0..original_pitch) |col| {
-                const alpha = src_row[col];
-                const dst_pixel_start = dst_row_start_idx + (col * 4);
-
-                // RGB is already 255 from the memset above. We only need to write alpha.
-                master_rgba_padded_pixels[dst_pixel_start + 3] = alpha; // A
-            }
-        }
-        return Atlas.InputImage{
-            .pixels = master_rgba_padded_pixels,
-            .width = padded_w,
-            .height = padded_h,
-            .format = .rgba,
-        };
-    } else {
-        return Atlas.InputImage{
-            .pixels = app.logo_image.data,
-            .width = app.logo_image.width,
-            .height = app.logo_image.height,
-            .format = .rgba,
-        };
-    }
-
-    return null;
 }
 
 fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) [16]f32 {
@@ -266,33 +182,20 @@ pub fn main() !void {
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
-    var app_context = AppContext{
-        .allocator = gpa,
-        .logo_image = try stbi.Image.loadFromFile("assets/images/wgpu-logo.png", 4),
-        .fonts = .empty,
-        .frame_arena = &arena_state,
-    };
-    defer app_context.logo_image.deinit();
-    defer {
-        for (app_context.fonts.items) |font| {
-            gpa.free(font.data);
-        }
-        app_context.fonts.deinit(app_context.allocator);
-    }
 
-    // Load fonts
-    const font_paths = &[_][]const u8{
-        "assets/fonts/roboto/regular.ttf",
-        "assets/fonts/Calistoga-Regular.ttf",
-        "assets/fonts/Quicksand-Semibold.ttf",
-    };
-    for (font_paths) |path| {
-        const font_data = try std.fs.cwd().readFileAlloc(gpa, path, 10 * 1024 * 1024);
-        var font_info = stbtt.FontInfo{};
-        const success = stbtt.initFont(&font_info, font_data.ptr, 0).to();
-        std.debug.assert(success);
-        try app_context.fonts.append(app_context.allocator, .{ .data = font_data, .info = font_info });
-    }
+    var asset_cache = AssetCache.init(gpa);
+    defer asset_cache.deinit();
+
+    // Load fonts via the asset cache
+    const roboto_idx = try asset_cache.loadFont("assets/fonts/roboto/regular.ttf");
+    const calistoga_idx = try asset_cache.loadFont("assets/fonts/Calistoga-Regular.ttf");
+    const quicksand_idx = try asset_cache.loadFont("assets/fonts/Quicksand-Semibold.ttf");
+
+    // Load images via the asset cache
+    const LOGO_ID = try asset_cache.loadImage("assets/images/wgpu-logo.png");
+    const BANNER_ID = try asset_cache.loadImage("assets/images/ribbon-banner.png");
+    const EMBLEM_ID = try asset_cache.loadImage("assets/images/ribbon-emblem.png");
+    const BOW_ID = try asset_cache.loadImage("assets/images/tiny-bow-icon.png");
 
     demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format, MSAA_SAMPLE_COUNT);
     defer demo.renderer.deinit();
@@ -300,10 +203,9 @@ pub fn main() !void {
     // --- Main Loop ---
     main_loop: while (!glfw.windowShouldClose(window)) {
         glfw.pollEvents();
-        _ = app_context.frame_arena.reset(.free_all);
+        _ = arena_state.reset(.free_all);
 
         // --- DEBUG DUMP ---
-        // It will run once and then panic, which is fine for debugging.
         if (glfw.getKey(window, .a) == .press) {
             try demo.renderer.glyph_atlas.debugWriteAllAtlasesToPng("debug_glyph_atlas");
             try demo.renderer.image_atlas.debugWriteAllAtlasesToPng("debug_image_atlas");
@@ -339,30 +241,53 @@ pub fn main() !void {
         defer wgpu.textureViewRelease(frame_view);
 
         const proj = ortho(0, @floatFromInt(demo.config.width), @floatFromInt(demo.config.height), 0, -1, 1);
-        const provider_ctx = Batch2D.ProviderContext{ .provider = dataProvider, .user_context = &app_context };
+
+        // Create the context struct for this frame.
+        const provider_user_context = AssetCache.ProviderUserContext{
+            .asset_cache = &asset_cache,
+            .frame_allocator = arena_state.allocator(),
+        };
+
+        const provider_ctx = Batch2D.ProviderContext{
+            .provider = AssetCache.dataProvider,
+            // a generic API requires a non-const pointer; this cast is still safe, as the provider we're using does not mutate the context.
+            .user_context = @constCast(&provider_user_context),
+        };
         demo.renderer.beginFrame(proj, provider_ctx);
 
+        const tint = Batch2D.Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
+
+        // Draw the WGPU logo at the cursor
         var cursor_x: f64 = 0;
         var cursor_y: f64 = 0;
         glfw.getCursorPos(window, &cursor_x, &cursor_y);
+        const logo_img = asset_cache.images.items[LOGO_ID];
         const image_scale = 0.2;
-        const quad_width: f32 = @as(f32, @floatFromInt(app_context.logo_image.width)) * image_scale;
-        const quad_height: f32 = @as(f32, @floatFromInt(app_context.logo_image.height)) * image_scale;
+        const quad_width: f32 = @as(f32, @floatFromInt(logo_img.width)) * image_scale;
+        const quad_height: f32 = @as(f32, @floatFromInt(logo_img.height)) * image_scale;
         const quad_pos = Batch2D.Vec2{ .x = @as(f32, @floatCast(cursor_x)) - quad_width / 2.0, .y = @as(f32, @floatCast(cursor_y)) - quad_height / 2.0 };
         const quad_size = Batch2D.Vec2{ .x = quad_width, .y = quad_height };
-        const tint = Batch2D.Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
         try demo.renderer.drawTexturedQuad(LOGO_ID, quad_pos, quad_size, tint);
+
+        const banner_img = asset_cache.images.items[BANNER_ID];
+        try demo.renderer.drawTexturedQuad(BANNER_ID, .{ .x = 100, .y = 200 }, .{ .x = @floatFromInt(@divFloor(banner_img.width, 4)), .y = @floatFromInt(@divFloor(banner_img.height, 4)) }, tint);
+
+        const emblem_img = asset_cache.images.items[EMBLEM_ID];
+        try demo.renderer.drawTexturedQuad(EMBLEM_ID, .{ .x = 500, .y = 50 }, .{ .x = @floatFromInt(emblem_img.width), .y = @floatFromInt(emblem_img.height) }, tint);
+
+        const bow_img = asset_cache.images.items[BOW_ID];
+        try demo.renderer.drawTexturedQuad(BOW_ID, .{ .x = 400, .y = 375 }, .{ .x = @floatFromInt(bow_img.width), .y = @floatFromInt(bow_img.height) }, tint);
 
         const text_to_draw = "WGPU Batch Renderer";
 
         // Draw with Roboto, 40px
-        try demo.renderer.drawText(text_to_draw, &app_context.fonts.items[0].info, 0, 40.0, .{ .x = 0, .y = 0 }, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
+        try demo.renderer.drawText(text_to_draw, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 40.0, .{ .x = 0, .y = 0 }, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
 
         // Draw with Calistoga, 48px
-        try demo.renderer.drawText(text_to_draw, &app_context.fonts.items[1].info, 1, 48.0, .{ .x = 10, .y = 60 }, .{ .r = 0, .g = 1, .b = 1, .a = 1 });
+        try demo.renderer.drawText(text_to_draw, &asset_cache.fonts.items[calistoga_idx].info, calistoga_idx, 48.0, .{ .x = 10, .y = 60 }, .{ .r = 0, .g = 1, .b = 1, .a = 1 });
 
         // Draw with Quicksand, 32px
-        try demo.renderer.drawText(text_to_draw, &app_context.fonts.items[2].info, 2, 32.0, .{ .x = 20, .y = 120 }, .{ .r = 1, .g = 0, .b = 1, .a = 1 });
+        try demo.renderer.drawText(text_to_draw, &asset_cache.fonts.items[quicksand_idx].info, quicksand_idx, 32.0, .{ .x = 20, .y = 120 }, .{ .r = 1, .g = 0, .b = 1, .a = 1 });
 
         try demo.renderer.endFrame();
 
@@ -371,16 +296,16 @@ pub fn main() !void {
 
         const render_target_view = if (demo.msaa_view != null) demo.msaa_view else frame_view;
         const resolve_target_view = if (demo.msaa_view != null) frame_view else null;
-        const clear_color = Batch2D.Color{ .b = 0.1, .a = 1 };
+        const clear_color = wgpu.Color{ .g = 0.55, .b = 0.85, .a = 1 };
 
-        const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &.{
+        const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
             .color_attachment_count = 1,
-            .color_attachments = &.{.{
+            .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
                 .view = render_target_view,
                 .resolve_target = resolve_target_view,
                 .load_op = .clear,
                 .store_op = .store,
-                .clear_value = .{ .r = clear_color.r, .g = clear_color.g, .b = clear_color.b, .a = clear_color.a },
+                .clear_value = clear_color,
             }},
         });
 
