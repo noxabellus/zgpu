@@ -39,9 +39,10 @@ pub const setupAllowOutOfMem = @extern(*const fn (context: *Context, allow_out_o
 pub const setupHeuristic = @extern(*const fn (context: *Context, heuristic: Heuristic) callconv(.c) void, .{ .name = "stbrp_setup_heuristic" });
 
 pub const Heuristic = enum(i32) {
-    default = 0,
     bl_sort_height = 0,
     bf_sort_height = 1,
+
+    pub const default = Heuristic.bl_sort_height;
 };
 
 pub const BigBool = enum(i32) {
