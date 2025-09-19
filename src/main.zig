@@ -1,126 +1,247 @@
+/// src/main.zig
 const std = @import("std");
 const log = std.log.scoped(.main);
-
 const builtin = @import("builtin");
 
-const wgpu = @import("wgpu"); // wgpu bindings, zigified structures and enums
-const stbi = @import("stbi"); // stb_image, stb_image_resize2, and stb_image_write with fully zigified api
-const stbtt = @import("stbtt"); // stb_truetype, simple wrapper around the C API, zigified structs, no enums yet
-const stbrp = @import("stbrp"); // stb_rectpack, simple wrapper around the C API, zigified structs and enums
-const glfw = @import("glfw"); // glfw bindings, zigified bools and enums
+const wgpu = @import("wgpu");
+const stbi = @import("stbi");
+const stbtt = @import("stbtt");
+const glfw = @import("glfw");
+
+const Batch2D = @import("Batch2D.zig");
+const Atlas = @import("Atlas.zig");
+const MultiAtlas = @import("MultiAtlas.zig");
 
 pub const std_options = std.Options{
     .log_level = .info,
 };
 
-test {
-    log.debug("semantic analysis for main.zig", .{});
-    std.testing.refAllDecls(@This());
+/// --- Application State Struct ---
+const Demo = struct {
+    instance: wgpu.Instance = null,
+    surface: wgpu.Surface = null,
+    adapter: wgpu.Adapter = null,
+    device: wgpu.Device = null,
+    config: wgpu.SurfaceConfiguration = .{},
+    renderer: *Batch2D = undefined,
+};
+
+/// --- Data Provider and Image Management ---
+const ImageId = MultiAtlas.ImageId;
+
+const LOGO_ID: ImageId = 1;
+const FONT_ID_BASE: ImageId = 0x1000;
+
+fn glyphId(char: u21) ImageId {
+    return FONT_ID_BASE + char;
 }
 
-/// --- Application State Struct ---
-/// This struct holds all the core WGPU objects that we need to manage throughout the
-/// application's lifecycle. It's passed around so that different parts of the code
-/// (like window callbacks) can access the graphics state.
-const Demo = struct {
-    /// The top-level WGPU object, representing a connection to the WGPU implementation.
-    instance: wgpu.Instance = null,
-    /// The platform-native surface (e.g., a window) that we will draw to.
-    surface: wgpu.Surface = null,
-    /// A handle to a physical graphics device (e.g., a specific GPU).
-    adapter: wgpu.Adapter = null,
-    /// A logical connection to the adapter, used for creating resources like buffers and textures.
-    device: wgpu.Device = null,
-    /// Configuration for the surface, defining how it's presented (size, format, etc.).
-    config: wgpu.SurfaceConfiguration = .{},
+const AppContext = struct {
+    allocator: std.mem.Allocator,
+    logo_image: stbi.Image,
+    font_info: stbtt.FontInfo,
+    font_data: []const u8,
+    font_scale: f32,
+    frame_arena: *std.heap.ArenaAllocator,
 };
 
-// --- Vertex and Uniform Data Structs ---
-// `extern struct` ensures a C-compatible memory layout, which is important when passing
-// data to the GPU, as the graphics driver is typically a C/++ library.
+fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage {
+    const app: *AppContext = @ptrCast(@alignCast(user_context.?));
 
-/// Defines the layout of data for a single vertex. Each vertex in our quad
-/// will have a 2D position and a 2D texture coordinate.
-const Vertex = extern struct {
-    /// The (x, y) position in screen space.
-    position: [2]f32,
-    /// The (u, v) texture coordinates.
-    tex_coords: [2]f32,
-};
+    if (image_id == LOGO_ID) {
+        return Atlas.InputImage{
+            .pixels = app.logo_image.data,
+            .width = app.logo_image.width,
+            .height = app.logo_image.height,
+            .format = .rgba,
+        };
+    } else if (image_id >= FONT_ID_BASE and image_id < FONT_ID_BASE + 0x10000) { // Increased range for safety
+        const char_code = @as(u21, @intCast(image_id - FONT_ID_BASE));
+        var w: i32 = 0;
+        var h: i32 = 0;
+        var xoff: i32 = 0;
+        var yoff: i32 = 0;
 
-/// Defines the layout for our uniform data. Uniforms are variables that are constant
-/// for all vertices/fragments in a single draw call.
-const Uniforms = extern struct {
-    /// The current resolution of the window, used in the shader to convert
-    /// from pixel coordinates to normalized device coordinates.
-    resolution: [2]f32,
-};
+        const grayscale_pixels = stbtt.getCodepointBitmap(
+            &app.font_info,
+            0,
+            app.font_scale,
+            @intCast(char_code),
+            &w,
+            &h,
+            &xoff,
+            &yoff,
+        );
+
+        if (grayscale_pixels == null or w == 0 or h == 0) {
+            return null;
+        }
+        defer stbtt.freeBitmap(grayscale_pixels.?, null);
+
+        const bitmap_data = app.frame_arena.allocator().dupe(u8, grayscale_pixels.?[0..@as(usize, @intCast(w * h))]) catch {
+            log.err("out of memory for glyph bitmap", .{});
+            return null;
+        };
+
+        return Atlas.InputImage{
+            .pixels = bitmap_data,
+            .width = @intCast(w),
+            .height = @intCast(h),
+            .format = .grayscale,
+        };
+    }
+
+    return null;
+}
+
+/// --- Main Drawing Logic ---
+/// Encapsulates all drawing calls for a single frame using the robust two-pass text layout system.
+fn recordDrawCommands(
+    renderer: *Batch2D,
+    app_context: *AppContext,
+    window: *glfw.Window,
+) !void {
+    // --- Draw the Logo ---
+    const logo_location = renderer.multi_atlas.query(LOGO_ID, dataProvider, app_context) catch |err| {
+        return err; // Propagate ImageNotYetPacked
+    };
+
+    var cursor_x: f64 = 0;
+    var cursor_y: f64 = 0;
+    glfw.getCursorPos(window, &cursor_x, &cursor_y);
+
+    const image_scale = 0.2;
+    const quad_width: f32 = @as(f32, @floatFromInt(app_context.logo_image.width)) * image_scale;
+    const quad_height: f32 = @as(f32, @floatFromInt(app_context.logo_image.height)) * image_scale;
+
+    const pos = Batch2D.Vec2{
+        .x = @as(f32, @floatCast(cursor_x)) - quad_width / 2.0,
+        .y = @as(f32, @floatCast(cursor_y)) - quad_height / 2.0,
+    };
+    const size = Batch2D.Vec2{ .x = quad_width, .y = quad_height };
+    const tint = Batch2D.Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
+
+    try renderer.drawTexturedQuad(logo_location, pos, size, tint);
+
+    // --- Draw the Text ---
+    const text_to_render = "WGpu Test";
+    const x_start: f32 = 0.0;
+    const y_start: f32 = 0.0; // The desired top Y coordinate of the text block
+
+    // --- PASS 1: Calculate the precise ascent for this specific string ---
+    // This logic is correct and mirrors the principle used in wgpu_demo.zig.
+    // It finds the highest point any glyph reaches to perfectly calculate the baseline position.
+    var max_y1_unscaled: i32 = 0;
+    for (text_to_render) |char| {
+        const char_code = @as(u21, @intCast(char));
+        var x0: i32 = 0;
+        var y0: i32 = 0;
+        var x1: i32 = 0;
+        var y1: i32 = 0;
+        _ = stbtt.getCodepointBox(&app_context.font_info, @intCast(char_code), &x0, &y0, &x1, &y1);
+        if (y1 > max_y1_unscaled) {
+            max_y1_unscaled = y1;
+        }
+    }
+    const final_ascent = @as(f32, @floatFromInt(max_y1_unscaled)) * app_context.font_scale;
+    const baseline_y = y_start + final_ascent;
+
+    // --- PASS 2: Generate and draw the glyph quads ---
+    // CORRECTED IMPLEMENTATION: This section is modified to use stbtt.getCodepointBitmapBox
+    // for accurate, scaled pixel coordinates, just like the proven wgpu_demo.zig implementation
+    // relies on for its final positioning.
+    var xpos = x_start;
+    var prev_char: u21 = 0;
+
+    for (text_to_render) |char| {
+        const char_code = @as(u21, @intCast(char));
+
+        // Get kerning adjustment
+        if (prev_char != 0) {
+            const kern = stbtt.getCodepointKernAdvance(&app_context.font_info, prev_char, char_code);
+            xpos += @as(f32, @floatFromInt(kern)) * app_context.font_scale;
+        }
+
+        // Get horizontal metrics for advancing the cursor.
+        var adv: i32 = 0;
+        var lsb: i32 = 0; // lsb is not used here, getCodepointBitmapBox provides the final x offset.
+        stbtt.getCodepointHMetrics(&app_context.font_info, @intCast(char_code), &adv, &lsb);
+
+        // Get the glyph's final bounding box in scaled pixel coordinates.
+        // This is the key change to ensure the quad we draw matches the bitmap
+        // generated by the dataProvider.
+        var ix0: i32 = 0;
+        var iy0: i32 = 0;
+        var ix1: i32 = 0;
+        var iy1: i32 = 0;
+        stbtt.getCodepointBitmapBox(
+            &app_context.font_info,
+            @intCast(char_code),
+            app_context.font_scale,
+            app_context.font_scale,
+            &ix0,
+            &iy0,
+            &ix1,
+            &iy1,
+        );
+
+        const char_width = @as(f32, @floatFromInt(ix1 - ix0));
+        const char_height = @as(f32, @floatFromInt(iy1 - iy0));
+
+        // Draw the character ONLY if it has a visual representation.
+        if (char_width > 0 and char_height > 0) {
+            // iy0 is the pixel offset from the baseline to the top of the bitmap.
+            // ix0 is the pixel offset from the cursor to the left of the bitmap.
+            const char_pos = Batch2D.Vec2{
+                .x = xpos + @as(f32, @floatFromInt(ix0)),
+                .y = baseline_y + @as(f32, @floatFromInt(iy0)),
+            };
+            const char_size = Batch2D.Vec2{
+                .x = char_width,
+                .y = char_height,
+            };
+
+            const glyph_location = renderer.multi_atlas.query(glyphId(char_code), dataProvider, app_context) catch |err| {
+                return err;
+            };
+            try renderer.drawTexturedQuad(glyph_location, char_pos, char_size, tint);
+        }
+
+        // Advance cursor position for the next character.
+        xpos += @as(f32, @floatFromInt(adv)) * app_context.font_scale;
+        prev_char = char_code;
+    }
+}
+
+/// Creates a 4x4 orthographic projection matrix.
+fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) [16]f32 {
+    var mat: [16]f32 = std.mem.zeroes([16]f32);
+    mat[0] = 2.0 / (right - left);
+    mat[5] = 2.0 / (top - bottom);
+    mat[10] = -2.0 / (far - near);
+    mat[12] = -(right + left) / (right - left);
+    mat[13] = -(top + bottom) / (top - bottom);
+    mat[14] = -(far + near) / (far - near);
+    mat[15] = 1.0;
+    return mat;
+}
 
 pub fn main() !void {
     const gpa = std.heap.page_allocator;
 
-    // --- WGPU Logging Setup ---
-    // WGPU can provide detailed logging information. We set up a callback function
-    // that bridges WGPU's C-style logging to Zig's standard log.
-    _ = wgpu.setLogCallback(&struct {
-        fn log_callback(level: wgpu.LogLevel, message: wgpu.StringView, userdata: ?*anyopaque) callconv(.c) void {
-            _ = userdata;
-
-            const level_str = switch (level) {
-                .@"error" => "error",
-                .warn => "warn",
-                .info => "info",
-                .debug => "debug",
-                .trace => "trace",
-                else => "unknown_level",
-            };
-
-            const text = message.toSlice();
-
-            // Filter out noisy messages that we don't care about for this demo.
-            inline for (&.{
-                "Suboptimal present of frame", // Suboptimal frame presentation is *desirable* when resizing the window, to prevent stuttering.
-            }) |ignore_pattern| {
-                if (std.mem.indexOf(u8, text, ignore_pattern) != null) return;
-            }
-
-            // Use a scoped logger to prefix messages with "wgpu".
-            const wgpu_log = std.log.scoped(.wgpu);
-            switch (level) {
-                .@"error" => wgpu_log.err("{s}", .{text}),
-                .warn => wgpu_log.warn("{s}", .{text}),
-                .info => wgpu_log.info("{s}", .{text}),
-                .debug => wgpu_log.debug("{s}", .{text}),
-                else => wgpu_log.debug("[{s}] {s}", .{ level_str, text }),
-            }
-        }
-    }.log_callback, null);
-
-    // Set the maximum log level that WGPU will report.
-    wgpu.setLogLevel(.trace);
-
-    // --- GLFW Initialization ---
-    // GLFW needs a hint about which platform backend to use (e.g., X11 on Linux, Win32 on Windows).
+    // --- WGPU, GLFW, STB Initialization (Largely unchanged) ---
     if (comptime builtin.os.tag != .windows) {
         glfw.initHint(.{ .platform = .x11 });
     } else {
         glfw.initHint(.{ .platform = .win32 });
     }
-
-    // Initialize the GLFW library.
     try glfw.init();
-    // Ensure GLFW is de-initialized when the main function exits.
     defer glfw.deinit();
 
-    // Initialize the stbi library.
-    stbi.init(std.heap.page_allocator);
+    stbi.init(gpa);
     defer stbi.deinit();
 
-    // --- Core WGPU and Window Setup ---
-    // Create an instance of our application state struct.
     var demo = Demo{};
-
-    // Create the top-level WGPU instance. This is the entry point to the API.
     const instance_extras = wgpu.InstanceExtras{
         .chain = .{ .s_type = .instance_extras },
         .backends = switch (builtin.os.tag) {
@@ -131,503 +252,92 @@ pub fn main() !void {
             else => wgpu.InstanceBackend.vulkanBackend,
         },
     };
-    const instance_descriptor = wgpu.InstanceDescriptor{
+    demo.instance = wgpu.createInstance(&wgpu.InstanceDescriptor{
         .next_in_chain = @ptrCast(&instance_extras),
-    };
-    // force using the vulkan backend in wine, the wgpu-native library has issues with the dx12 compatibility layer.
-    demo.instance = wgpu.createInstance(&instance_descriptor);
+    });
     std.debug.assert(demo.instance != null);
-    // Ensure the instance is released when the main function exits.
     defer wgpu.instanceRelease(demo.instance);
 
-    const initial_width: i32 = 640;
-    const initial_height: i32 = 480;
-
-    // Tell GLFW not to create a graphics context (like OpenGL), because WGPU will manage that.
     glfw.windowHint(.{ .client_api = .none });
-    // Create the window that we will draw into.
-    const window = try glfw.createWindow(initial_width, initial_height, "gpu-quad [zig / wgpu + glfw + stb_image]", null, null);
-    // Ensure the window is destroyed when the main function exits.
+    const window = try glfw.createWindow(640, 480, "gpu-quad [zig / Renderer]", null, null);
     defer glfw.destroyWindow(window);
 
-    // --- GLFW Callbacks ---
-    // Store a pointer to our `Demo` state struct within the GLFW window object. This allows
-    // our C-style callbacks to retrieve the application state.
     glfw.setWindowUserPointer(window, &demo);
-
-    // Set a callback for key presses.
-    _ = glfw.setKeyCallback(window, &struct {
-        fn handle_glfw_key(w: *glfw.Window, key: glfw.Key, scancode: i32, action: glfw.KeyState32, mods: glfw.Modifier) callconv(.c) void {
-            _ = scancode;
-            _ = mods;
-            // When 'R' is pressed, generate and print a WGPU report for debugging memory usage.
-            if (key == .r and (action == .press or action == .repeat)) {
-                // Retrieve the application state from the window pointer.
-                const st: *Demo = @ptrCast(@alignCast(glfw.getWindowUserPointer(w) orelse return));
-                if (st.instance == null) return;
-                var report: wgpu.GlobalReport = undefined;
-                wgpu.generateReport(st.instance, &report);
-                wgpu.printGlobalReport(report);
-            }
-        }
-    }.handle_glfw_key);
-
-    // Set a callback for when the window's framebuffer is resized.
     _ = glfw.setFramebufferSizeCallback(window, &struct {
         fn handle_glfw_framebuffer_size(w: *glfw.Window, width: i32, height: i32) callconv(.c) void {
             if (width <= 0 and height <= 0) return;
-            // Retrieve the application state.
-            const st: *Demo = @ptrCast(@alignCast(glfw.getWindowUserPointer(w) orelse return));
-            if (st.surface == null) return;
-            // Update the surface configuration with the new dimensions.
-            st.config.width = @intCast(width);
-            st.config.height = @intCast(height);
-            // Re-configure the surface to apply the new size.
-            wgpu.surfaceConfigure(st.surface, &st.config);
+            const d: *Demo = @ptrCast(@alignCast(glfw.getWindowUserPointer(w) orelse return));
+            if (d.surface == null) return;
+            d.config.width = @intCast(width);
+            d.config.height = @intCast(height);
+            wgpu.surfaceConfigure(d.surface, &d.config);
         }
     }.handle_glfw_framebuffer_size);
 
-    // --- WGPU Surface Creation (Platform-Specific) ---
-    // A surface is the part of a window that WGPU can draw to. Creating it requires
-    // platform-specific native window handles, which we get from GLFW.
     if (comptime builtin.os.tag != .windows) {
-        // On Linux/X11
         const x11_display = glfw.getX11Display();
         const x11_window = glfw.getX11Window(window);
-        std.debug.assert(x11_display != null and x11_window != 0);
         var xlib_source = wgpu.SurfaceSourceXlibWindow{ .chain = .{ .s_type = .surface_source_xlib_window }, .display = x11_display, .window = x11_window };
         demo.surface = wgpu.instanceCreateSurface(demo.instance, &wgpu.SurfaceDescriptor{ .next_in_chain = @ptrCast(&xlib_source) });
     } else {
-        // On Windows
         const win32_hwnd = glfw.getWin32Window(window);
         const win32_hinstance = glfw.getWin32ModuleHandle();
-        std.debug.assert(win32_hwnd != null);
         var win32_source = wgpu.SurfaceSourceWindowsHWND{ .chain = .{ .s_type = .surface_source_windows_hwnd }, .hwnd = win32_hwnd, .hinstance = win32_hinstance };
         demo.surface = wgpu.instanceCreateSurface(demo.instance, &wgpu.SurfaceDescriptor{ .next_in_chain = @ptrCast(&win32_source) });
     }
     std.debug.assert(demo.surface != null);
-    // Ensure the surface is released on exit.
     defer wgpu.surfaceRelease(demo.surface);
 
-    // --- WGPU Adapter and Device Setup (Asynchronous) ---
-    // 1. Request an Adapter: An adapter represents a physical GPU. We request one
-    // that is compatible with our drawing surface.
     _ = wgpu.instanceRequestAdapter(demo.instance, &wgpu.RequestAdapterOptions{ .compatible_surface = demo.surface }, .{
         .callback = &struct {
-            fn handle_request_adapter(status: wgpu.RequestAdapterStatus, adapter: wgpu.Adapter, message: wgpu.StringView, userdata1: ?*anyopaque, userdata2: ?*anyopaque) callconv(.c) void {
-                _ = userdata2;
+            fn handle_request_adapter(status: wgpu.RequestAdapterStatus, adapter: wgpu.Adapter, msg: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
+                _ = ud2;
                 if (status == .success) {
-                    const state: *Demo = @ptrCast(@alignCast(userdata1.?));
-                    state.adapter = adapter; // On success, store the adapter in our state.
+                    const d: *Demo = @ptrCast(@alignCast(ud1.?));
+                    d.adapter = adapter;
                 } else {
-                    if (message.data) |data| log.err("request_adapter status={any} message={s}\n", .{ status, data[0..message.length] });
+                    log.err("request_adapter failed: {s}", .{msg.toSlice()});
                 }
             }
         }.handle_request_adapter,
         .userdata1 = &demo,
     });
-    // This is an asynchronous operation. For this simple example, we poll until the callback has completed.
     while (demo.adapter == null) wgpu.instanceProcessEvents(demo.instance);
     defer wgpu.adapterRelease(demo.adapter);
 
-    // Print information about the selected GPU.
-    wgpu.printAdapterInfo(demo.adapter);
-
-    // 2. Request a Device: A device is our logical connection to the GPU, used to create resources.
     _ = wgpu.adapterRequestDevice(demo.adapter, null, .{
         .callback = &struct {
-            fn handle_request_device(status: wgpu.RequestDeviceStatus, device: wgpu.Device, message: wgpu.StringView, userdata1: ?*anyopaque, userdata2: ?*anyopaque) callconv(.c) void {
-                _ = userdata2;
+            fn handle_request_device(status: wgpu.RequestDeviceStatus, device: wgpu.Device, msg: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
+                _ = ud2;
                 if (status == .success) {
-                    const state: *Demo = @ptrCast(@alignCast(userdata1.?));
-                    state.device = device; // On success, store the device in our state.
+                    const d: *Demo = @ptrCast(@alignCast(ud1.?));
+                    d.device = device;
                 } else {
-                    if (message.data) |data| log.err("request_device status={any} message={s}\n", .{ status, data[0..message.length] });
+                    log.err("request_device failed: {s}", .{msg.toSlice()});
                 }
             }
         }.handle_request_device,
         .userdata1 = &demo,
     });
-    // This is also async, so we poll to wait for completion.
     while (demo.device == null) wgpu.instanceProcessEvents(demo.instance);
     defer wgpu.deviceRelease(demo.device);
 
-    // 3. Get the Command Queue: The queue is where we submit command buffers for the GPU to execute.
     const queue = wgpu.deviceGetQueue(demo.device);
-    std.debug.assert(queue != null);
     defer wgpu.queueRelease(queue);
 
-    // --- GPU Resource Creation ---
-
-    // A quad is made of two triangles, so we need 6 vertices.
-    const vertex_count = 6;
-    const vertex_data_size = vertex_count * @sizeOf(Vertex);
-
-    // --- Create Vertex and Staging Buffers ---
-    // The vertex buffer will live on the GPU and is the destination for our vertex data.
-    // It's not directly writable by the CPU, making it faster for the GPU to access during rendering.
-    const vertex_buffer = wgpu.deviceCreateBuffer(demo.device, &wgpu.BufferDescriptor{
-        .label = .fromSlice("vertex_buffer"),
-        // Usage: It will be used as a vertex buffer and as a destination for copy operations.
-        .usage = wgpu.BufferUsage{ .vertex = true, .copy_dst = true },
-        .size = vertex_data_size,
-    });
-    std.debug.assert(vertex_buffer != null);
-    defer wgpu.bufferRelease(vertex_buffer);
-
-    // The staging buffer is a temporary buffer that is writable by the CPU.
-    // We will write our vertex data here each frame and then command the GPU
-    // to copy it to the main vertex buffer. This CPU-writable -> GPU-copyable -> GPU-local
-    // pattern is common for frequently updated data.
-    const staging_buffer = wgpu.deviceCreateBuffer(demo.device, &wgpu.BufferDescriptor{
-        .label = .fromSlice("staging_buffer"),
-        // Usage: It can be mapped for writing from the CPU and used as a source for copy operations.
-        .usage = wgpu.BufferUsage{ .copy_src = true, .map_write = true },
-        .size = vertex_data_size,
-    });
-    std.debug.assert(staging_buffer != null);
-    defer wgpu.bufferRelease(staging_buffer);
-
-    // --- Create Uniform Buffer ---
-    // This buffer will hold our `Uniforms` struct.
-    const uniform_buffer = wgpu.deviceCreateBuffer(demo.device, &wgpu.BufferDescriptor{
-        .label = .fromSlice("uniform_buffer"),
-        // Usage: It will be used as a uniform buffer in shaders and can be written to.
-        .usage = wgpu.BufferUsage{ .uniform = true, .copy_dst = true },
-        .size = @sizeOf(Uniforms),
-    });
-    std.debug.assert(uniform_buffer != null);
-    defer wgpu.bufferRelease(uniform_buffer);
-
-    // --- Load Texture and Generate Mipmaps ---
-    // Use stb_image to load a PNG from the disk into CPU memory.
-    const image_scale = 0.2;
-    var image = try stbi.Image.loadFromFile("assets/images/wgpu-logo.png", 4);
-    defer image.deinit();
-    log.info("Loaded image: {d}x{d}x{d}bpp", .{ image.width, image.height, image.bytes_per_component * 8 });
-
-    // Calculate the number of mip levels required.
-    const mip_level_count = std.math.log2_int(u32, @max(image.width, image.height)) + 1;
-    log.info("Generating {d} mip levels", .{mip_level_count});
-
-    // Create a WGPU texture on the GPU.
-    const texture_size = wgpu.Extent3D{ .width = image.width, .height = image.height, .depth_or_array_layers = 1 };
-
-    const texture = wgpu.deviceCreateTexture(demo.device, &wgpu.TextureDescriptor{
-        .label = .fromSlice("texture"),
-        .size = texture_size,
-        .mip_level_count = mip_level_count,
-        .sample_count = 1,
-        .dimension = .@"2d",
-        .format = .rgba8_unorm_srgb, // sRGB format is important for correct color display
-        // Usage: It can be bound in a shader and can be a destination for data copies.
-        .usage = wgpu.TextureUsage{ .texture_binding = true, .copy_dst = true },
-    });
-    std.debug.assert(texture != null);
-    defer wgpu.textureRelease(texture);
-
-    // Upload the base level (mip 0)
-    wgpu.queueWriteTexture(
-        queue,
-        &wgpu.TexelCopyTextureInfo{ .texture = texture, .mip_level = 0 },
-        image.data.ptr,
-        image.data.len,
-        &wgpu.TexelCopyBufferLayout{ .bytes_per_row = image.bytes_per_row, .rows_per_image = image.height },
-        &texture_size,
-    );
-
-    // Generate and upload subsequent mip levels
-    var src_image = image;
-
-    for (1..mip_level_count) |mip_level| {
-        const dest_width = @max(1, src_image.width / 2);
-        const dest_height = @max(1, src_image.height / 2);
-
-        const dest_image = stbi.Image.resize(&src_image, dest_width, dest_height);
-
-        const mip_texture_size = wgpu.Extent3D{
-            .width = dest_image.width,
-            .height = dest_image.height,
-            .depth_or_array_layers = 1,
-        };
-
-        wgpu.queueWriteTexture(
-            queue,
-            &wgpu.TexelCopyTextureInfo{ .texture = texture, .mip_level = @intCast(mip_level) },
-            dest_image.data.ptr,
-            dest_image.data.len,
-            &wgpu.TexelCopyBufferLayout{
-                .bytes_per_row = dest_image.bytes_per_row,
-                .rows_per_image = dest_image.height,
-            },
-            &mip_texture_size,
-        );
-
-        // If src_image is not the original base image, it was a temporary
-        // created in the previous iteration, so we must free it.
-        if (mip_level > 1) {
-            src_image.deinit();
-        }
-
-        // The destination image of this iteration becomes the source for the next.
-        src_image = dest_image;
-    }
-
-    // After the loop, if we generated any mips, the last `src_image`
-    // is the final, smallest mipmap which needs to be freed.
-    if (mip_level_count > 1) {
-        src_image.deinit();
-    }
-
-    // A TextureView describes how the shader will access the texture (e.g., which mip levels).
-    const texture_view_descriptor = wgpu.TextureViewDescriptor{
-        .label = .fromSlice("full_mip_chain_view"),
-        // You can often leave format and dimension as 0 to inherit from the texture,
-        // but being explicit is clear.
-        .format = .rgba8_unorm_srgb,
-        .dimension = .@"2d",
-        .base_mip_level = 0,
-        .mip_level_count = mip_level_count,
-        .base_array_layer = 0,
-        .array_layer_count = 1,
-    };
-    const texture_view = wgpu.textureCreateView(texture, &texture_view_descriptor);
-    std.debug.assert(texture_view != null);
-    defer wgpu.textureViewRelease(texture_view);
-
-    // A Sampler describes how the shader will sample the texture (e.g., using linear filtering for smoothness).
-    const sampler = wgpu.deviceCreateSampler(demo.device, &wgpu.SamplerDescriptor{
-        .label = .fromSlice("sampler"),
-        .mag_filter = .linear, // Use linear filtering when magnifying the texture.
-        .min_filter = .linear, // Use linear filtering when minifying the texture.
-
-        // .mipmap_filter = .linear, // Use linear filtering between mip levels. Worse result for screen aligned quads.
-
-        // Without this, lod_max_clamp is zero-initialized, disabling mipmapping.
-        .lod_min_clamp = 0.0,
-        .lod_max_clamp = @as(f32, @floatFromInt(mip_level_count)),
-
-        // A clamp value > 1 enables anisotropic filtering.
-        // The device hardware will clamp this to its maximum supported level (often 16).
-        .max_anisotropy = 1, // >1 requires all filters to be .linear. >1 gives worse result for screen aligned quads.
-    });
-    std.debug.assert(sampler != null);
-    defer wgpu.samplerRelease(sampler);
-
-    // --- Font Rendering Setup ---
-    const font_path = "assets/fonts/roboto/regular.ttf";
-    const font_data = try std.fs.cwd().readFileAlloc(gpa, font_path, 10 * 1024 * 1024);
-    defer gpa.free(font_data);
-
-    var font_info: stbtt.FontInfo = .{};
-    std.debug.assert(stbtt.initFont(&font_info, font_data.ptr, 0) != 0);
-
-    const atlas_width: u32 = 512;
-    const atlas_height: u32 = 512;
-    const font_size: f32 = 40.0;
-    const first_char = 32; // ASCII space
-    const char_count = 95; // 127 - 32
-
-    // This scale factor is constant as long as font_size doesn't change.
-    const font_scale = stbtt.scaleForPixelHeight(&font_info, font_size);
-
-    const atlas_pixels = try gpa.alloc(u8, atlas_width * atlas_height);
-    defer gpa.free(atlas_pixels);
-
-    const packed_char_data = try gpa.alloc(stbtt.PackedChar, char_count);
-    defer gpa.free(packed_char_data);
-
-    var pack_context: stbtt.PackContext = .{};
-    std.debug.assert(stbtt.packBegin(&pack_context, atlas_pixels.ptr, atlas_width, atlas_height, 0, 1, null) != 0);
-    defer stbtt.packEnd(&pack_context);
-
-    stbtt.packSetOversampling(&pack_context, 2, 2);
-    std.debug.assert(stbtt.packFontRange(&pack_context, font_data.ptr, 0, font_size, first_char, char_count, packed_char_data.ptr) != 0);
-
-    const font_texture = wgpu.deviceCreateTexture(demo.device, &wgpu.TextureDescriptor{
-        .label = .fromSlice("font_atlas_texture"),
-        .size = .{ .width = atlas_width, .height = atlas_height, .depth_or_array_layers = 1 },
-        .mip_level_count = 1,
-        .sample_count = 1,
-        .dimension = .@"2d",
-        .format = .r8_unorm,
-        .usage = wgpu.TextureUsage{ .texture_binding = true, .copy_dst = true },
-    });
-    std.debug.assert(font_texture != null);
-    defer wgpu.textureRelease(font_texture);
-
-    wgpu.queueWriteTexture(
-        queue,
-        &wgpu.TexelCopyTextureInfo{ .texture = font_texture },
-        atlas_pixels.ptr,
-        atlas_pixels.len,
-        &wgpu.TexelCopyBufferLayout{ .bytes_per_row = atlas_width, .rows_per_image = atlas_height },
-        &.{ .width = atlas_width, .height = atlas_height, .depth_or_array_layers = 1 },
-    );
-
-    const font_texture_view = wgpu.textureCreateView(font_texture, &wgpu.TextureViewDescriptor{ .label = .fromSlice("font_atlas_view") });
-    std.debug.assert(font_texture_view != null);
-    defer wgpu.textureViewRelease(font_texture_view);
-
-    const text_to_render_for_sizing = "WGpu Test";
-    const text_vertex_count = text_to_render_for_sizing.len * 6;
-    const text_vertex_data_size = text_vertex_count * @sizeOf(Vertex);
-
-    const text_vertex_buffer = wgpu.deviceCreateBuffer(demo.device, &wgpu.BufferDescriptor{
-        .label = .fromSlice("text_vertex_buffer"),
-        .usage = wgpu.BufferUsage{ .vertex = true, .copy_dst = true },
-        .size = text_vertex_data_size,
-    });
-    std.debug.assert(text_vertex_buffer != null);
-    defer wgpu.bufferRelease(text_vertex_buffer);
-
-    const text_staging_buffer = wgpu.deviceCreateBuffer(demo.device, &wgpu.BufferDescriptor{
-        .label = .fromSlice("text_staging_buffer"),
-        .usage = wgpu.BufferUsage{ .copy_src = true, .map_write = true },
-        .size = text_vertex_data_size,
-    });
-    std.debug.assert(text_staging_buffer != null);
-    defer wgpu.bufferRelease(text_staging_buffer);
-
-    // --- Create Bind Group Layout and Bind Group ---
-    // A BindGroupLayout defines the "signature" of a group of resources that will be
-    // available to a shader. It's like a function signature or an interface.
-    const bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &wgpu.BindGroupLayoutDescriptor{
-        .label = .fromSlice("bind_group_layout"),
-        .entry_count = 3,
-        // Define the resources: a sampler, a texture, and a uniform buffer.
-        .entries = &[_]wgpu.BindGroupLayoutEntry{
-            .{ .binding = 0, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } }, // Binding 0: a sampler for the fragment shader.
-            .{ .binding = 1, .visibility = .fragmentStage, .texture = .{ .sample_type = .float, .view_dimension = .@"2d" } }, // Binding 1: a texture for the fragment shader.
-            .{ .binding = 2, .visibility = .vertexStage, .buffer = .{ .type = .uniform } }, // Binding 2: a uniform buffer for the vertex shader.
-        },
-    });
-    std.debug.assert(bind_group_layout != null);
-    defer wgpu.bindGroupLayoutRelease(bind_group_layout);
-
-    // A BindGroup is an instance of a BindGroupLayout. It binds the actual resources
-    // (our sampler, texture view, and uniform buffer) to the slots defined in the layout.
-    const bind_group = wgpu.deviceCreateBindGroup(demo.device, &wgpu.BindGroupDescriptor{
-        .label = .fromSlice("bind_group"),
-        .layout = bind_group_layout,
-        .entry_count = 3,
-        .entries = &[_]wgpu.BindGroupEntry{
-            .{ .binding = 0, .sampler = sampler },
-            .{ .binding = 1, .texture_view = texture_view },
-            .{ .binding = 2, .buffer = uniform_buffer, .offset = 0, .size = @sizeOf(Uniforms) },
-        },
-    });
-    std.debug.assert(bind_group != null);
-    defer wgpu.bindGroupRelease(bind_group);
-
-    // A second bind group for our font texture. It uses the same layout.
-    const text_bind_group = wgpu.deviceCreateBindGroup(demo.device, &wgpu.BindGroupDescriptor{
-        .label = .fromSlice("text_bind_group"),
-        .layout = bind_group_layout,
-        .entry_count = 3,
-        .entries = &[_]wgpu.BindGroupEntry{
-            .{ .binding = 0, .sampler = sampler },
-            .{ .binding = 1, .texture_view = font_texture_view },
-            .{ .binding = 2, .buffer = uniform_buffer, .offset = 0, .size = @sizeOf(Uniforms) },
-        },
-    });
-    std.debug.assert(text_bind_group != null);
-    defer wgpu.bindGroupRelease(text_bind_group);
-
-    // --- Create Render Pipelines ---
-    // Load our WGSL shader code from files into shader modules.
-    const image_shader_module = try wgpu.loadShader(demo.device, "assets/shaders/screenspace_2d.wgsl");
-    defer wgpu.shaderModuleRelease(image_shader_module);
-
-    const text_shader_module = try wgpu.loadShader(demo.device, "assets/shaders/text_2d.wgsl");
-    defer wgpu.shaderModuleRelease(text_shader_module);
-
-    // A PipelineLayout defines which bind groups the pipeline will use.
-    const pipeline_layout = wgpu.deviceCreatePipelineLayout(demo.device, &wgpu.PipelineLayoutDescriptor{
-        .label = .fromSlice("pipeline_layout"),
-        .bind_group_layout_count = 1,
-        .bind_group_layouts = &[_]wgpu.BindGroupLayout{bind_group_layout},
-    });
-    std.debug.assert(pipeline_layout != null);
-    defer wgpu.pipelineLayoutRelease(pipeline_layout);
-
-    // Query the surface for its supported capabilities (e.g., formats, present modes).
     var surface_capabilities: wgpu.SurfaceCapabilities = undefined;
     _ = wgpu.surfaceGetCapabilities(demo.surface, demo.adapter, &surface_capabilities);
     defer wgpu.surfaceCapabilitiesFreeMembers(surface_capabilities);
+    const surface_format = surface_capabilities.formats.?[0];
 
-    // Define how colors will be blended with the background (standard alpha blending).
-    const blend_state = wgpu.BlendState{
-        .color = .{ .operation = .add, .src_factor = .src_alpha, .dst_factor = .one_minus_src_alpha },
-        .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .zero },
-    };
-    // Define the layout of our vertex buffer for the vertex shader.
-    const vertex_buffer_layout = wgpu.VertexBufferLayout{
-        .array_stride = @sizeOf(Vertex),
-        .step_mode = .vertex,
-        .attribute_count = 2,
-        .attributes = &[_]wgpu.VertexAttribute{
-            .{ .shaderLocation = 0, .offset = @offsetOf(Vertex, "position"), .format = .float32x2 },
-            .{ .shaderLocation = 1, .offset = @offsetOf(Vertex, "tex_coords"), .format = .float32x2 },
-        },
-    };
-
-    // The RenderPipeline is a massive object that configures almost the entire rendering state.
-    // It's expensive to create, so you typically create all needed pipelines at initialization.
-    const render_pipeline = wgpu.deviceCreateRenderPipeline(demo.device, &wgpu.RenderPipelineDescriptor{
-        .label = .fromSlice("render_pipeline"),
-        .layout = pipeline_layout,
-        .vertex = .{
-            .module = image_shader_module,
-            .entry_point = .fromSlice("vs_main"),
-            .buffer_count = 1,
-            .buffers = &.{vertex_buffer_layout},
-        },
-        .fragment = &wgpu.FragmentState{
-            .module = image_shader_module,
-            .entry_point = .fromSlice("fs_main"),
-            .target_count = 1,
-            .targets = &[_]wgpu.ColorTargetState{.{ .format = surface_capabilities.formats.?[0], .blend = &blend_state, .write_mask = .all }},
-        },
-        .primitive = .{ .topology = .triangle_list },
-        .multisample = .{ .count = 1, .mask = 0xFFFFFFFF },
-    });
-    std.debug.assert(render_pipeline != null);
-    defer wgpu.renderPipelineRelease(render_pipeline);
-
-    // Create a second pipeline specifically for text rendering.
-    const text_render_pipeline = wgpu.deviceCreateRenderPipeline(demo.device, &wgpu.RenderPipelineDescriptor{
-        .label = .fromSlice("text_render_pipeline"),
-        .layout = pipeline_layout,
-        .vertex = .{
-            .module = text_shader_module,
-            .entry_point = .fromSlice("vs_main"),
-            .buffer_count = 1,
-            .buffers = &.{vertex_buffer_layout},
-        },
-        .fragment = &wgpu.FragmentState{
-            .module = text_shader_module,
-            .entry_point = .fromSlice("fs_main"),
-            .target_count = 1,
-            .targets = &[_]wgpu.ColorTargetState{.{ .format = surface_capabilities.formats.?[0], .blend = &blend_state, .write_mask = .all }},
-        },
-        .primitive = .{ .topology = .triangle_list },
-        .multisample = .{ .count = 1, .mask = 0xFFFFFFFF },
-    });
-    std.debug.assert(text_render_pipeline != null);
-    defer wgpu.renderPipelineRelease(text_render_pipeline);
-
-    // --- Configure Surface ---
-    // Now that we have a device and have queried capabilities, we can configure the surface.
     demo.config = .{
         .device = demo.device,
-        .usage = .renderAttachmentUsage, // The surface textures will be used for rendering.
-        .format = surface_capabilities.formats.?[0], // Use the preferred format.
-        .present_mode = .fifo, // V-sync mode.
+        .usage = .renderAttachmentUsage,
+        .format = surface_format,
+        .present_mode = .fifo,
         .alpha_mode = surface_capabilities.alpha_modes.?[0],
     };
     {
-        // Set the initial size of the surface configuration.
         var width: i32 = 0;
         var height: i32 = 0;
         glfw.getWindowSize(window, &width, &height);
@@ -636,144 +346,32 @@ pub fn main() !void {
     }
     wgpu.surfaceConfigure(demo.surface, &demo.config);
 
+    // --- Initialize Renderer and AppContext ---
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+
+    var app_context = AppContext{
+        .allocator = gpa,
+        .logo_image = try stbi.Image.loadFromFile("assets/images/wgpu-logo.png", 4),
+        .font_data = try std.fs.cwd().readFileAlloc(gpa, "assets/fonts/roboto/regular.ttf", 10 * 1024 * 1024),
+        .font_info = .{},
+        .font_scale = 0.0,
+        .frame_arena = &arena_state,
+    };
+    defer app_context.logo_image.deinit();
+    defer gpa.free(app_context.font_data);
+
+    std.debug.assert(stbtt.initFont(&app_context.font_info, app_context.font_data.ptr, 0) != 0);
+    app_context.font_scale = stbtt.scaleForPixelHeight(&app_context.font_info, 40.0);
+
+    demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format);
+    defer demo.renderer.deinit();
+
     // --- Main Loop ---
     main_loop: while (!glfw.windowShouldClose(window)) {
-        // Handle window events (input, closing the window, etc.).
         glfw.pollEvents();
+        _ = app_context.frame_arena.reset(.free_all);
 
-        // --- Regenerate and Upload Logo Mesh Data via Staging Buffer ---
-        {
-            // 1. Asynchronously request to map the staging buffer for writing from the CPU.
-            _ = wgpu.bufferMapAsync(staging_buffer, .writeMode, 0, vertex_data_size, .{ .callback = &struct {
-                fn callback(status: wgpu.MapAsyncStatus, msg: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
-                    _ = msg;
-                    _ = ud1;
-                    _ = ud2;
-                    if (status != .success) std.debug.print("Failed to map staging buffer: {any}\n", .{status});
-                }
-            }.callback });
-
-            // 2. Poll the device to wait for the mapping to complete.
-            _ = wgpu.devicePoll(demo.device, .true, null);
-
-            // 3. Get a CPU pointer to the mapped memory and write the new vertex data into it.
-            const mapped_range = wgpu.bufferGetMappedRange(staging_buffer, 0, vertex_data_size);
-            if (mapped_range) |ptr| {
-                const data: [*]Vertex = @ptrCast(@alignCast(ptr));
-                var cursor_x: f64 = 0;
-                var cursor_y: f64 = 0;
-                glfw.getCursorPos(window, &cursor_x, &cursor_y);
-                const quad_width: f32 = @as(f32, @floatFromInt(image.width)) * image_scale;
-                const quad_height: f32 = @as(f32, @floatFromInt(image.height)) * image_scale;
-                const x1: f32 = @as(f32, @floatCast(cursor_x)) - quad_width / 2.0;
-                const y1: f32 = @as(f32, @floatCast(cursor_y)) - quad_height / 2.0;
-                const x2: f32 = @as(f32, @floatCast(cursor_x)) + quad_width / 2.0;
-                const y2: f32 = @as(f32, @floatCast(cursor_y)) + quad_height / 2.0;
-
-                const vertices = [_]Vertex{
-                    .{ .position = .{ x1, y1 }, .tex_coords = .{ 0.0, 0.0 } }, // Top-left
-                    .{ .position = .{ x2, y1 }, .tex_coords = .{ 1.0, 0.0 } }, // Top-right
-                    .{ .position = .{ x1, y2 }, .tex_coords = .{ 0.0, 1.0 } }, // Bottom-left
-                    .{ .position = .{ x1, y2 }, .tex_coords = .{ 0.0, 1.0 } }, // Bottom-left
-                    .{ .position = .{ x2, y1 }, .tex_coords = .{ 1.0, 0.0 } }, // Top-right
-                    .{ .position = .{ x2, y2 }, .tex_coords = .{ 1.0, 1.0 } }, // Bottom-right
-                };
-                @memcpy(data[0..vertex_count], &vertices);
-                wgpu.bufferUnmap(staging_buffer);
-            }
-        }
-
-        const text_to_render = "WGpu Test";
-
-        // --- Calculate Text Metrics for Current Frame ---
-        // By calculating the precise ascent for the specific string we are rendering in this
-        // frame, we ensure it's always perfectly aligned to the top, even if the text changes.
-        var max_y1_unscaled: i32 = 0;
-        for (text_to_render) |char| {
-            const glyph_index = stbtt.findGlyphIndex(&font_info, char);
-            if (glyph_index == 0) continue;
-
-            var x0: i32 = 0;
-            var y0: i32 = 0;
-            var x1: i32 = 0;
-            var y1: i32 = 0;
-            _ = stbtt.getGlyphBox(&font_info, glyph_index, &x0, &y0, &x1, &y1);
-            if (y1 > max_y1_unscaled) {
-                max_y1_unscaled = y1;
-            }
-        }
-        const final_ascent = @as(f32, @floatFromInt(max_y1_unscaled)) * font_scale;
-
-        // --- Regenerate and Upload Text Mesh Data ---
-        {
-            _ = wgpu.bufferMapAsync(text_staging_buffer, .writeMode, 0, text_vertex_data_size, .{ .callback = &struct {
-                fn callback(status: wgpu.MapAsyncStatus, msg: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
-                    _ = msg;
-                    _ = ud1;
-                    _ = ud2;
-                    if (status != .success) std.debug.print("Failed to map text staging buffer: {any}\n", .{status});
-                }
-            }.callback });
-
-            _ = wgpu.devicePoll(demo.device, .true, null);
-
-            const mapped_range = wgpu.bufferGetMappedRange(text_staging_buffer, 0, text_vertex_data_size);
-            if (mapped_range) |ptr| {
-                const data: [*]Vertex = @ptrCast(@alignCast(ptr));
-
-                // Use the per-frame calculated ascent for perfect positioning.
-                var xpos: f32 = 0.0;
-                var ypos: f32 = 0.0 + final_ascent;
-                var quad: stbtt.AlignedQuad = .{};
-
-                var i: usize = 0;
-                var prev_char: u8 = 0;
-                for (text_to_render) |char| {
-                    if (char < first_char or char >= first_char + char_count) {
-                        prev_char = char;
-                        continue;
-                    }
-
-                    // Apply kerning
-                    if (prev_char != 0) {
-                        const kern_advance = stbtt.getCodepointKernAdvance(&font_info, prev_char, char);
-                        xpos += @as(f32, @floatFromInt(kern_advance)) * font_scale;
-                    }
-
-                    stbtt.getPackedQuad(packed_char_data.ptr, atlas_width, atlas_height, char - first_char, &xpos, &ypos, &quad, 0);
-
-                    const x1 = quad.x0;
-                    const y1 = quad.y0;
-                    const x2 = quad.x1;
-                    const y2 = quad.y1;
-
-                    const s1 = quad.s0;
-                    const t1 = quad.t0;
-                    const s2 = quad.s1;
-                    const t2 = quad.t1;
-
-                    const vertices = [_]Vertex{
-                        .{ .position = .{ x1, y1 }, .tex_coords = .{ s1, t1 } },
-                        .{ .position = .{ x2, y1 }, .tex_coords = .{ s2, t1 } },
-                        .{ .position = .{ x1, y2 }, .tex_coords = .{ s1, t2 } },
-                        .{ .position = .{ x1, y2 }, .tex_coords = .{ s1, t2 } },
-                        .{ .position = .{ x2, y1 }, .tex_coords = .{ s2, t1 } },
-                        .{ .position = .{ x2, y2 }, .tex_coords = .{ s2, t2 } },
-                    };
-                    @memcpy(data[i .. i + 6], &vertices);
-                    i += 6;
-                    prev_char = char;
-                }
-
-                wgpu.bufferUnmap(text_staging_buffer);
-            }
-        }
-
-        // --- Update Uniforms ---
-        const uniforms = Uniforms{ .resolution = .{ @floatFromInt(demo.config.width), @floatFromInt(demo.config.height) } };
-        wgpu.queueWriteBuffer(queue, uniform_buffer, 0, &uniforms, @sizeOf(Uniforms));
-
-        // --- Acquire Frame and Handle Resizing ---
         var surface_texture: wgpu.SurfaceTexture = undefined;
         wgpu.surfaceGetCurrentTexture(demo.surface, &surface_texture);
         switch (surface_texture.status) {
@@ -790,57 +388,42 @@ pub fn main() !void {
                 }
                 continue :main_loop;
             },
-            .out_of_memory, .device_lost, .@"error" => std.debug.panic("get_current_texture status={any}", .{surface_texture.status}),
-            else => std.debug.print("get_current_texture unknown status={any}\n", .{surface_texture.status}),
+            else => std.debug.panic("get_current_texture status={any}", .{surface_texture.status}),
         }
         std.debug.assert(surface_texture.texture != null);
         defer wgpu.textureRelease(surface_texture.texture);
 
-        const frame = wgpu.textureCreateView(surface_texture.texture, null);
-        std.debug.assert(frame != null);
-        defer wgpu.textureViewRelease(frame);
+        const frame_view = wgpu.textureCreateView(surface_texture.texture, null);
+        std.debug.assert(frame_view != null);
+        defer wgpu.textureViewRelease(frame_view);
 
-        // --- Command Encoding ---
-        const command_encoder = wgpu.deviceCreateCommandEncoder(demo.device, &wgpu.CommandEncoderDescriptor{ .label = .fromSlice("command_encoder") });
-        std.debug.assert(command_encoder != null);
-        defer wgpu.commandEncoderRelease(command_encoder);
+        // --- Drawing with the Renderer ---
+        const proj = ortho(0, @floatFromInt(demo.config.width), @floatFromInt(demo.config.height), 0, -1, 1);
+        demo.renderer.beginFrame(proj);
 
-        // Copy data from staging buffers to GPU-local vertex buffers.
-        wgpu.commandEncoderCopyBufferToBuffer(command_encoder, staging_buffer, 0, vertex_buffer, 0, vertex_data_size);
-        wgpu.commandEncoderCopyBufferToBuffer(command_encoder, text_staging_buffer, 0, text_vertex_buffer, 0, text_vertex_data_size);
+        // Loop until the entire frame can be recorded without needing to pack new images.
+        var retries: u8 = 0;
+        while (retries < 10) : (retries += 1) { // Increased retries slightly for safety
+            if (recordDrawCommands(demo.renderer, &app_context, window)) |_| {
+                // Success! The frame was recorded without any missing images.
+                break;
+            } else |err| {
+                if (err == error.ImageNotYetPacked) {
+                    // An image was not in the atlas. Flush to upload it to the GPU.
+                    try demo.renderer.multi_atlas.flush();
+                    // Clear the vertices from the failed attempt and try again.
+                    demo.renderer.vertices.clearRetainingCapacity();
+                    continue;
+                } else {
+                    // An actual, unrecoverable error occurred.
+                    return err;
+                }
+            }
+        }
 
-        // Begin a render pass.
-        const render_pass_encoder = wgpu.commandEncoderBeginRenderPass(command_encoder, &wgpu.RenderPassDescriptor{
-            .label = .fromSlice("render_pass_encoder"),
-            .color_attachment_count = 1,
-            .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{ .view = frame, .load_op = .clear, .store_op = .store, .clear_value = .{ .b = 1.0, .a = 1.0 } }},
-        });
-        std.debug.assert(render_pass_encoder != null);
+        const clear_color = Batch2D.Color{ .r = 0, .g = 0, .b = 1, .a = 1 };
+        try demo.renderer.endFrame(frame_view, clear_color);
 
-        // --- Record Render Commands ---
-
-        // Draw the logo quad
-        wgpu.renderPassEncoderSetPipeline(render_pass_encoder, render_pipeline);
-        wgpu.renderPassEncoderSetBindGroup(render_pass_encoder, 0, bind_group, 0, null);
-        wgpu.renderPassEncoderSetVertexBuffer(render_pass_encoder, 0, vertex_buffer, 0, vertex_data_size);
-        wgpu.renderPassEncoderDraw(render_pass_encoder, vertex_count, 1, 0, 0);
-
-        // Draw the text
-        wgpu.renderPassEncoderSetPipeline(render_pass_encoder, text_render_pipeline);
-        wgpu.renderPassEncoderSetBindGroup(render_pass_encoder, 0, text_bind_group, 0, null);
-        wgpu.renderPassEncoderSetVertexBuffer(render_pass_encoder, 0, text_vertex_buffer, 0, text_vertex_data_size);
-        wgpu.renderPassEncoderDraw(render_pass_encoder, text_vertex_count, 1, 0, 0);
-
-        // End the render pass.
-        wgpu.renderPassEncoderEnd(render_pass_encoder);
-        wgpu.renderPassEncoderRelease(render_pass_encoder);
-
-        const command_buffer = wgpu.commandEncoderFinish(command_encoder, &wgpu.CommandBufferDescriptor{ .label = .fromSlice("command_buffer") });
-        std.debug.assert(command_buffer != null);
-        defer wgpu.commandBufferRelease(command_buffer);
-
-        // --- Submit to GPU and Present ---
-        wgpu.queueSubmit(queue, 1, &[_]wgpu.CommandBuffer{command_buffer});
         _ = wgpu.surfacePresent(demo.surface);
     }
 }

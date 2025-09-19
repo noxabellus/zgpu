@@ -2105,13 +2105,18 @@ pub fn loadShader(device: Device, path: []const u8) !ShaderModule {
     };
     defer std.heap.page_allocator.free(buf);
 
+    return loadShaderText(device, path, buf);
+}
+
+/// Loads a WGSL shader from a string.
+pub fn loadShaderText(device: Device, name: []const u8, source: []const u8) !ShaderModule {
     var wgsl_descriptor = ShaderSourceWGSL{
         .chain = .{ .s_type = .shader_source_wgsl },
-        .code = .{ .data = buf.ptr, .length = buf.len },
+        .code = .fromSlice(source),
     };
 
     const shader_module = deviceCreateShaderModule(device, &ShaderModuleDescriptor{
-        .label = .{ .data = path.ptr, .length = path.len },
+        .label = .fromSlice(name),
         .next_in_chain = @ptrCast(&wgsl_descriptor),
     });
 
