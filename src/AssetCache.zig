@@ -89,7 +89,7 @@ pub fn loadImage(self: *AssetCache, path: []const u8) !ImageId {
     var image = try stbi.Image.loadFromMemory(file_data, 4);
     errdefer image.deinit();
 
-    const image_id: ImageId = self.images.items.len;
+    const image_id: ImageId = @intCast(self.images.items.len);
     try self.images.append(self.allocator, image);
 
     try self.image_map.put(self.allocator, try self.allocator.dupe(u8, path), image_id);

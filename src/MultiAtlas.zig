@@ -22,7 +22,7 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-pub const ImageId = usize;
+pub const ImageId = u32;
 
 pub const ImageLocation = struct {
     atlas_index: usize,
