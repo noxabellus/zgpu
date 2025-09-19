@@ -29,11 +29,7 @@ pub const ImageLocation = struct {
     uv_rect: [4]f32,
 };
 
-pub const ProviderResult = struct {
-    chain: []const Atlas.InputImage,
-};
-
-pub const DataProvider = *const fn (image_id: ImageId, user_context: ?*anyopaque) ?ProviderResult;
+pub const DataProvider = *const fn (image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage;
 
 pub const ProviderContext = @import("Batch2D.zig").ProviderContext;
 
@@ -41,7 +37,7 @@ pub const mip_level_count: u32 = 12;
 
 const PendingItem = struct {
     id: ImageId,
-    chain: []const Atlas.InputImage,
+    chain: []const Atlas.InputImage, // owned by MultiAtlas
 };
 
 allocator: std.mem.Allocator,
@@ -83,12 +79,19 @@ pub fn init(
 }
 
 pub fn deinit(self: *MultiAtlas) void {
-    for (self.atlases.items) |atlas| atlas.deinit();
+    for (self.pending_items.items) |item| {
+        for (item.chain) |mip| self.allocator.free(mip.pixels);
+        self.allocator.free(item.chain);
+    }
     self.pending_items.deinit(self.allocator);
+
+    for (self.atlases.items) |atlas| atlas.deinit();
     self.atlases.deinit(self.allocator);
+
     self.cache.deinit(self.allocator);
     self.rect_buffer.deinit(self.allocator);
     self.allocator.destroy(self);
+
     log.info("multi-atlas system deinitialized.", .{});
 }
 
@@ -105,13 +108,27 @@ pub fn query(
         if (item.id == id) return error.ImageNotYetPacked;
     }
 
-    const result = context.provider(id, context.user_context) orelse {
+    const source_image = context.provider(id, context.user_context) orelse {
         log.err("data provider returned null for image id {any}", .{id});
         return error.InvalidImageId;
     };
 
-    try self.pending_items.append(self.allocator, .{ .id = id, .chain = result.chain });
+    const chain = try generateMipChain(self, source_image);
 
+    // We only want to clean up the 'chain' if appending it to our list fails
+    // (e.g., out of memory). If the append succeeds, the chain is now owned by
+    // the list and must not be freed. A `try...catch` block scopes this
+    // cleanup logic correctly, unlike the `errdefer` which would have fired
+    // on the subsequent `return error.ImageNotYetPacked`.
+    self.pending_items.append(self.allocator, .{ .id = id, .chain = chain }) catch |err| {
+        // Cleanup only happens on a *real* error from `append`.
+        for (chain) |mip| self.allocator.free(mip.pixels);
+        self.allocator.free(chain);
+        return err; // Propagate the actual error (e.g., OOM).
+    };
+
+    // If we reach here, the append succeeded. We can now safely return our
+    // "soft error" to signal a cache miss without triggering the cleanup.
     return error.ImageNotYetPacked;
 }
 
@@ -140,28 +157,23 @@ pub fn flush(self: *MultiAtlas, context: ProviderContext) !void {
             var packed_indices = std.ArrayList(usize){};
             defer packed_indices.deinit(self.allocator);
 
+            // We will inset the UVs by half the padding amount (1 pixel)
+            // to create a safe-zone for the texture sampler.
+            const UV_INSET: f32 = 1.0;
+
             for (self.rect_buffer.items) |rect| {
                 if (!rect.was_packed.to()) continue;
 
                 const original_index: usize = @intCast(rect.id);
                 const item = self.pending_items.items[original_index];
 
-                var u_offset: f32 = 0.0;
-                var v_offset: f32 = 0.0;
-                var w_adjust: f32 = 0.0;
-                var h_adjust: f32 = 0.0;
+                // The top-left corner is moved IN by the inset.
+                const u_0 = (@as(f32, @floatFromInt(rect.x)) + UV_INSET) / @as(f32, @floatFromInt(self.atlas_width));
+                const v_0 = (@as(f32, @floatFromInt(rect.y)) + UV_INSET) / @as(f32, @floatFromInt(self.atlas_height));
 
-                if (item.chain[0].format == .grayscale) {
-                    u_offset = 1.0;
-                    v_offset = 1.0;
-                    w_adjust = -1.0;
-                    h_adjust = -1.0;
-                }
-
-                const u_0 = (@as(f32, @floatFromInt(rect.x)) + u_offset) / @as(f32, @floatFromInt(self.atlas_width));
-                const v_0 = (@as(f32, @floatFromInt(rect.y)) + v_offset) / @as(f32, @floatFromInt(self.atlas_height));
-                const u_1 = (@as(f32, @floatFromInt(rect.x + rect.w)) + w_adjust) / @as(f32, @floatFromInt(self.atlas_width));
-                const v_1 = (@as(f32, @floatFromInt(rect.y + rect.h)) + h_adjust) / @as(f32, @floatFromInt(self.atlas_height));
+                // The bottom-right corner is also moved IN by the inset.
+                const u_1 = (@as(f32, @floatFromInt(rect.x + rect.w)) - UV_INSET) / @as(f32, @floatFromInt(self.atlas_width));
+                const v_1 = (@as(f32, @floatFromInt(rect.y + rect.h)) - UV_INSET) / @as(f32, @floatFromInt(self.atlas_height));
 
                 const location = ImageLocation{
                     .atlas_index = current_atlas_idx,
@@ -174,6 +186,11 @@ pub fn flush(self: *MultiAtlas, context: ProviderContext) !void {
 
             std.mem.sort(usize, packed_indices.items, {}, std.sort.desc(usize));
             for (packed_indices.items) |idx| {
+                const item_to_remove = self.pending_items.items[idx];
+                for (item_to_remove.chain) |mip| {
+                    self.allocator.free(mip.pixels);
+                }
+                self.allocator.free(item_to_remove.chain);
                 _ = self.pending_items.swapRemove(idx);
             }
         }
@@ -182,7 +199,10 @@ pub fn flush(self: *MultiAtlas, context: ProviderContext) !void {
             if (result.packed_count == 0) {
                 const first_pending = self.pending_items.items[0].chain[0];
                 log.err("single image ({d}x{d}) is too large to fit in a {d}x{d} atlas!", .{
-                    first_pending.width, first_pending.height, self.atlas_width, self.atlas_height,
+                    first_pending.width,
+                    first_pending.height,
+                    self.atlas_width,
+                    self.atlas_height,
                 });
                 return error.ImageTooLargeForAtlas;
             }
@@ -209,4 +229,51 @@ fn addNewAtlas(self: *MultiAtlas) !void {
         mip_level_count,
     );
     try self.atlases.append(self.allocator, new_atlas);
+}
+
+// Private helper to generate a mip chain from a single source image.
+fn generateMipChain(self: *MultiAtlas, source: Atlas.InputImage) ![]const Atlas.InputImage {
+    var chain = std.ArrayList(Atlas.InputImage).empty;
+    errdefer {
+        // If anything fails, free any images we've already allocated in the chain.
+        for (chain.items) |item| self.allocator.free(item.pixels);
+        chain.deinit(self.allocator);
+    }
+
+    // The first mip level is a direct copy of the source pixels.
+    const source_copy = try self.allocator.dupe(u8, source.pixels);
+    errdefer self.allocator.free(source_copy);
+
+    try chain.append(self.allocator, .{
+        .pixels = source_copy,
+        .width = source.width,
+        .height = source.height,
+        .format = source.format,
+    });
+
+    var current_w = source.width;
+    var current_h = source.height;
+    var last_pixels = source_copy;
+
+    while (@max(current_w, current_h) > 1) {
+        const next_w = @max(1, current_w / 2);
+        const next_h = @max(1, current_h / 2);
+
+        const resized_pixels = try self.allocator.alloc(u8, next_w * next_h * 4);
+        // We assume all sources are converted to RGBA before mip generation.
+        stbi.stbir_resize_uint8_srgb(last_pixels.ptr, @intCast(current_w), @intCast(current_h), 0, resized_pixels.ptr, @intCast(next_w), @intCast(next_h), 0, 4);
+
+        try chain.append(self.allocator, .{
+            .pixels = resized_pixels,
+            .width = next_w,
+            .height = next_h,
+            .format = .rgba,
+        });
+
+        current_w = next_w;
+        current_h = next_h;
+        last_pixels = resized_pixels;
+    }
+
+    return chain.toOwnedSlice(self.allocator);
 }

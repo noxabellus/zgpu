@@ -325,7 +325,16 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.Font
     var xpos = pos.x;
     var prev_char: u21 = 0;
 
+    // This MUST match the MASTER_GLYPH_HEIGHT in main.zig.
+    const MASTER_GLYPH_HEIGHT: f32 = 64.0;
+    const master_scale = stbtt.scaleForPixelHeight(font_info, MASTER_GLYPH_HEIGHT);
+    const scale_ratio = font_scale / master_scale;
+
+    // This MUST match the GLYPH_PADDING in main.zig
+    const GLYPH_PADDING: u32 = 2;
+
     for (string) |char| {
+        // ... kerning and h-metrics code is unchanged ...
         const char_code = @as(u21, @intCast(char));
         if (prev_char != 0) {
             const kern = stbtt.getCodepointKernAdvance(font_info, prev_char, char_code);
@@ -336,24 +345,32 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.Font
         var lsb: i32 = 0;
         stbtt.getCodepointHMetrics(font_info, @intCast(char_code), &adv, &lsb);
 
-        var ix0: i32 = 0;
-        var iy0: i32 = 0;
-        var ix1: i32 = 0;
-        var iy1: i32 = 0;
-        stbtt.getCodepointBitmapBox(font_info, @intCast(char_code), font_scale, font_scale, &ix0, &iy0, &ix1, &iy1);
+        var master_ix0: i32 = 0;
+        var master_iy0: i32 = 0;
+        var master_ix1: i32 = 0;
+        var master_iy1: i32 = 0;
+        stbtt.getCodepointBitmapBox(font_info, @intCast(char_code), master_scale, master_scale, &master_ix0, &master_iy0, &master_ix1, &master_iy1);
 
-        const char_width = @as(f32, @floatFromInt(ix1 - ix0));
-        const char_height = @as(f32, @floatFromInt(iy1 - iy0));
+        const master_width = master_ix1 - master_ix0;
+        const master_height = master_iy1 - master_iy0;
 
-        if (char_width > 0 and char_height > 0) {
+        if (master_width > 0 and master_height > 0) {
+            // The size of our quad must account for the padding on both sides.
+            const padded_width_f = @as(f32, @floatFromInt(master_width + GLYPH_PADDING * 2)) * scale_ratio;
+            const padded_height_f = @as(f32, @floatFromInt(master_height + GLYPH_PADDING * 2)) * scale_ratio;
+
+            // The position must be shifted up and left by the padding amount to compensate for the larger size.
             const char_pos = Vec2{
-                .x = xpos + @as(f32, @floatFromInt(ix0)),
-                .y = baseline_y + @as(f32, @floatFromInt(iy0)),
+                .x = xpos + (@as(f32, @floatFromInt(master_ix0 - @as(i32, @intCast(GLYPH_PADDING)))) * scale_ratio),
+                .y = baseline_y + (@as(f32, @floatFromInt(master_iy0 - @as(i32, @intCast(GLYPH_PADDING)))) * scale_ratio),
             };
-            const char_size = Vec2{ .x = char_width, .y = char_height };
+
+            const char_size = Vec2{ .x = padded_width_f, .y = padded_height_f };
+
             const glyph_id: MultiAtlas.ImageId = FONT_ID_BASE + char_code;
             try self.drawTexturedQuad(glyph_id, char_pos, char_size, tint);
         }
+
         xpos += @as(f32, @floatFromInt(adv)) * font_scale;
         prev_char = char_code;
     }

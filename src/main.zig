@@ -72,107 +72,69 @@ pub const AppContext = struct {
     frame_arena: *std.heap.ArenaAllocator,
 };
 
-// DataProvider now returns a MipChain. For single images, it's a chain of one.
-fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?MultiAtlas.ProviderResult {
+// The dataProvider returns a single InputImage.
+// The pixel data it returns is allocated on the frame_arena. MultiAtlas will copy it.
+fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage {
     const app: *AppContext = @ptrCast(@alignCast(user_context.?));
     const frame_allocator = app.frame_arena.allocator();
 
     if (image_id == LOGO_ID) {
-        // For the logo, we generate a full mip chain.
-        var chain = std.ArrayList(Atlas.InputImage).empty;
-        // Since this is using an arena, we don't need to deinit.
-        // The entire arena's memory will be freed at once.
-
-        // Append the base image
-        chain.append(frame_allocator, .{
+        return Atlas.InputImage{
             .pixels = app.logo_image.data,
             .width = app.logo_image.width,
             .height = app.logo_image.height,
             .format = .rgba,
-        }) catch return null;
-
-        var current_w = app.logo_image.width;
-        var current_h = app.logo_image.height;
-        var last_pixels = app.logo_image.data;
-
-        while (@max(current_w, current_h) > 1) {
-            const next_w = @max(1, current_w / 2);
-            const next_h = @max(1, current_h / 2);
-
-            const resized_pixels = frame_allocator.alloc(u8, next_w * next_h * 4) catch return null;
-            stbi.stbir_resize_uint8_srgb(
-                last_pixels.ptr,
-                @intCast(current_w),
-                @intCast(current_h),
-                0,
-                resized_pixels.ptr,
-                @intCast(next_w),
-                @intCast(next_h),
-                0,
-                4,
-            );
-
-            chain.append(frame_allocator, .{
-                .pixels = resized_pixels,
-                .width = next_w,
-                .height = next_h,
-                .format = .rgba,
-            }) catch return null;
-
-            current_w = next_w;
-            current_h = next_h;
-            last_pixels = resized_pixels;
-        }
-
-        return .{ .chain = chain.toOwnedSlice(frame_allocator) catch return null };
+        };
     } else if (image_id >= FONT_ID_BASE and image_id < FONT_ID_BASE + 0x10000) {
         const char_code = @as(u21, @intCast(image_id - FONT_ID_BASE));
+        const MASTER_GLYPH_HEIGHT: f32 = 64.0;
+        const master_scale = stbtt.scaleForPixelHeight(&app.font_info, MASTER_GLYPH_HEIGHT);
+
         var w: i32 = 0;
         var h: i32 = 0;
         var xoff: i32 = 0;
         var yoff: i32 = 0;
+        const grayscale_pixels = stbtt.getCodepointBitmap(&app.font_info, 0, master_scale, @intCast(char_code), &w, &h, &xoff, &yoff);
 
-        const grayscale_pixels = stbtt.getCodepointBitmap(
-            &app.font_info,
-            0,
-            app.font_scale,
-            @intCast(char_code),
-            &w,
-            &h,
-            &xoff,
-            &yoff,
-        );
-
-        if (grayscale_pixels == null or w == 0 or h == 0) {
-            return null;
-        }
+        if (grayscale_pixels == null or w == 0 or h == 0) return null;
         defer stbtt.freeBitmap(grayscale_pixels.?, null);
 
-        const padded_w: u32 = @intCast(w + 2);
-        const padded_h: u32 = @intCast(h + 2);
+        // Define and use a constant for padding. 2 pixels is a safer value.
+        const GLYPH_PADDING: u32 = 2;
 
-        const padded_bitmap = frame_allocator.alloc(u8, padded_w * padded_h) catch {
-            log.err("out of memory for padded glyph bitmap", .{});
-            return null;
-        };
-        @memset(padded_bitmap, 0);
+        const padded_w: u32 = @as(u32, @intCast(w)) + (GLYPH_PADDING * 2);
+        const padded_h: u32 = @as(u32, @intCast(h)) + (GLYPH_PADDING * 2);
+        const master_rgba_padded_pixels = (frame_allocator.alloc(u8, padded_w * padded_h * 4) catch return null);
 
-        const original_pitch: usize = @intCast(w);
-        const padded_pitch: usize = @intCast(padded_w);
-        for (0..@as(usize, @intCast(h))) |row| {
-            const src = grayscale_pixels.?[row * original_pitch .. (row + 1) * original_pitch];
-            const dst = padded_bitmap[(row + 1) * padded_pitch + 1 .. (row + 1) * padded_pitch + 1 + original_pitch];
-            @memcpy(dst, src);
+        // Initialize the buffer to transparent WHITE, not transparent black.
+        // This "bleeds" the color into the padding area.
+        for (master_rgba_padded_pixels, 0..) |*p, i| {
+            const channel: u2 = @intCast(i % 4);
+            if (channel == 3) { // Alpha
+                p.* = 0;
+            } else { // R, G, B
+                p.* = 255;
+            }
         }
 
-        const single_image = frame_allocator.create(Atlas.InputImage) catch return null;
-        single_image.* = .{
-            .pixels = padded_bitmap,
+        // "Stamp" the glyph's alpha, offsetting by the new padding amount.
+        const original_pitch: usize = @intCast(w);
+        const padded_pitch: usize = padded_w * 4;
+        for (0..@as(usize, @intCast(h))) |row| {
+            const src_row = grayscale_pixels.?[(row * original_pitch)..];
+            // The destination must be offset by GLYPH_PADDING in both X and Y.
+            const dst_row_start_idx = ((row + GLYPH_PADDING) * padded_pitch) + (GLYPH_PADDING * 4);
+            for (0..original_pitch) |col| {
+                // We only need to write the alpha channel now.
+                master_rgba_padded_pixels[dst_row_start_idx + (col * 4) + 3] = src_row[col];
+            }
+        }
+        return Atlas.InputImage{
+            .pixels = master_rgba_padded_pixels,
             .width = padded_w,
             .height = padded_h,
-            .format = .grayscale,
+            .format = .rgba,
         };
-        return .{ .chain = @as([*]Atlas.InputImage, @ptrCast(single_image))[0..1] };
     }
 
     return null;
