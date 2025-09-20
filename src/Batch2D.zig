@@ -52,6 +52,7 @@ pub fn decodeGlyphId(id: Atlas.ImageId) DecodedGlyphId {
 pub const Mat4 = [16]f32;
 pub const Vec2 = struct { x: f32 = 0.0, y: f32 = 0.0 };
 pub const Color = struct { r: f32 = 0.0, g: f32 = 0.0, b: f32 = 0.0, a: f32 = 0.0 };
+pub const UvRect = struct { x: f32, y: f32, w: f32, h: f32 };
 
 // --- Internal Structs ---
 
@@ -259,6 +260,10 @@ pub fn beginFrame(self: *Batch2D, projection: Mat4, context: Atlas.ProviderConte
 pub fn endFrame(self: *Batch2D) !void {
     const atlas_recreated = try self.atlas.flush(self.provider_context);
 
+    // --- VERTEX PATCHING (CORRECTED) ---
+    // This is now identical to your original, correct logic.
+    // We ONLY patch the `encoded_params` so the shader can find the image.
+    // We DO NOT touch the `tex_coords`, as they are always in image-relative (0-1) space.
     for (self.patch_list.items) |p| {
         const location = self.atlas.query(p.image_id, p.wants_mips, self.provider_context) catch |err| {
             log.err("image {any} not found in cache after flush. error: {any}", .{ p.image_id, err });
@@ -326,52 +331,60 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
 }
 
 pub fn drawQuad(self: *Batch2D, pos: Vec2, size: Vec2, tint: Color) !void {
+    // This now correctly calls the textured version with the white pixel.
     try self.drawTexturedQuad(AssetCache.WHITE_PIXEL_ID, false, pos, size, tint);
 }
 
 pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, wants_mips: bool, pos: Vec2, size: Vec2, tint: Color) !void {
-    const location = self.atlas.query(image_id, wants_mips, self.provider_context) catch |err| {
-        if (err == error.ImageNotYetPacked) {
-            const vertex_start_index = self.vertices.items.len;
-            try self.patch_list.append(self.allocator, .{
-                .image_id = image_id,
-                .wants_mips = wants_mips,
-                .vertex_start_index = vertex_start_index,
-                .vertex_count = 6,
-            });
-            return self.pushPlaceholderQuad(pos, size, tint);
-        }
-        return err;
-    };
+    // This is a good simplification. It creates the quad from two triangles with standard 0-1 UVs.
+    const p1 = pos; // Top-left
+    const p2 = Vec2{ .x = pos.x + size.x, .y = pos.y }; // Top-right
+    const p3 = Vec2{ .x = pos.x + size.x, .y = pos.y + size.y }; // Bottom-right
+    const p4 = Vec2{ .x = pos.x, .y = pos.y + size.y }; // Bottom-left
 
-    const use_nearest_flag = image_id & USE_NEAREST_MASK;
-    const encoded_params = use_nearest_flag | (location.indirection_table_index & IMAGE_ID_MASK);
-    try self.pushQuad(encoded_params, pos, size, tint);
+    const uv1 = Vec2{ .x = 0.0, .y = 0.0 }; // Top-left UV
+    const uv2 = Vec2{ .x = 1.0, .y = 0.0 }; // Top-right UV
+    const uv3 = Vec2{ .x = 1.0, .y = 1.0 }; // Bottom-right UV
+    const uv4 = Vec2{ .x = 0.0, .y = 1.0 }; // Bottom-left UV
+
+    // Note the winding order for standard quads: TL, TR, BL and TR, BR, BL
+    try self.drawTexturedTriangle(image_id, wants_mips, p1, uv1, p2, uv2, p4, uv4, tint);
+    try self.drawTexturedTriangle(image_id, wants_mips, p2, uv2, p3, uv3, p4, uv4, tint);
+}
+
+pub fn drawTexturedQuadUV(self: *Batch2D, image_id: Atlas.ImageId, wants_mips: bool, pos: Vec2, size: Vec2, uv_rect: UvRect, tint: Color) !void {
+    // Vertex positions
+    const p1 = pos; // Top-left
+    const p2 = Vec2{ .x = pos.x + size.x, .y = pos.y }; // Top-right
+    const p3 = Vec2{ .x = pos.x + size.x, .y = pos.y + size.y }; // Bottom-right
+    const p4 = Vec2{ .x = pos.x, .y = pos.y + size.y }; // Bottom-left
+
+    // UV coordinates based on uv_rect
+    const uv1 = Vec2{ .x = uv_rect.x, .y = uv_rect.y }; // Top-left
+    const uv2 = Vec2{ .x = uv_rect.x + uv_rect.w, .y = uv_rect.y }; // Top-right
+    const uv3 = Vec2{ .x = uv_rect.x + uv_rect.w, .y = uv_rect.y + uv_rect.h }; // Bottom-right
+    const uv4 = Vec2{ .x = uv_rect.x, .y = uv_rect.y + uv_rect.h }; // Bottom-left
+
+    // First triangle: p1, p2, p4 (Top-left, Top-right, Bottom-left)
+    try self.drawTexturedTriangle(image_id, wants_mips, p1, uv1, p2, uv2, p4, uv4, tint);
+    // Second triangle: p2, p3, p4 (Top-right, Bottom-right, Bottom-left)
+    try self.drawTexturedTriangle(image_id, wants_mips, p2, uv2, p3, uv3, p4, uv4, tint);
 }
 
 pub fn drawTriangle(self: *Batch2D, v1: Vec2, v2: Vec2, v3: Vec2, tint: Color) !void {
-    const location = self.atlas.query(AssetCache.WHITE_PIXEL_ID, false, self.provider_context) catch |err| {
-        if (err == error.ImageNotYetPacked) {
-            const vertex_start_index = self.vertices.items.len;
-            try self.patch_list.append(self.allocator, .{
-                .image_id = AssetCache.WHITE_PIXEL_ID,
-                .wants_mips = false,
-                .vertex_start_index = vertex_start_index,
-                .vertex_count = 3,
-            });
-            return self.pushTriangle(0, v1, .{}, v2, .{}, v3, .{}, tint);
-        }
-        return err;
-    };
-
-    const use_nearest_flag = AssetCache.WHITE_PIXEL_ID & USE_NEAREST_MASK;
-    const encoded_params = use_nearest_flag | (location.indirection_table_index & IMAGE_ID_MASK);
-    try self.pushTriangle(encoded_params, v1, .{}, v2, .{}, v3, .{}, tint);
+    // Solid triangles use the white pixel texture and have (0,0) UVs, which correctly maps to that single pixel.
+    const uv = Vec2{ .x = 0.0, .y = 0.0 };
+    try self.drawTexturedTriangle(AssetCache.WHITE_PIXEL_ID, false, v1, uv, v2, uv, v3, uv, tint);
 }
 
 pub fn drawTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, wants_mips: bool, v1: Vec2, uv1: Vec2, v2: Vec2, uv2: Vec2, v3: Vec2, uv3: Vec2, tint: Color) !void {
+    // We no longer transform UVs on the CPU. We push the original, image-relative UVs
+    // and let the shader handle the transformation to atlas-space.
+
     const location = self.atlas.query(image_id, wants_mips, self.provider_context) catch |err| {
         if (err == error.ImageNotYetPacked) {
+            // UNPACKED PATH: The image isn't in the atlas yet.
+            // 1. Create a patch so we can fix `encoded_params` later.
             const vertex_start_index = self.vertices.items.len;
             try self.patch_list.append(self.allocator, .{
                 .image_id = image_id,
@@ -379,15 +392,18 @@ pub fn drawTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, wants_mips:
                 .vertex_start_index = vertex_start_index,
                 .vertex_count = 3,
             });
-            // Note: Patching textured triangles with custom UVs would require a more complex patching system.
-            // For now, we draw a solid color placeholder if the image is not yet packed.
-            return try self.pushTriangle(0, v1, .{}, v2, .{}, v3, .{}, tint);
+            // 2. Push a placeholder triangle with `encoded_params = 0` and the ORIGINAL image-relative UVs.
+            return self.pushTriangle(0, v1, uv1, v2, uv2, v3, uv3, tint);
         }
         return err;
     };
 
+    // PACKED PATH: The image is in the atlas.
+    // 1. Calculate the final `encoded_params` with the correct indirection table index.
     const use_nearest_flag = image_id & USE_NEAREST_MASK;
     const encoded_params = use_nearest_flag | (location.indirection_table_index & IMAGE_ID_MASK);
+
+    // 2. Push the triangle with the final `encoded_params` and the ORIGINAL image-relative UVs.
     try self.pushTriangle(encoded_params, v1, uv1, v2, uv2, v3, uv3, tint);
 }
 
@@ -454,6 +470,7 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.Font
 
     for (string) |char| {
         const char_code = @as(u21, @intCast(char));
+
         if (prev_char != 0) {
             const kern = stbtt.getCodepointKernAdvance(font_info, prev_char, char_code);
             xpos += @as(f32, @floatFromInt(kern)) * font_scale;
@@ -474,16 +491,22 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.Font
         if (width > 0 and height > 0) {
             const padded_width = width + (GLYPH_PADDING_F * 2.0);
             const padded_height = height + (GLYPH_PADDING_F * 2.0);
+
             const ideal_x = xpos + @as(f32, @floatFromInt(ix0)) - GLYPH_PADDING_F;
             const ideal_y = baseline_y + @as(f32, @floatFromInt(iy0)) - GLYPH_PADDING_F;
+
             const rounded_x = @floor(ideal_x + 0.5);
             const rounded_y = @floor(ideal_y + 0.5);
-            const final_pos = Vec2{ .x = rounded_x - 0.5, .y = rounded_y - 0.5 };
+
+            const final_pos = Vec2{ .x = rounded_x, .y = rounded_y };
             const char_size = Vec2{ .x = padded_width, .y = padded_height };
+
             const glyph_id = encodeGlyphId(font_index, pixel_height, char_code);
             try self.drawTexturedQuad(glyph_id, false, final_pos, char_size, tint);
         }
-        xpos += @as(f32, @floatFromInt(adv)) * font_scale;
+
+        const adv_scale = @as(f32, @floatFromInt(adv)) * font_scale;
+        xpos += adv_scale;
         prev_char = char_code;
     }
 }
@@ -495,26 +518,6 @@ fn pushTriangle(self: *Batch2D, encoded_params: u32, v1: Vec2, uv1: Vec2, v2: Ve
         .{ .position = .{ v2.x, v2.y }, .tex_coords = .{ uv2.x, uv2.y }, .color = c, .encoded_params = encoded_params },
         .{ .position = .{ v3.x, v3.y }, .tex_coords = .{ uv3.x, uv3.y }, .color = c, .encoded_params = encoded_params },
     });
-}
-
-fn pushQuad(self: *Batch2D, encoded_params: u32, pos: Vec2, size: Vec2, tint: Color) !void {
-    const x1 = pos.x;
-    const y1 = pos.y;
-    const x2 = pos.x + size.x;
-    const y2 = pos.y + size.y;
-    const c: [4]f32 = .{ tint.r, tint.g, tint.b, tint.a };
-    try self.vertices.appendSlice(self.allocator, &[_]Vertex{
-        .{ .position = .{ x1, y1 }, .tex_coords = .{ 0.0, 0.0 }, .color = c, .encoded_params = encoded_params },
-        .{ .position = .{ x2, y1 }, .tex_coords = .{ 1.0, 0.0 }, .color = c, .encoded_params = encoded_params },
-        .{ .position = .{ x1, y2 }, .tex_coords = .{ 0.0, 1.0 }, .color = c, .encoded_params = encoded_params },
-        .{ .position = .{ x1, y2 }, .tex_coords = .{ 0.0, 1.0 }, .color = c, .encoded_params = encoded_params },
-        .{ .position = .{ x2, y1 }, .tex_coords = .{ 1.0, 0.0 }, .color = c, .encoded_params = encoded_params },
-        .{ .position = .{ x2, y2 }, .tex_coords = .{ 1.0, 1.0 }, .color = c, .encoded_params = encoded_params },
-    });
-}
-
-fn pushPlaceholderQuad(self: *Batch2D, pos: Vec2, size: Vec2, tint: Color) !void {
-    try self.pushQuad(0, pos, size, tint);
 }
 
 fn recreateBindGroup(self: *Batch2D) !void {

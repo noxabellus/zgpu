@@ -67,22 +67,6 @@ fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) [16]
     return mat;
 }
 
-fn srgbToLinear(c: f32) f32 {
-    if (c <= 0.04045) {
-        return c / 12.92;
-    } else {
-        return std.math.pow(f32, (c + 0.055) / 1.055, 2.4);
-    }
-}
-
-fn linearToSrgb(c: f32) f32 {
-    if (c <= 0.0031308) {
-        return c * 12.92;
-    } else {
-        return 1.055 * std.math.pow(f32, c, 1.0 / 2.4) - 0.055;
-    }
-}
-
 var tts_buf: [1024]u8 = undefined;
 
 pub fn main() !void {
@@ -293,8 +277,6 @@ pub fn main() !void {
         const bow_img = asset_cache.images.items[BOW_ID];
         try demo.renderer.drawTexturedQuad(BOW_ID, true, .{ .x = 400, .y = 375 }, .{ .x = @floatFromInt(bow_img.width), .y = @floatFromInt(bow_img.height) }, tint);
 
-        var tts_fba = std.heap.FixedBufferAllocator.init(&tts_buf);
-
         const frame_ms = @as(f64, @floatFromInt(frame_time)) / std.time.ns_per_ms;
         const frame_fps = 1000.0 / frame_ms;
 
@@ -307,10 +289,11 @@ pub fn main() !void {
 
         const avg_fps = 1000.0 / avg_ms;
 
+        var tts_fba = std.heap.FixedBufferAllocator.init(&tts_buf);
         const fps_text = try std.fmt.allocPrint(tts_fba.allocator(), "FPS: {d:0.1} ({d:0.3}ms) / {d:0.1} ({d:0.3}ms)", .{ avg_fps, avg_ms, frame_fps, frame_ms });
 
         // Draw with Roboto, 12px
-        try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 12.0, .{ .x = 0, .y = 0 }, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
+        try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 16.0, .{ .x = 0, .y = 0 }, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
         const text_to_draw = "WGPU Batch Renderer";
 
         // Draw with Calistoga, 48px
