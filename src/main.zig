@@ -535,7 +535,7 @@ pub fn main() !void {
     defer wgpu.instanceRelease(demo.instance);
 
     glfw.windowHint(.{ .client_api = .none });
-    const window = try glfw.createWindow(1000, 1000, "clay-wgpu-zig example", null, null);
+    const window = try glfw.createWindow(1000, 1000, "zgpu example", null, null);
     defer glfw.destroyWindow(window);
     glfw.setWindowUserPointer(window, &demo);
 

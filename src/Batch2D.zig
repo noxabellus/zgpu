@@ -1027,30 +1027,32 @@ pub fn layoutText(
     const font_scale_f32 = stbtt.scaleForPixelHeight(font_info, font_size_f32);
     const font_scale: f64 = font_scale_f32;
 
+    var ascent: i32 = 0;
+    var descent: i32 = 0;
+    var line_gap: i32 = 0;
+    stbtt.getFontVMetrics(font_info, &ascent, &descent, &line_gap);
+
     // --- LINE SPACING LOGIC ---
     // Use the override if provided, otherwise calculate from font metrics.
-    const line_height: f64 = if (line_spacing_override) |spacing|
-        @as(f64, @floatFromInt(spacing))
-    else blk: {
-        var ascent: i32 = 0;
-        var descent: i32 = 0;
-        var line_gap: i32 = 0;
-        stbtt.getFontVMetrics(font_info, &ascent, &descent, &line_gap);
-        break :blk @as(f64, @floatFromInt(ascent - descent + line_gap)) * font_scale;
-    };
+    const line_height: f64 =
+        if (line_spacing_override) |spacing|
+            @as(f64, @floatFromInt(spacing))
+        else
+            @as(f64, @floatFromInt(ascent - descent + line_gap)) * font_scale;
 
     // First, iterate through the string to find the highest-rising glyph.
     // This allows us to align the entire string's top boundary to pos.y.
-    var min_iy0: i32 = 0;
-    for (string) |char| {
-        if (char < 32) continue; // Skip control characters
-        var iy0: i32 = 0;
-        stbtt.getCodepointBitmapBox(font_info, @intCast(@as(u21, @intCast(char))), font_scale_f32, font_scale_f32, null, &iy0, null, null);
-        min_iy0 = @min(min_iy0, iy0);
-    }
+    // Incompatible with standard ui layout algorithms; TODO: this is really useful in immediate mode, consider a flag for this.
+    // var min_iy0: i32 = 0;
+    // for (string) |char| {
+    //     if (char < 32) continue; // Skip control characters
+    //     var iy0: i32 = 0;
+    //     stbtt.getCodepointBitmapBox(font_info, @intCast(@as(u21, @intCast(char))), font_scale_f32, font_scale_f32, null, &iy0, null, null);
+    //     min_iy0 = @min(min_iy0, iy0);
+    // }
 
     // --- Layout Loop ---
-    var baseline_y: f64 = @as(f64, pos.y) - @as(f64, @floatFromInt(min_iy0));
+    var baseline_y: f64 = pos.y + (@as(f64, @floatFromInt(ascent)) * font_scale);
     var xpos: f64 = pos.x;
     var prev_char: u21 = 0;
 
@@ -1113,50 +1115,73 @@ pub fn layoutText(
     }
 }
 
-// State for the measurement operation.
-const MeasureState = struct {
-    bounds_min: Vec2 = .{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32) },
-    bounds_max: Vec2 = .{ .x = std.math.floatMin(f32), .y = std.math.floatMin(f32) },
-    has_glyphs: bool = false,
-
-    // Callback function to update the bounds for each glyph.
-    fn measureGlyph(self: *MeasureState, info: GlyphLayoutInfo) void {
-        self.has_glyphs = true;
-        self.bounds_min.x = @min(self.bounds_min.x, info.pos.x);
-        self.bounds_min.y = @min(self.bounds_min.y, info.pos.y);
-        self.bounds_max.x = @max(self.bounds_max.x, info.pos.x + info.size.x);
-        self.bounds_max.y = @max(self.bounds_max.y, info.pos.y + info.size.y);
-    }
-};
-
-/// Measures the pixel dimensions that a string will occupy when drawn.
-/// This function precisely replicates the layout logic of `drawText`.
+/// Measures the pixel dimensions of a multi-line string when rendered with the specified font and size.
 pub fn measureText(string: []const u8, font_info: *const stbtt.FontInfo, font_size: AssetCache.FontSize, line_spacing_override: ?u16) ?Vec2 {
+    // TODO: probably should use the generic layout engine here too, but there are some incompatibilities to resolve:
+    // - The layout engine does not call back on empty glyphs, which means spaces and tabs are ignored.
+    // - Proper measurement relies on the advance, not just the glyph bounds.
+
     if (string.len == 0) return .{ .x = 0, .y = 0 };
 
-    var state = MeasureState{};
+    // --- Font Metrics Setup ---
+    const font_size_f32 = @as(f32, @floatFromInt(font_size));
+    const font_scale_f32 = stbtt.scaleForPixelHeight(font_info, font_size_f32);
+    const font_scale: f64 = font_scale_f32;
 
-    // Use the generic layout engine with our measurement callback.
-    // The font_id and potential error can be ignored as they aren't relevant for measurement.
-    layoutText(
-        string,
-        font_info,
-        0, // dummy font_id
-        font_size,
-        line_spacing_override,
-        .{ .x = 0, .y = 0 }, // measure from origin
-        MeasureState,
-        @as(?type, null),
-        &state,
-        MeasureState.measureGlyph,
-    );
+    var ascent: i32 = 0;
+    var descent: i32 = 0;
+    var line_gap: i32 = 0;
+    stbtt.getFontVMetrics(font_info, &ascent, &descent, &line_gap);
 
-    if (!state.has_glyphs) return null;
+    const line_height: f64 = if (line_spacing_override) |spacing|
+        @as(f64, @floatFromInt(spacing))
+    else
+        @as(f64, @floatFromInt(ascent - descent + line_gap)) * font_scale;
 
-    return .{
-        .x = state.bounds_max.x - state.bounds_min.x,
-        .y = state.bounds_max.y - state.bounds_min.y,
-    };
+    var current_pos = Vec2{ .x = 0, .y = 0 };
+    // The height of the first line is determined by the font's ascent/descent.
+    var total_size = Vec2{ .x = 0, .y = @floatCast(@as(f64, @floatFromInt(ascent - descent)) * font_scale) };
+    if (total_size.y == 0 and string.len > 0) {
+        // Fallback for empty fonts or single-line cases
+        total_size.y = font_size_f32;
+    }
+
+    var prev_char: u21 = 0;
+
+    for (string) |char| {
+        if (char == '\n') {
+            // Newline: update max width, reset horizontal pos, advance vertical pos.
+            total_size.x = @max(total_size.x, current_pos.x);
+            current_pos.x = 0;
+            total_size.y += @floatCast(line_height);
+            prev_char = 0;
+            continue;
+        }
+
+        const char_code = @as(u21, @intCast(char));
+
+        // Add kerning.
+        if (prev_char != 0) {
+            const kern = stbtt.getCodepointKernAdvance(font_info, prev_char, char_code);
+            current_pos.x += @floatCast(@as(f64, @floatFromInt(kern)) * font_scale);
+        }
+
+        // Add character advance width. This is the crucial part that correctly
+        // handles spaces and other characters' full width.
+        var adv: i32 = 0;
+        stbtt.getCodepointHMetrics(font_info, char_code, &adv, null);
+        current_pos.x += @floatCast(@as(f64, @floatFromInt(adv)) * font_scale);
+
+        prev_char = char_code;
+    }
+
+    // After the loop, update the max width one last time for the final line.
+    total_size.x = @max(total_size.x, current_pos.x);
+
+    // If the string was empty or contained only non-visible glyphs, total_size could still be zero.
+    if (total_size.x == 0 and total_size.y == 0) return null;
+
+    return total_size;
 }
 
 // Context for the drawing operation.
