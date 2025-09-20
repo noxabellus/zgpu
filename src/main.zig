@@ -136,7 +136,7 @@ pub fn main() !void {
         .device = demo.device,
         .usage = .renderAttachmentUsage,
         .format = surface_format,
-        .present_mode = .mailbox,
+        .present_mode = .immediate,
         .alpha_mode = surface_capabilities.alpha_modes.?[0],
     };
 
@@ -274,27 +274,27 @@ pub fn main() !void {
         // --- Draw Text ---
 
         // Draw with Roboto, 12px
-        try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 16, null, .{ .x = 0, .y = 0 }, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
+        try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 16, null, .{ .x = 0, .y = 0 }, .black);
 
         // Draw with Calistoga, 48px
-        try demo.renderer.drawText("WGPU Batch Renderer", &asset_cache.fonts.items[calistoga_idx].info, calistoga_idx, 48, null, .{ .x = 10, .y = 60 }, .{ .r = 0, .g = 1, .b = 1, .a = 1 });
+        try demo.renderer.drawText("WGPU Batch Renderer", &asset_cache.fonts.items[calistoga_idx].info, calistoga_idx, 48, null, .{ .x = 10, .y = 60 }, .cyan);
 
         // Draw with Quicksand, 32px
-        try demo.renderer.drawText("Newline\nin\nText", &asset_cache.fonts.items[quicksand_idx].info, quicksand_idx, 32, 20, .{ .x = 20, .y = 120 }, .{ .r = 1, .g = 0, .b = 1, .a = 1 });
+        try demo.renderer.drawText("Newline\nin\nText", &asset_cache.fonts.items[quicksand_idx].info, quicksand_idx, 32, 20, .{ .x = 20, .y = 120 }, .magenta);
 
         // --- Draw Primitives ---
 
         // Draw a solid red quad
-        try demo.renderer.drawQuad(.{ .x = 250, .y = 150 }, .{ .x = 50, .y = 50 }, .{ .r = 1, .g = 0, .b = 0, .a = 1 });
+        try demo.renderer.drawQuad(.{ .x = 250, .y = 150 }, .{ .x = 50, .y = 50 }, .red);
 
         // Draw a solid green triangle
-        try demo.renderer.drawTriangle(.{ .x = 320, .y = 150 }, .{ .x = 370, .y = 300 }, .{ .x = 270, .y = 300 }, .{ .r = 0, .g = 1, .b = 0, .a = 1 });
+        try demo.renderer.drawTriangle(.{ .x = 320, .y = 150 }, .{ .x = 370, .y = 300 }, .{ .x = 270, .y = 300 }, .green);
 
         // Draw a thick blue line
-        try demo.renderer.drawLine(.{ .x = 250, .y = 120 }, .{ .x = 370, .y = 320 }, 5.0, .{ .r = 0, .g = 0, .b = 1, .a = 1 });
+        try demo.renderer.drawLine(.{ .x = 250, .y = 120 }, .{ .x = 370, .y = 320 }, 5.0, .blue);
 
         // Draw a yellow circle
-        try demo.renderer.drawCircle(.{ .x = 100, .y = 100 }, 30.0, .{ .r = 1, .g = 1, .b = 0, .a = 1.0 });
+        try demo.renderer.drawCircle(.{ .x = 100, .y = 100 }, 30.0, .yellow);
 
         // Draw a cyan triangle strip
         const strip_verts = &[_]Batch2D.Vec2{
@@ -305,6 +305,44 @@ pub fn main() !void {
             .{ .x = 480, .y = 150 },
         };
         try demo.renderer.drawSolidTriangleStrip(strip_verts, .{ .r = 0, .g = 1, .b = 1, .a = 1 });
+
+        // Draw a filled, half-pie shape. Angles are in radians (Pi = 180 degrees).
+        try demo.renderer.drawArc(
+            .{ .x = 150.0, .y = 150.0 }, // center
+            80.0, // radius
+            0.0, // start_angle (0 is the 3 o'clock position)
+            std.math.pi, // end_angle (Pi is the 9 o'clock position)
+            .red,
+        );
+
+        // Draw just the outline of an arc, like a progress bar.
+        try demo.renderer.drawArcLine(
+            .{ .x = 400.0, .y = 150.0 }, // center
+            70.0, // radius
+            0.0, // start_angle
+            1.5 * std.math.pi, // end_angle (270 degrees)
+            15.0, // thickness
+            .blue,
+        );
+
+        // Draw a smaller, more acute filled arc.
+        try demo.renderer.drawArc(
+            .{ .x = 150.0, .y = 400.0 }, // center
+            90.0, // radius
+            0.0, // start_angle
+            std.math.pi / 4.0, // end_angle (45 degrees)
+            .green,
+        );
+
+        // Draw from -45 to +45 degrees, testing the angle normalization logic.
+        try demo.renderer.drawArcLine(
+            .{ .x = 400.0, .y = 400.0 }, // center
+            75.0, // radius
+            -std.math.pi / 4.0, // start_angle (-45 degrees)
+            std.math.pi / 4.0, // end_angle (+45 degrees)
+            8.0, // thickness
+            .yellow,
+        );
 
         // --- End Frame ---
 

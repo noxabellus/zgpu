@@ -22,7 +22,25 @@ pub const GLYPH_PADDING_F = 2.0;
 // --- Public API Structs ---
 pub const Mat4 = [16]f32;
 pub const Vec2 = struct { x: f32 = 0.0, y: f32 = 0.0 };
-pub const Color = struct { r: f32 = 0.0, g: f32 = 0.0, b: f32 = 0.0, a: f32 = 0.0 };
+pub const Color = struct {
+    r: f32 = 0.0,
+    g: f32 = 0.0,
+    b: f32 = 0.0,
+    a: f32 = 0.0,
+
+    pub const black = Color{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 };
+    pub const white = Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
+    pub const red = Color{ .r = 1.0, .g = 0.0, .b = 0.0, .a = 1.0 };
+    pub const green = Color{ .r = 0.0, .g = 1.0, .b = 0.0, .a = 1.0 };
+    pub const blue = Color{ .r = 0.0, .g = 0.0, .b = 1.0, .a = 1.0 };
+    pub const cyan = Color{ .r = 0.0, .g = 1.0, .b = 1.0, .a = 1.0 };
+    pub const magenta = Color{ .r = 1.0, .g = 0.0, .b = 1.0, .a = 1.0 };
+    pub const yellow = Color{ .r = 1.0, .g = 1.0, .b = 0.0, .a = 1.0 };
+
+    pub fn withAlpha(self: Color, new_alpha: f32) Color {
+        return Color{ .r = self.r, .g = self.g, .b = self.b, .a = new_alpha };
+    }
+};
 
 // --- Internal Structs ---
 const USE_NEAREST_MASK: u32 = 0x80000000;
@@ -463,6 +481,75 @@ pub fn drawCircle(self: *Batch2D, center: Vec2, radius: f32, tint: Color) !void 
         const p1 = Vec2{ .x = center.x + std.math.cos(angle1) * radius, .y = center.y + std.math.sin(angle1) * radius };
         const p2 = Vec2{ .x = center.x + std.math.cos(angle2) * radius, .y = center.y + std.math.sin(angle2) * radius };
         try self.drawTriangle(center, p1, p2, tint);
+    }
+}
+
+/// Draws a filled, pie-slice-shaped arc. Angles are in radians.
+pub fn drawArc(self: *Batch2D, center: Vec2, radius: f32, start_angle: f32, end_angle: f32, tint: Color) !void {
+    if (radius <= 0.0) return;
+
+    // Normalize angles to ensure we always draw counter-clockwise
+    var normalized_end = end_angle;
+    while (normalized_end < start_angle) {
+        normalized_end += 2.0 * std.math.pi;
+    }
+    const total_angle = normalized_end - start_angle;
+    if (total_angle <= 0.0) return;
+
+    // Calculate the number of segments for a smooth curve.
+    // This heuristic aims for each segment on the circumference to be ~1.5 pixels long.
+    const num_segments = @max(1, @as(u32, @intFromFloat(total_angle * radius / 1.5)));
+    const angle_step = total_angle / @as(f32, @floatFromInt(num_segments));
+
+    var i: u32 = 0;
+    while (i < num_segments) : (i += 1) {
+        const angle1 = start_angle + @as(f32, @floatFromInt(i)) * angle_step;
+        const angle2 = start_angle + @as(f32, @floatFromInt(i + 1)) * angle_step;
+
+        const p1 = Vec2{ .x = center.x + std.math.cos(angle1) * radius, .y = center.y + std.math.sin(angle1) * radius };
+        const p2 = Vec2{ .x = center.x + std.math.cos(angle2) * radius, .y = center.y + std.math.sin(angle2) * radius };
+
+        try self.drawTriangle(center, p1, p2, tint);
+    }
+}
+
+/// Draws the outline of an arc with a specified thickness. Angles are in radians.
+pub fn drawArcLine(self: *Batch2D, center: Vec2, radius: f32, start_angle: f32, end_angle: f32, thickness: f32, tint: Color) !void {
+    if (radius <= 0.0 or thickness <= 0.0) return;
+
+    // Normalize angles to ensure we always draw counter-clockwise
+    var normalized_end = end_angle;
+    while (normalized_end < start_angle) {
+        normalized_end += 2.0 * std.math.pi;
+    }
+    const total_angle = normalized_end - start_angle;
+    if (total_angle <= 0.0) return;
+
+    // Calculate radii and number of segments for a smooth curve based on the outer radius.
+    const outer_radius = radius + thickness / 2.0;
+    const inner_radius = @max(0.0, radius - thickness / 2.0);
+
+    const num_segments = @max(1, @as(u32, @intFromFloat(total_angle * outer_radius / 1.5)));
+    const angle_step = total_angle / @as(f32, @floatFromInt(num_segments));
+
+    var i: u32 = 0;
+    while (i < num_segments) : (i += 1) {
+        const angle1 = start_angle + @as(f32, @floatFromInt(i)) * angle_step;
+        const angle2 = start_angle + @as(f32, @floatFromInt(i + 1)) * angle_step;
+
+        const cos1 = std.math.cos(angle1);
+        const sin1 = std.math.sin(angle1);
+        const cos2 = std.math.cos(angle2);
+        const sin2 = std.math.sin(angle2);
+
+        const v_outer1 = Vec2{ .x = center.x + cos1 * outer_radius, .y = center.y + sin1 * outer_radius };
+        const v_inner1 = Vec2{ .x = center.x + cos1 * inner_radius, .y = center.y + sin1 * inner_radius };
+        const v_outer2 = Vec2{ .x = center.x + cos2 * outer_radius, .y = center.y + sin2 * outer_radius };
+        const v_inner2 = Vec2{ .x = center.x + cos2 * inner_radius, .y = center.y + sin2 * inner_radius };
+
+        // Create a quad for the segment
+        try self.drawTriangle(v_outer1, v_outer2, v_inner1, tint);
+        try self.drawTriangle(v_inner1, v_outer2, v_inner2, tint);
     }
 }
 
