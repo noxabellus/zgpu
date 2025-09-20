@@ -23,7 +23,6 @@ pub const GLYPH_PADDING_F = 2.0;
 pub const Mat4 = [16]f32;
 pub const Vec2 = struct { x: f32 = 0.0, y: f32 = 0.0 };
 pub const Color = struct { r: f32 = 0.0, g: f32 = 0.0, b: f32 = 0.0, a: f32 = 0.0 };
-pub const UvRect = struct { x: f32, y: f32, w: f32, h: f32 };
 
 // --- Internal Structs ---
 const USE_NEAREST_MASK: u32 = 0x80000000;
