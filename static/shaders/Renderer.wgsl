@@ -53,12 +53,12 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 // Must be kept in sync with Batch2D.zig
 const IMAGE_ID_MASK = 0x7FFFFFFFu;
-const IS_GLYPH_MASK = 0x80000000u;
+const USE_NEAREST_MASK = 0x80000000u;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let image_id = in.encoded_params & IMAGE_ID_MASK;
-    let is_glyph = (in.encoded_params & IS_GLYPH_MASK) != 0u;
+    let use_nearest = (in.encoded_params & USE_NEAREST_MASK) != 0u;
 
     let atlas_dims = vec2<f32>(textureDimensions(atlas_texture, 0).xy);
     let rect_mip0 = image_mip_table[image_id].mips[0u].uv_rect;
@@ -71,8 +71,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     var sampled_color: vec4<f32>;
 
-    if (is_glyph) {
-        // --- NEAREST PATH (for text) ---
+    if (use_nearest) {
+        // --- NEAREST PATH (for text, solid shapes, pixel art, etc.) ---
         // 1. Clamp the LOD and round to the nearest integer.
         let nearest_lod_index = u32(round(clamp(lod, 0.0, f32(MAX_MIP_LEVELS - 1u))));
 

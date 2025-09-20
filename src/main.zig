@@ -310,7 +310,7 @@ pub fn main() !void {
         const fps_text = try std.fmt.allocPrint(tts_fba.allocator(), "FPS: {d:0.1} ({d:0.3}ms) / {d:0.1} ({d:0.3}ms)", .{ avg_fps, avg_ms, frame_fps, frame_ms });
 
         // Draw with Roboto, 12px
-        try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 12.0, .{ .x = 0, .y = 0 }, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
+        try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 12.0, .{ .x = 0, .y = 0 }, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
         const text_to_draw = "WGPU Batch Renderer";
 
         // Draw with Calistoga, 48px
@@ -319,6 +319,30 @@ pub fn main() !void {
         // Draw with Quicksand, 32px
         try demo.renderer.drawText(text_to_draw, &asset_cache.fonts.items[quicksand_idx].info, quicksand_idx, 32.0, .{ .x = 20, .y = 120 }, .{ .r = 1, .g = 0, .b = 1, .a = 1 });
 
+        // --- Draw New Primitives ---
+
+        // Draw a solid red quad
+        try demo.renderer.drawQuad(.{ .x = 250, .y = 150 }, .{ .x = 50, .y = 50 }, .{ .r = 1, .g = 0, .b = 0, .a = 1 });
+
+        // Draw a solid green triangle
+        try demo.renderer.drawTriangle(.{ .x = 320, .y = 150 }, .{ .x = 370, .y = 300 }, .{ .x = 270, .y = 300 }, .{ .r = 0, .g = 1, .b = 0, .a = 1 });
+
+        // Draw a thick blue line
+        try demo.renderer.drawLine(.{ .x = 250, .y = 120 }, .{ .x = 370, .y = 320 }, 5.0, .{ .r = 0, .g = 0, .b = 1, .a = 1 });
+
+        // Draw a yellow circle
+        try demo.renderer.drawCircle(.{ .x = 100, .y = 100 }, 30.0, .{ .r = 1, .g = 1, .b = 0, .a = 1.0 });
+
+        // Draw a cyan triangle strip
+        const strip_verts = &[_]Batch2D.Vec2{
+            .{ .x = 400, .y = 150 },
+            .{ .x = 420, .y = 180 },
+            .{ .x = 440, .y = 150 },
+            .{ .x = 460, .y = 180 },
+            .{ .x = 480, .y = 150 },
+        };
+        try demo.renderer.drawSolidTriangleStrip(strip_verts, .{ .r = 0, .g = 1, .b = 1, .a = 1 });
+
         try demo.renderer.endFrame();
 
         const encoder = wgpu.deviceCreateCommandEncoder(demo.device, &.{ .label = .fromSlice("main_encoder") });
@@ -326,7 +350,7 @@ pub fn main() !void {
 
         const render_target_view = if (demo.msaa_view != null) demo.msaa_view else frame_view;
         const resolve_target_view = if (demo.msaa_view != null) frame_view else null;
-        const clear_color = wgpu.Color{ .b = 0.5, .a = 1 };
+        const clear_color = wgpu.Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
 
         const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
             .color_attachment_count = 1,

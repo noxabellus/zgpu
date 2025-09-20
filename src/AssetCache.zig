@@ -10,6 +10,8 @@ const Batch2D = @import("Batch2D.zig");
 
 const log = std.log.scoped(.asset_cache);
 
+pub const WHITE_PIXEL_ID: Atlas.ImageId = Batch2D.encodeGlyphId(Batch2D.SPECIAL_ID_FONT_INDEX, 0, 0);
+
 pub const LoadedFont = struct {
     info: stbtt.FontInfo,
     data: []const u8,
@@ -104,8 +106,26 @@ pub fn dataProvider(image_id: Atlas.ImageId, user_context: ?*anyopaque) ?Atlas.I
     const cache = ctx.asset_cache;
     const frame_allocator = ctx.frame_allocator;
 
-    if ((image_id & Batch2D.GLYPH_ID_FLAG) != 0) { // This is a glyph request.
+    if ((image_id & Batch2D.NEAREST_FILTER_FLAG) != 0) { // This is a glyph or special ID request.
         const decoded = Batch2D.decodeGlyphId(image_id);
+
+        if (decoded.font_index == Batch2D.SPECIAL_ID_FONT_INDEX) {
+            // This is a special, non-font ID. The white pixel is char_code 0.
+            if (decoded.char_code == 0) {
+                const white_pixel = (frame_allocator.alloc(u8, 4) catch return null);
+                @memcpy(white_pixel, &[_]u8{ 255, 255, 255, 255 });
+                return Atlas.InputImage{
+                    .pixels = white_pixel,
+                    .width = 1,
+                    .height = 1,
+                    .format = .rgba,
+                };
+            }
+            log.err("unknown special id {any}", .{decoded});
+            return null;
+        }
+
+        // --- Otherwise, it's a regular glyph request ---
         if (decoded.font_index >= cache.fonts.items.len) {
             log.err("invalid font index {d} in glyph id", .{decoded.font_index});
             return null;
