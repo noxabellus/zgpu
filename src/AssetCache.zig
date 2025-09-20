@@ -56,12 +56,7 @@ pub const LoadedFont = struct {
     data: []const u8,
 };
 
-/// The context object that our dataProvider expects to receive.
-/// It bundles all application-specific data needed for asset lookups.
-pub const ProviderUserContext = struct {
-    asset_cache: *AssetCache,
-    frame_allocator: std.mem.Allocator,
-};
+// NOTE: ProviderUserContext has been removed.
 
 /// Manages loading and caching of assets like images and fonts.
 pub const AssetCache = @This();
@@ -141,11 +136,10 @@ pub fn loadImage(self: *AssetCache, path: []const u8) !Atlas.ImageId {
 
 /// The data provider callback required by the Atlas.
 /// This function is called by the renderer when it needs pixel data for an Atlas.ImageId.
-pub fn dataProvider(image_id: Atlas.ImageId, user_context: ?*anyopaque) ?Atlas.InputImage {
-    // Cast the opaque pointer to our specific context struct.
-    const ctx: *const ProviderUserContext = @ptrCast(@alignCast(user_context.?));
-    const cache = ctx.asset_cache;
-    const frame_allocator = ctx.frame_allocator;
+pub fn dataProvider(image_id: Atlas.ImageId, context: Atlas.ProviderContext) ?Atlas.InputImage {
+    // Cast the opaque user_context pointer to our specific AssetCache struct.
+    const cache: *const AssetCache = @ptrCast(@alignCast(context.user_context.?));
+    const frame_allocator = context.frame_allocator;
     const decoded = decodeGlyphId(image_id);
 
     if (decoded.is_glyph_or_special) { // This is a glyph or special ID request.

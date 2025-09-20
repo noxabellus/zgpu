@@ -59,8 +59,13 @@ device: wgpu.Device,
 queue: wgpu.Queue,
 pipeline: wgpu.RenderPipeline,
 uniform_buffer: wgpu.Buffer,
+
+// Vertex Buffers
 vertex_buffer: wgpu.Buffer,
 vertex_buffer_capacity: usize,
+vertex_staging_buffer: wgpu.Buffer,
+vertex_staging_buffer_capacity: usize,
+
 vertices: std.ArrayList(Vertex),
 atlas: *Atlas,
 bind_group: wgpu.BindGroup,
@@ -68,14 +73,19 @@ linear_sampler: wgpu.Sampler,
 nearest_sampler: wgpu.Sampler,
 patch_list: std.ArrayList(Patch),
 provider_context: Atlas.ProviderContext,
+
+// Indirection Table Buffers
 indirection_buffer: wgpu.Buffer,
 indirection_buffer_capacity: usize,
+indirection_staging_buffer: wgpu.Buffer,
+indirection_staging_buffer_capacity: usize,
 
 pub fn init(
     allocator: std.mem.Allocator,
     device: wgpu.Device,
     queue: wgpu.Queue,
     surface_format: wgpu.TextureFormat,
+    provider_context: Atlas.ProviderContext,
     sample_count: u32,
 ) !*Batch2D {
     const self = try allocator.create(Batch2D);
@@ -103,6 +113,22 @@ pub fn init(
     });
     std.debug.assert(indirection_buffer != null);
     errdefer wgpu.bufferRelease(indirection_buffer);
+
+    const indirection_staging_buffer = wgpu.deviceCreateBuffer(device, &.{
+        .label = .fromSlice("indirection_staging_buffer"),
+        .usage = .{ .map_write = true, .copy_src = true },
+        .size = initial_indirection_capacity * @sizeOf(Atlas.ImageMipData),
+    });
+    std.debug.assert(indirection_staging_buffer != null);
+    errdefer wgpu.bufferRelease(indirection_staging_buffer);
+
+    const initial_vertex_capacity_bytes = 4096 * @sizeOf(Vertex);
+    const vertex_staging_buffer = wgpu.deviceCreateBuffer(device, &.{
+        .label = .fromSlice("vertex_staging_buffer"),
+        .usage = .{ .map_write = true, .copy_src = true },
+        .size = initial_vertex_capacity_bytes,
+    });
+    errdefer wgpu.bufferRelease(vertex_staging_buffer);
 
     const linear_sampler = wgpu.deviceCreateSampler(device, &.{
         .label = .fromSlice("linear_sampler"),
@@ -188,17 +214,21 @@ pub fn init(
         .queue = queue,
         .pipeline = pipeline,
         .uniform_buffer = uniform_buffer,
-        .vertex_buffer = undefined,
+        .vertex_buffer = null,
         .vertex_buffer_capacity = 0,
+        .vertex_staging_buffer = vertex_staging_buffer,
+        .vertex_staging_buffer_capacity = initial_vertex_capacity_bytes,
         .vertices = .empty,
         .atlas = atlas,
         .bind_group = null,
         .linear_sampler = linear_sampler,
         .nearest_sampler = nearest_sampler,
         .patch_list = .empty,
-        .provider_context = .{ .provider = undefined, .user_context = null },
+        .provider_context = provider_context,
         .indirection_buffer = indirection_buffer,
         .indirection_buffer_capacity = initial_indirection_capacity,
+        .indirection_staging_buffer = indirection_staging_buffer,
+        .indirection_staging_buffer_capacity = initial_indirection_capacity * @sizeOf(Atlas.ImageMipData),
     };
 
     try self.vertices.ensureTotalCapacity(self.allocator, initial_capacity);
@@ -211,7 +241,9 @@ pub fn deinit(self: *Batch2D) void {
     self.atlas.deinit();
     if (self.bind_group != null) wgpu.bindGroupRelease(self.bind_group);
     if (self.vertex_buffer_capacity > 0) wgpu.bufferRelease(self.vertex_buffer);
+    wgpu.bufferRelease(self.vertex_staging_buffer);
     wgpu.bufferRelease(self.indirection_buffer);
+    wgpu.bufferRelease(self.indirection_staging_buffer);
     wgpu.bufferRelease(self.uniform_buffer);
     wgpu.samplerRelease(self.linear_sampler);
     wgpu.samplerRelease(self.nearest_sampler);
@@ -221,15 +253,14 @@ pub fn deinit(self: *Batch2D) void {
     self.allocator.destroy(self);
 }
 
-pub fn beginFrame(self: *Batch2D, projection: Mat4, context: Atlas.ProviderContext) void {
+pub fn beginFrame(self: *Batch2D, projection: Mat4) void {
     wgpu.queueWriteBuffer(self.queue, self.uniform_buffer, 0, &Uniforms{ .projection = projection }, @sizeOf(Uniforms));
     self.vertices.clearRetainingCapacity();
     self.patch_list.clearRetainingCapacity();
-    self.provider_context = context;
 }
 
 pub fn endFrame(self: *Batch2D) !void {
-    const atlas_recreated = try self.atlas.flush(self.provider_context);
+    const atlas_recreated = try self.atlas.flush();
 
     for (self.patch_list.items) |p| {
         const location = self.atlas.query(p.image_id, p.wants_mips, self.provider_context) catch |err| {
@@ -244,9 +275,23 @@ pub fn endFrame(self: *Batch2D) !void {
         for (verts) |*v| v.encoded_params = encoded_params;
     }
 
+    // --- Upload data to GPU via staging buffers ---
+    // We create a dedicated command encoder for these copy operations.
+    // This allows the GPU to process data uploads in parallel with the CPU preparing the next frame.
+    const upload_encoder = wgpu.deviceCreateCommandEncoder(self.device, &.{ .label = .fromSlice("staging_upload_encoder") });
+    defer wgpu.commandEncoderRelease(upload_encoder);
+
+    // Upload indirection table if it has data
     if (self.atlas.indirection_table.items.len > 0) {
         const required_capacity = self.atlas.indirection_table.items.len;
+        const required_size = required_capacity * @sizeOf(Atlas.ImageMipData);
+
+        // Resize final GPU buffer if needed
         if (self.indirection_buffer_capacity < required_capacity) {
+            if (self.bind_group != null) {
+                wgpu.bindGroupRelease(self.bind_group);
+                self.bind_group = null;
+            }
             wgpu.bufferRelease(self.indirection_buffer);
             const new_capacity = @max(self.indirection_buffer_capacity * 2, required_capacity);
             self.indirection_buffer = wgpu.deviceCreateBuffer(self.device, &.{
@@ -256,16 +301,30 @@ pub fn endFrame(self: *Batch2D) !void {
             });
             self.indirection_buffer_capacity = new_capacity;
             log.info("resized indirection buffer to capacity {d}", .{new_capacity});
-            if (self.bind_group != null) {
-                wgpu.bindGroupRelease(self.bind_group);
-                self.bind_group = null;
-            }
         }
-        wgpu.queueWriteBuffer(self.queue, self.indirection_buffer, 0, self.atlas.indirection_table.items.ptr, required_capacity * @sizeOf(Atlas.ImageMipData));
+
+        // Resize staging buffer if needed
+        if (self.indirection_staging_buffer_capacity < required_size) {
+            wgpu.bufferRelease(self.indirection_staging_buffer);
+            const new_capacity = @max(self.indirection_staging_buffer_capacity * 2, required_size);
+            self.indirection_staging_buffer = wgpu.deviceCreateBuffer(self.device, &.{
+                .label = .fromSlice("indirection_staging_buffer"),
+                .usage = .{ .map_write = true, .copy_src = true },
+                .size = new_capacity,
+            });
+            self.indirection_staging_buffer_capacity = new_capacity;
+        }
+
+        // Perform the upload
+        try uploadSliceToBuffer(self.device, self.indirection_staging_buffer, self.atlas.indirection_table.items);
+        wgpu.commandEncoderCopyBufferToBuffer(upload_encoder, self.indirection_staging_buffer, 0, self.indirection_buffer, 0, required_size);
     }
 
+    // Upload vertex data if it has data
     if (self.vertices.items.len > 0) {
         const required_size = self.vertices.items.len * @sizeOf(Vertex);
+
+        // Resize final GPU buffer if needed
         if (self.vertex_buffer_capacity < required_size) {
             if (self.vertex_buffer_capacity > 0) wgpu.bufferRelease(self.vertex_buffer);
             const new_capacity = @max(self.vertex_buffer_capacity * 2, required_size);
@@ -277,8 +336,28 @@ pub fn endFrame(self: *Batch2D) !void {
             self.vertex_buffer_capacity = new_capacity;
             log.debug("resized vertex buffer to {d} bytes", .{new_capacity});
         }
-        wgpu.queueWriteBuffer(self.queue, self.vertex_buffer, 0, self.vertices.items.ptr, required_size);
+
+        // Resize staging buffer if needed
+        if (self.vertex_staging_buffer_capacity < required_size) {
+            wgpu.bufferRelease(self.vertex_staging_buffer);
+            const new_capacity = @max(self.vertex_staging_buffer_capacity * 2, required_size);
+            self.vertex_staging_buffer = wgpu.deviceCreateBuffer(self.device, &.{
+                .label = .fromSlice("vertex_staging_buffer"),
+                .usage = wgpu.BufferUsage{ .map_write = true, .copy_src = true },
+                .size = new_capacity,
+            });
+            self.vertex_staging_buffer_capacity = new_capacity;
+        }
+
+        // Perform the upload
+        try uploadSliceToBuffer(self.device, self.vertex_staging_buffer, self.vertices.items);
+        wgpu.commandEncoderCopyBufferToBuffer(upload_encoder, self.vertex_staging_buffer, 0, self.vertex_buffer, 0, required_size);
     }
+
+    // Submit the upload commands to the GPU.
+    const upload_cmd = wgpu.commandEncoderFinish(upload_encoder, null);
+    defer wgpu.commandBufferRelease(upload_cmd);
+    wgpu.queueSubmit(self.queue, 1, &.{upload_cmd});
 
     if (atlas_recreated and self.bind_group != null) {
         wgpu.bindGroupRelease(self.bind_group);
@@ -524,4 +603,50 @@ fn recreateBindGroup(self: *Batch2D) !void {
     });
     std.debug.assert(bg != null);
     self.bind_group = bg;
+}
+
+/// A helper function to upload a slice of data to a staging buffer, map it, copy the data, and unmap it.
+/// This helper function contains a short, synchronous wait to acquire a memory pointer,
+/// but it enables the much longer data transfer to happen completely asynchronously, which is what prevents rendering hiccups.
+fn uploadSliceToBuffer(device: wgpu.Device, staging_buffer: wgpu.Buffer, slice: anytype) !void {
+    const T = comptime @TypeOf(slice);
+    const TInfo = comptime @typeInfo(T).pointer;
+
+    if (comptime TInfo.size != .slice) @compileError("Batch2D.uploadSliceToBuffer input must be a slice type; got " ++ @typeName(T));
+
+    const data_size: u64 = slice.len * @sizeOf(TInfo.child);
+    var map_finished = false;
+    var map_status: wgpu.MapAsyncStatus = .unknown;
+
+    _ = wgpu.bufferMapAsync(staging_buffer, .writeMode, 0, data_size, .{
+        .callback = &struct {
+            fn handle_map(status: wgpu.MapAsyncStatus, _: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
+                const finished_flag: *bool = @ptrCast(@alignCast(ud1.?));
+                const status_ptr: *wgpu.MapAsyncStatus = @ptrCast(@alignCast(ud2.?));
+                status_ptr.* = status;
+                finished_flag.* = true;
+            }
+        }.handle_map,
+        .userdata1 = &map_finished,
+        .userdata2 = &map_status,
+    });
+
+    while (!map_finished) {
+        _ = wgpu.devicePoll(device, .from(true), null);
+    }
+
+    if (map_status != .success) {
+        log.err("failed to map staging buffer: {any}", .{map_status});
+        return error.StagingBufferMapFailed;
+    }
+
+    const mapped_range: [*]u8 = @ptrCast(@alignCast(wgpu.bufferGetMappedRange(staging_buffer, 0, data_size) orelse {
+        log.err("failed to get mapped range for staging buffer", .{});
+        wgpu.bufferUnmap(staging_buffer);
+        return error.StagingBufferMapFailed;
+    }));
+
+    const byte_slice = std.mem.sliceAsBytes(slice);
+    @memcpy(mapped_range[0..byte_slice.len], byte_slice);
+    wgpu.bufferUnmap(staging_buffer);
 }

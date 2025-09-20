@@ -29,44 +29,6 @@ const Demo = struct {
     msaa_view: wgpu.TextureView = null,
 };
 
-fn createOrResizeMsaaTexture(d: *Demo) void {
-    if (d.msaa_view != null) wgpu.textureViewRelease(d.msaa_view);
-    if (d.msaa_texture != null) wgpu.textureRelease(d.msaa_texture);
-
-    if (MSAA_SAMPLE_COUNT <= 1) {
-        d.msaa_texture = null;
-        d.msaa_view = null;
-        return;
-    }
-
-    const msaa_descriptor = wgpu.TextureDescriptor{
-        .label = .fromSlice("msaa_texture"),
-        .size = .{ .width = d.config.width, .height = d.config.height, .depth_or_array_layers = 1 },
-        .mip_level_count = 1,
-        .sample_count = MSAA_SAMPLE_COUNT,
-        .dimension = .@"2d",
-        .format = d.config.format,
-        .usage = wgpu.TextureUsage{ .render_attachment = true },
-    };
-
-    d.msaa_texture = wgpu.deviceCreateTexture(d.device, &msaa_descriptor);
-    std.debug.assert(d.msaa_texture != null);
-    d.msaa_view = wgpu.textureCreateView(d.msaa_texture, null);
-    std.debug.assert(d.msaa_view != null);
-}
-
-fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) [16]f32 {
-    var mat: [16]f32 = std.mem.zeroes([16]f32);
-    mat[0] = 2.0 / (right - left);
-    mat[5] = 2.0 / (top - bottom);
-    mat[10] = -2.0 / (far - near);
-    mat[12] = -(right + left) / (right - left);
-    mat[13] = -(top + bottom) / (top - bottom);
-    mat[14] = -(far + near) / (far - near);
-    mat[15] = 1.0;
-    return mat;
-}
-
 var tts_buf: [1024]u8 = undefined;
 
 pub fn main() !void {
@@ -79,11 +41,15 @@ pub fn main() !void {
     } else {
         glfw.initHint(.{ .platform = .win32 });
     }
+
     try glfw.init();
     defer glfw.deinit();
+
     stbi.init(gpa);
     defer stbi.deinit();
+
     var demo = Demo{};
+
     const instance_extras = wgpu.InstanceExtras{ .chain = .{ .s_type = .instance_extras }, .backends = switch (builtin.os.tag) {
         .windows => if (glfw.isRunningInWine()) wgpu.InstanceBackend.vulkanBackend else wgpu.InstanceBackend.dx12Backend,
         else => wgpu.InstanceBackend.vulkanBackend,
@@ -91,10 +57,12 @@ pub fn main() !void {
     demo.instance = wgpu.createInstance(&wgpu.InstanceDescriptor{ .next_in_chain = @ptrCast(&instance_extras) });
     std.debug.assert(demo.instance != null);
     defer wgpu.instanceRelease(demo.instance);
+
     glfw.windowHint(.{ .client_api = .none });
     const window = try glfw.createWindow(640, 480, "zgpu", null, null);
     defer glfw.destroyWindow(window);
     glfw.setWindowUserPointer(window, &demo);
+
     _ = glfw.setFramebufferSizeCallback(window, &struct {
         fn handle_glfw_framebuffer_size(w: *glfw.Window, width: i32, height: i32) callconv(.c) void {
             if (width <= 0 and height <= 0) return;
@@ -119,6 +87,7 @@ pub fn main() !void {
     }
     std.debug.assert(demo.surface != null);
     defer wgpu.surfaceRelease(demo.surface);
+
     _ = wgpu.instanceRequestAdapter(demo.instance, &wgpu.RequestAdapterOptions{ .compatible_surface = demo.surface }, .{ .callback = &struct {
         fn handle_request_adapter(status: wgpu.RequestAdapterStatus, adapter: wgpu.Adapter, msg: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
             _ = ud2;
@@ -132,6 +101,7 @@ pub fn main() !void {
     }.handle_request_adapter, .userdata1 = &demo });
     while (demo.adapter == null) wgpu.instanceProcessEvents(demo.instance);
     defer wgpu.adapterRelease(demo.adapter);
+
     _ = wgpu.adapterRequestDevice(demo.adapter, null, .{ .callback = &struct {
         fn handle_request_device(status: wgpu.RequestDeviceStatus, device: wgpu.Device, msg: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
             _ = ud2;
@@ -149,6 +119,7 @@ pub fn main() !void {
         if (demo.msaa_texture != null) wgpu.textureRelease(demo.msaa_texture);
         wgpu.deviceRelease(demo.device);
     }
+
     const queue = wgpu.deviceGetQueue(demo.device);
     defer wgpu.queueRelease(queue);
     var surface_capabilities: wgpu.SurfaceCapabilities = undefined;
@@ -160,7 +131,7 @@ pub fn main() !void {
         .device = demo.device,
         .usage = .renderAttachmentUsage,
         .format = surface_format,
-        .present_mode = .fifo,
+        .present_mode = .mailbox,
         .alpha_mode = surface_capabilities.alpha_modes.?[0],
     };
 
@@ -191,7 +162,13 @@ pub fn main() !void {
     const EMBLEM_ID = try asset_cache.loadImage("assets/images/ribbon-emblem.png");
     const BOW_ID = try asset_cache.loadImage("assets/images/tiny-bow-icon.png");
 
-    demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format, MSAA_SAMPLE_COUNT);
+    const provider_ctx = Batch2D.ProviderContext{
+        .provider = AssetCache.dataProvider,
+        .frame_allocator = arena_state.allocator(),
+        .user_context = &asset_cache,
+    };
+
+    demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format, provider_ctx, MSAA_SAMPLE_COUNT);
     defer demo.renderer.deinit();
 
     const startup_time = timer.lap();
@@ -241,18 +218,7 @@ pub fn main() !void {
 
         const proj = ortho(0, @floatFromInt(demo.config.width), @floatFromInt(demo.config.height), 0, -1, 1);
 
-        // Create the context struct for this frame.
-        const provider_user_context = AssetCache.ProviderUserContext{
-            .asset_cache = &asset_cache,
-            .frame_allocator = arena_state.allocator(),
-        };
-
-        const provider_ctx = Batch2D.ProviderContext{
-            .provider = AssetCache.dataProvider,
-            // a generic API requires a non-const pointer; this cast is still safe, as the provider we're using does not mutate the context.
-            .user_context = @constCast(&provider_user_context),
-        };
-        demo.renderer.beginFrame(proj, provider_ctx);
+        demo.renderer.beginFrame(proj);
 
         const tint = Batch2D.Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
 
@@ -297,6 +263,8 @@ pub fn main() !void {
 
         var tts_fba = std.heap.FixedBufferAllocator.init(&tts_buf);
         const fps_text = try std.fmt.allocPrint(tts_fba.allocator(), "FPS: {d:0.1} ({d:0.3}ms) / {d:0.1} ({d:0.3}ms) / {d:0.3}ms : {d:0.3}ms", .{ avg_fps, avg_ms, frame_fps, frame_ms, min_ms, max_ms });
+
+        try chart_fps(demo.renderer, .{ .x = 18, .y = 18 }, max_ms, &frame_ms_buf);
 
         // Draw with Roboto, 12px
         try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 16, .{ .x = 0, .y = 0 }, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
@@ -365,5 +333,61 @@ pub fn main() !void {
         _ = wgpu.surfacePresent(demo.surface);
 
         frame_time = timer.lap();
+    }
+}
+
+/// (Re)creates or resizes the MSAA texture used for rendering, based on the current swap chain size.
+fn createOrResizeMsaaTexture(d: *Demo) void {
+    if (d.msaa_view != null) wgpu.textureViewRelease(d.msaa_view);
+    if (d.msaa_texture != null) wgpu.textureRelease(d.msaa_texture);
+
+    if (MSAA_SAMPLE_COUNT <= 1) {
+        d.msaa_texture = null;
+        d.msaa_view = null;
+        return;
+    }
+
+    const msaa_descriptor = wgpu.TextureDescriptor{
+        .label = .fromSlice("msaa_texture"),
+        .size = .{ .width = d.config.width, .height = d.config.height, .depth_or_array_layers = 1 },
+        .mip_level_count = 1,
+        .sample_count = MSAA_SAMPLE_COUNT,
+        .dimension = .@"2d",
+        .format = d.config.format,
+        .usage = wgpu.TextureUsage{ .render_attachment = true },
+    };
+
+    d.msaa_texture = wgpu.deviceCreateTexture(d.device, &msaa_descriptor);
+    std.debug.assert(d.msaa_texture != null);
+    d.msaa_view = wgpu.textureCreateView(d.msaa_texture, null);
+    std.debug.assert(d.msaa_view != null);
+}
+
+/// orthographic projection matrix helper
+fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) [16]f32 {
+    var mat: [16]f32 = std.mem.zeroes([16]f32);
+    mat[0] = 2.0 / (right - left);
+    mat[5] = 2.0 / (top - bottom);
+    mat[10] = -2.0 / (far - near);
+    mat[12] = -(right + left) / (right - left);
+    mat[13] = -(top + bottom) / (top - bottom);
+    mat[14] = -(far + near) / (far - near);
+    mat[15] = 1.0;
+    return mat;
+}
+
+/// draws a bar chart for all frames in the buffer, with each bar scaled by its size relative to the max frame time
+fn chart_fps(renderer: *Batch2D, chart_pos: Batch2D.Vec2, max_ms: f64, frames_ms: []const f64) !void {
+    const bar_width: f32 = 4.0;
+    const chart_height: f32 = 100.0;
+    const chart_color: Batch2D.Color = .{ .r = 0, .g = 0, .b = 0, .a = 0.5 };
+
+    const reference_ms = @max(16.67, max_ms);
+
+    var x: f32 = chart_pos.x;
+    for (frames_ms) |ms| {
+        const height = @as(f32, @floatCast(ms)) / @as(f32, @floatCast(reference_ms)) * chart_height;
+        try renderer.drawQuad(.{ .x = x, .y = chart_pos.y + (chart_height - height) }, .{ .x = bar_width - 1, .y = height }, chart_color);
+        x += bar_width;
     }
 }

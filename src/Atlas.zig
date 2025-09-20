@@ -29,13 +29,6 @@ pub const CachedImageInfo = struct {
     indirection_table_index: u32,
 };
 
-pub const DataProvider = *const fn (image_id: ImageId, user_context: ?*anyopaque) ?InputImage;
-
-pub const ProviderContext = struct {
-    provider: DataProvider,
-    user_context: ?*anyopaque,
-};
-
 pub const PixelFormat = enum {
     grayscale,
     rgba,
@@ -47,6 +40,20 @@ pub const InputImage = struct {
     height: u32,
     format: PixelFormat,
 };
+
+// --- Refactored ProviderContext and DataProvider ---
+
+pub const ProviderContext = struct {
+    provider: DataProvider,
+    /// An opaque pointer to the data provider's state (e.g., an AssetCache instance).
+    user_context: ?*anyopaque,
+    /// A short-lived allocator for temporary data, like mipmap chains.
+    frame_allocator: std.mem.Allocator,
+};
+
+/// The data provider now receives the entire context, giving it access to both
+/// its own state (via user_context) and the frame_allocator.
+pub const DataProvider = *const fn (image_id: ImageId, context: ProviderContext) ?InputImage;
 
 const PendingItem = struct {
     id: ImageId,
@@ -76,7 +83,7 @@ pub fn init(
     mip_level_count: u32,
 ) !*Atlas {
     std.debug.assert(mip_level_count <= MAX_MIP_LEVELS);
-    
+
     const self = try allocator.create(Atlas);
     errdefer allocator.destroy(self);
 
@@ -102,10 +109,7 @@ pub fn init(
 }
 
 pub fn deinit(self: *Atlas) void {
-    for (self.pending_items.items) |item| {
-        for (item.chain) |mip| self.allocator.free(mip.pixels);
-        self.allocator.free(item.chain);
-    }
+    // NOTE: We no longer need to free pending_items' chains, as they are on the frame arena.
     self.pending_items.deinit(self.allocator);
 
     wgpu.textureViewRelease(self.view);
@@ -135,7 +139,8 @@ pub fn query(
         if (item.id == id) return error.ImageNotYetPacked;
     }
 
-    const source_image = context.provider(id, context.user_context) orelse {
+    // Call the provider with the full context
+    const source_image = context.provider(id, context) orelse {
         log.err("data provider returned null for image id {any}", .{id});
         return error.InvalidImageId;
     };
@@ -145,23 +150,17 @@ pub fn query(
         max_mips = 1;
     }
 
-    const chain = try self.generateMipChain(source_image, max_mips);
+    // Generate the mip chain using the frame allocator from the context
+    const chain = try self.generateMipChain(context.frame_allocator, source_image, max_mips);
 
-    // Try to append. If it fails, clean up the chain and propagate the error.
-    if (self.pending_items.append(self.allocator, .{ .id = id, .chain = chain })) {
-        // On success, return the intended error to signal the image is now pending.
-        return error.ImageNotYetPacked;
-    } else |err| {
-        for (chain) |mip| self.allocator.free(mip.pixels);
-        self.allocator.free(chain);
-        return err;
-    }
+    // Try to append. If it fails, the arena will clean up the chain anyway.
+    try self.pending_items.append(self.allocator, .{ .id = id, .chain = chain });
+    return error.ImageNotYetPacked;
 }
 
-pub fn flush(self: *Atlas, context: ProviderContext) !bool {
+pub fn flush(self: *Atlas) !bool {
     if (self.pending_items.items.len == 0) return false;
     log.debug("flushing {d} pending images...", .{self.pending_items.items.len});
-    _ = context;
 
     var atlas_recreated = false;
     var pending_idx: usize = 0;
@@ -176,10 +175,6 @@ pub fn flush(self: *Atlas, context: ProviderContext) !bool {
         }
         const cache_info = gop.value_ptr.*;
         const ind_entry = &self.indirection_table.items[@as(usize, @intCast(cache_info.indirection_table_index))];
-
-        var mips_packed = std.ArrayList(bool).initCapacity(self.allocator, item.chain.len) catch @panic("oom");
-        @memset(mips_packed.items, false);
-        defer mips_packed.deinit(self.allocator);
 
         for (item.chain, 0..) |*mip, mip_level| {
             var rect = stbrp.Rect{ .id = 0, .w = @intCast(mip.width), .h = @intCast(mip.height) };
@@ -228,10 +223,7 @@ pub fn flush(self: *Atlas, context: ProviderContext) !bool {
         pending_idx += 1;
     }
 
-    for (self.pending_items.items) |item| {
-        for (item.chain) |mip| self.allocator.free(mip.pixels);
-        self.allocator.free(item.chain);
-    }
+    // ✅ SUCCESS: No more manual frees! The arena handles it.
     self.pending_items.clearRetainingCapacity();
 
     return atlas_recreated;
@@ -309,20 +301,19 @@ fn uploadImage(self: *Atlas, image: InputImage, x: u32, y: u32, layer: u32) !voi
     wgpu.queueWriteTexture(self.queue, &copy_destination, image.pixels.ptr, image.pixels.len, &layout, &copy_size);
 }
 
-fn generateMipChain(self: *Atlas, source: InputImage, max_levels: u32) ![]const InputImage {
+/// Now uses the passed-in allocator (the frame arena) for all allocations.
+fn generateMipChain(self: *Atlas, allocator: std.mem.Allocator, source: InputImage, max_levels: u32) ![]const InputImage {
+    _ = self; // self is unused, but kept for method syntax consistency
     if (max_levels <= 1) {
-        const slice = try self.allocator.alloc(InputImage, 1);
-        slice[0] = .{ .pixels = try self.allocator.dupe(u8, source.pixels), .width = source.width, .height = source.height, .format = source.format };
+        const slice = try allocator.alloc(InputImage, 1);
+        slice[0] = .{ .pixels = try allocator.dupe(u8, source.pixels), .width = source.width, .height = source.height, .format = source.format };
         return slice;
     }
     var chain = std.ArrayList(InputImage).empty;
-    errdefer {
-        for (chain.items) |item| self.allocator.free(item.pixels);
-        chain.deinit(self.allocator);
-    }
-    const source_copy = try self.allocator.dupe(u8, source.pixels);
-    errdefer self.allocator.free(source_copy);
-    try chain.append(self.allocator, .{ .pixels = source_copy, .width = source.width, .height = source.height, .format = source.format });
+    // No errdefer needed; arena will clean up on error.
+
+    const source_copy = try allocator.dupe(u8, source.pixels);
+    try chain.append(allocator, .{ .pixels = source_copy, .width = source.width, .height = source.height, .format = source.format });
 
     var current_w = source.width;
     var current_h = source.height;
@@ -330,14 +321,14 @@ fn generateMipChain(self: *Atlas, source: InputImage, max_levels: u32) ![]const 
     while (@max(current_w, current_h) > 1 and chain.items.len < max_levels) {
         const next_w = @max(1, current_w / 2);
         const next_h = @max(1, current_h / 2);
-        const resized_pixels = try self.allocator.alloc(u8, next_w * next_h * 4);
+        const resized_pixels = try allocator.alloc(u8, next_w * next_h * 4);
         stbi.stbir_resize_uint8_srgb(last_pixels.ptr, @intCast(current_w), @intCast(current_h), 0, resized_pixels.ptr, @intCast(next_w), @intCast(next_h), 0, 4);
-        try chain.append(self.allocator, .{ .pixels = resized_pixels, .width = next_w, .height = next_h, .format = .rgba });
+        try chain.append(allocator, .{ .pixels = resized_pixels, .width = next_w, .height = next_h, .format = .rgba });
         current_w = next_w;
         current_h = next_h;
         last_pixels = resized_pixels;
     }
-    return chain.toOwnedSlice(self.allocator);
+    return chain.toOwnedSlice(allocator);
 }
 
 pub fn debugWriteAllAtlasesToPng(self: *Atlas, base_filename: []const u8) !void {
