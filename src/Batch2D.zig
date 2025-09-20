@@ -45,7 +45,6 @@ const Uniforms = extern struct {
 
 const Patch = struct {
     image_id: Atlas.ImageId,
-    wants_mips: bool,
     vertex_start_index: usize,
     vertex_count: usize,
 };
@@ -263,7 +262,7 @@ pub fn endFrame(self: *Batch2D) !void {
     const atlas_recreated = try self.atlas.flush();
 
     for (self.patch_list.items) |p| {
-        const location = self.atlas.query(p.image_id, p.wants_mips, self.provider_context) catch |err| {
+        const location = self.atlas.query(p.image_id, self.provider_context) catch |err| {
             log.err("image {any} not found in cache after flush. error: {any}", .{ p.image_id, err });
             continue;
         };
@@ -379,10 +378,10 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
 }
 
 pub fn drawQuad(self: *Batch2D, pos: Vec2, size: Vec2, tint: Color) !void {
-    try self.drawTexturedQuad(AssetCache.WHITE_PIXEL_ID, false, pos, size, null, tint);
+    try self.drawTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, tint);
 }
 
-pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, wants_mips: bool, pos: Vec2, size: Vec2, src_rect: ?struct { Vec2, Vec2 }, tint: Color) !void {
+pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: Vec2, size: Vec2, src_rect: ?struct { Vec2, Vec2 }, tint: Color) !void {
     const p1 = pos; // Top-left
     const p2 = Vec2{ .x = pos.x + size.x, .y = pos.y }; // Top-right
     const p3 = Vec2{ .x = pos.x + size.x, .y = pos.y + size.y }; // Bottom-right
@@ -397,25 +396,24 @@ pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, wants_mips: boo
     const bl = Vec2{ .x = tl.x, .y = br.y };
 
     // Note the winding order for standard quads: TL, TR, BL and TR, BR, BL
-    try self.drawTexturedTriangle(image_id, wants_mips, p1, tl, p2, tr, p4, bl, tint);
-    try self.drawTexturedTriangle(image_id, wants_mips, p2, tr, p3, br, p4, bl, tint);
+    try self.drawTexturedTriangle(image_id, p1, tl, p2, tr, p4, bl, tint);
+    try self.drawTexturedTriangle(image_id, p2, tr, p3, br, p4, bl, tint);
 }
 
 pub fn drawTriangle(self: *Batch2D, v1: Vec2, v2: Vec2, v3: Vec2, tint: Color) !void {
     // Solid triangles use the white pixel texture and have (0,0) UVs, which correctly maps to that single pixel.
     const uv = Vec2{ .x = 0.0, .y = 0.0 };
-    try self.drawTexturedTriangle(AssetCache.WHITE_PIXEL_ID, false, v1, uv, v2, uv, v3, uv, tint);
+    try self.drawTexturedTriangle(AssetCache.WHITE_PIXEL_ID, v1, uv, v2, uv, v3, uv, tint);
 }
 
-pub fn drawTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, wants_mips: bool, v1: Vec2, uv1: Vec2, v2: Vec2, uv2: Vec2, v3: Vec2, uv3: Vec2, tint: Color) !void {
-    const location = self.atlas.query(image_id, wants_mips, self.provider_context) catch |err| {
+pub fn drawTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, v1: Vec2, uv1: Vec2, v2: Vec2, uv2: Vec2, v3: Vec2, uv3: Vec2, tint: Color) !void {
+    const location = self.atlas.query(image_id, self.provider_context) catch |err| {
         if (err == error.ImageNotYetPacked) {
             // UNPACKED PATH: The image isn't in the atlas yet.
             // 1. Create a patch so we can fix `encoded_params` later.
             const vertex_start_index = self.vertices.items.len;
             try self.patch_list.append(self.allocator, .{
                 .image_id = image_id,
-                .wants_mips = wants_mips,
                 .vertex_start_index = vertex_start_index,
                 .vertex_count = 3,
             });
@@ -546,7 +544,7 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.Font
                 .is_glyph_or_special = true,
             });
 
-            try self.drawTexturedQuad(glyph_id, false, final_pos, char_size, null, tint);
+            try self.drawTexturedQuad(glyph_id, final_pos, char_size, null, tint);
         }
 
         // Advance the cursor for the next character.

@@ -12,6 +12,11 @@ const glfw = @import("glfw");
 const Batch2D = @import("Batch2D.zig");
 const AssetCache = @import("AssetCache.zig");
 
+test {
+    log.debug("semantic analysis for main.zig", .{});
+    std.testing.refAllDecls(@This());
+}
+
 pub const std_options = std.Options{
     .log_level = .info,
 };
@@ -157,10 +162,10 @@ pub fn main() !void {
     const quicksand_idx = try asset_cache.loadFont("assets/fonts/Quicksand-Semibold.ttf");
 
     // Load images via the asset cache
-    const LOGO_ID = try asset_cache.loadImage("assets/images/wgpu-logo.png");
-    const BANNER_ID = try asset_cache.loadImage("assets/images/ribbon-banner.png");
-    const EMBLEM_ID = try asset_cache.loadImage("assets/images/ribbon-emblem.png");
-    const BOW_ID = try asset_cache.loadImage("assets/images/tiny-bow-icon.png");
+    const LOGO_ID = try asset_cache.loadImage("assets/images/wgpu-logo.png", true);
+    const BANNER_ID = try asset_cache.loadImage("assets/images/ribbon-banner.png", true);
+    const EMBLEM_ID = try asset_cache.loadImage("assets/images/ribbon-emblem.png", true);
+    const BOW_ID = try asset_cache.loadImage("assets/images/tiny-bow-icon.png", true);
 
     const provider_ctx = Batch2D.ProviderContext{
         .provider = AssetCache.dataProvider,
@@ -228,20 +233,20 @@ pub fn main() !void {
         glfw.getCursorPos(window, &cursor_x, &cursor_y);
         const logo_img = asset_cache.images.items[LOGO_ID];
         const image_scale = 0.2;
-        const quad_width: f32 = @as(f32, @floatFromInt(logo_img.width)) * image_scale;
-        const quad_height: f32 = @as(f32, @floatFromInt(logo_img.height)) * image_scale;
+        const quad_width: f32 = @as(f32, @floatFromInt(logo_img.content.width)) * image_scale;
+        const quad_height: f32 = @as(f32, @floatFromInt(logo_img.content.height)) * image_scale;
         const quad_pos = Batch2D.Vec2{ .x = @as(f32, @floatCast(cursor_x)) - quad_width / 2.0, .y = @as(f32, @floatCast(cursor_y)) - quad_height / 2.0 };
         const quad_size = Batch2D.Vec2{ .x = quad_width, .y = quad_height };
-        try demo.renderer.drawTexturedQuad(LOGO_ID, true, quad_pos, quad_size, null, tint);
+        try demo.renderer.drawTexturedQuad(LOGO_ID, quad_pos, quad_size, null, tint);
 
         const banner_img = asset_cache.images.items[BANNER_ID];
-        try demo.renderer.drawTexturedQuad(BANNER_ID, true, .{ .x = 100, .y = 200 }, .{ .x = @floatFromInt(@divFloor(banner_img.width, 4)), .y = @floatFromInt(@divFloor(banner_img.height, 4)) }, null, tint);
+        try demo.renderer.drawTexturedQuad(BANNER_ID, .{ .x = 100, .y = 200 }, .{ .x = @floatFromInt(@divFloor(banner_img.content.width, 4)), .y = @floatFromInt(@divFloor(banner_img.content.height, 4)) }, null, tint);
 
         const emblem_img = asset_cache.images.items[EMBLEM_ID];
-        try demo.renderer.drawTexturedQuad(EMBLEM_ID, true, .{ .x = 500, .y = 50 }, .{ .x = @floatFromInt(emblem_img.width), .y = @floatFromInt(emblem_img.height) }, null, tint);
+        try demo.renderer.drawTexturedQuad(EMBLEM_ID, .{ .x = 500, .y = 50 }, .{ .x = @floatFromInt(emblem_img.content.width), .y = @floatFromInt(emblem_img.content.height) }, null, tint);
 
         const bow_img = asset_cache.images.items[BOW_ID];
-        try demo.renderer.drawTexturedQuad(BOW_ID, true, .{ .x = 400, .y = 375 }, .{ .x = @floatFromInt(bow_img.width), .y = @floatFromInt(bow_img.height) }, null, tint);
+        try demo.renderer.drawTexturedQuad(BOW_ID, .{ .x = 400, .y = 375 }, .{ .x = @floatFromInt(bow_img.content.width), .y = @floatFromInt(bow_img.content.height) }, null, tint);
 
         const frame_ms = @as(f64, @floatFromInt(frame_time)) / std.time.ns_per_ms;
         const frame_fps = 1000.0 / frame_ms;

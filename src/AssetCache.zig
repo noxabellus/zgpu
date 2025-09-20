@@ -56,6 +56,11 @@ pub const LoadedFont = struct {
     data: []const u8,
 };
 
+pub const LoadedImage = struct {
+    content: stbi.Image,
+    wants_mips: bool,
+};
+
 // NOTE: ProviderUserContext has been removed.
 
 /// Manages loading and caching of assets like images and fonts.
@@ -63,7 +68,7 @@ pub const AssetCache = @This();
 
 allocator: std.mem.Allocator,
 fonts: std.ArrayList(LoadedFont),
-images: std.ArrayList(stbi.Image),
+images: std.ArrayList(LoadedImage),
 image_map: std.StringHashMapUnmanaged(Atlas.ImageId),
 
 pub fn init(allocator: std.mem.Allocator) AssetCache {
@@ -89,7 +94,7 @@ pub fn deinit(self: *AssetCache) void {
         self.allocator.free(entry.key_ptr.*);
     }
     for (self.images.items) |*image| {
-        image.deinit();
+        image.content.deinit();
     }
     self.images.deinit(self.allocator);
     self.image_map.deinit(self.allocator);
@@ -114,7 +119,7 @@ pub fn loadFont(self: *AssetCache, path: []const u8) !FontId {
 
 /// Loads an image from a file path and returns a unique Atlas.ImageId.
 /// Avoids loading the same image twice.
-pub fn loadImage(self: *AssetCache, path: []const u8) !Atlas.ImageId {
+pub fn loadImage(self: *AssetCache, path: []const u8, generate_mips: bool) !Atlas.ImageId {
     if (self.image_map.get(path)) |existing_id| {
         return existing_id;
     }
@@ -126,7 +131,7 @@ pub fn loadImage(self: *AssetCache, path: []const u8) !Atlas.ImageId {
     errdefer image.deinit();
 
     const image_id: Atlas.ImageId = @intCast(self.images.items.len);
-    try self.images.append(self.allocator, image);
+    try self.images.append(self.allocator, .{ .content = image, .wants_mips = generate_mips });
 
     try self.image_map.put(self.allocator, try self.allocator.dupe(u8, path), image_id);
 
@@ -153,6 +158,7 @@ pub fn dataProvider(image_id: Atlas.ImageId, context: Atlas.ProviderContext) ?At
                     .width = 1,
                     .height = 1,
                     .format = .rgba,
+                    .wants_mips = false,
                 };
             }
             log.err("unknown special id {any}", .{decoded});
@@ -208,6 +214,7 @@ pub fn dataProvider(image_id: Atlas.ImageId, context: Atlas.ProviderContext) ?At
             .width = padded_w,
             .height = padded_h,
             .format = .rgba,
+            .wants_mips = false,
         };
     } else { // This is a standard image request. The ID is the index in our images list.
         const image_index = @as(usize, @intCast(image_id));
@@ -215,12 +222,13 @@ pub fn dataProvider(image_id: Atlas.ImageId, context: Atlas.ProviderContext) ?At
             log.err("invalid image id {d}", .{image_index});
             return null;
         }
-        const image = &cache.images.items[image_index];
+        const loaded_image = &cache.images.items[image_index];
         return Atlas.InputImage{
-            .pixels = image.data,
-            .width = image.width,
-            .height = image.height,
+            .pixels = loaded_image.content.data,
+            .width = loaded_image.content.width,
+            .height = loaded_image.content.height,
             .format = .rgba,
+            .wants_mips = loaded_image.wants_mips,
         };
     }
 }

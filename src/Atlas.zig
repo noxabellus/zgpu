@@ -9,6 +9,11 @@ const stbi = @import("stbi");
 
 const log = std.log.scoped(.multi_atlas);
 
+test {
+    log.debug("semantic analysis for Atlas.zig", .{});
+    std.testing.refAllDecls(@This());
+}
+
 pub const ImageId = u64;
 
 pub const MAX_MIP_LEVELS = 12;
@@ -39,6 +44,7 @@ pub const InputImage = struct {
     width: u32,
     height: u32,
     format: PixelFormat,
+    wants_mips: bool,
 };
 
 // --- Refactored ProviderContext and DataProvider ---
@@ -128,7 +134,6 @@ pub fn deinit(self: *Atlas) void {
 pub fn query(
     self: *Atlas,
     id: ImageId,
-    generate_mips: bool,
     context: ProviderContext,
 ) !CachedImageInfo {
     if (self.cache.get(id)) |info| {
@@ -145,7 +150,7 @@ pub fn query(
         return error.InvalidImageId;
     };
 
-    var max_mips: u32 = if (generate_mips) self.mip_level_count else 1;
+    var max_mips: u32 = if (source_image.wants_mips) self.mip_level_count else 1;
     if (source_image.width <= 4 or source_image.height <= 4) {
         max_mips = 1;
     }
@@ -306,14 +311,20 @@ fn generateMipChain(self: *Atlas, allocator: std.mem.Allocator, source: InputIma
     _ = self; // self is unused, but kept for method syntax consistency
     if (max_levels <= 1) {
         const slice = try allocator.alloc(InputImage, 1);
-        slice[0] = .{ .pixels = try allocator.dupe(u8, source.pixels), .width = source.width, .height = source.height, .format = source.format };
+        slice[0] = .{
+            .pixels = try allocator.dupe(u8, source.pixels),
+            .width = source.width,
+            .height = source.height,
+            .format = source.format,
+            .wants_mips = source.wants_mips,
+        };
         return slice;
     }
     var chain = std.ArrayList(InputImage).empty;
     // No errdefer needed; arena will clean up on error.
 
     const source_copy = try allocator.dupe(u8, source.pixels);
-    try chain.append(allocator, .{ .pixels = source_copy, .width = source.width, .height = source.height, .format = source.format });
+    try chain.append(allocator, .{ .pixels = source_copy, .width = source.width, .height = source.height, .format = source.format, .wants_mips = source.wants_mips });
 
     var current_w = source.width;
     var current_h = source.height;
@@ -323,7 +334,7 @@ fn generateMipChain(self: *Atlas, allocator: std.mem.Allocator, source: InputIma
         const next_h = @max(1, current_h / 2);
         const resized_pixels = try allocator.alloc(u8, next_w * next_h * 4);
         stbi.stbir_resize_uint8_srgb(last_pixels.ptr, @intCast(current_w), @intCast(current_h), 0, resized_pixels.ptr, @intCast(next_w), @intCast(next_h), 0, 4);
-        try chain.append(allocator, .{ .pixels = resized_pixels, .width = next_w, .height = next_h, .format = .rgba });
+        try chain.append(allocator, .{ .pixels = resized_pixels, .width = next_w, .height = next_h, .format = .rgba, .wants_mips = source.wants_mips });
         current_w = next_w;
         current_h = next_h;
         last_pixels = resized_pixels;
