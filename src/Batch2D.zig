@@ -16,6 +16,8 @@ test {
 
 // --- Public Constants ---
 pub const GLYPH_ID_FLAG: u32 = 0x80000000;
+pub const GLYPH_PADDING: u32 = 2;
+pub const GLYPH_PADDING_F: f32 = 2.0;
 const IS_GLYPH_MASK = 0x80000000;
 
 // --- Glyph ID Encoding ---
@@ -351,7 +353,6 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.Font
     const baseline_y = pos.y - @as(f32, @floatFromInt(min_iy0));
     var xpos = pos.x;
     var prev_char: u21 = 0;
-    const GLYPH_PADDING: f32 = 2.0;
 
     for (string) |char| {
         const char_code = @as(u21, @intCast(char));
@@ -373,10 +374,10 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.Font
         const height: f32 = @floatFromInt(iy1 - iy0);
 
         if (width > 0 and height > 0) {
-            const padded_width = width + (GLYPH_PADDING * 2.0);
-            const padded_height = height + (GLYPH_PADDING * 2.0);
-            const ideal_x = xpos + @as(f32, @floatFromInt(ix0)) - GLYPH_PADDING;
-            const ideal_y = baseline_y + @as(f32, @floatFromInt(iy0)) - GLYPH_PADDING;
+            const padded_width = width + (GLYPH_PADDING_F * 2.0);
+            const padded_height = height + (GLYPH_PADDING_F * 2.0);
+            const ideal_x = xpos + @as(f32, @floatFromInt(ix0)) - GLYPH_PADDING_F;
+            const ideal_y = baseline_y + @as(f32, @floatFromInt(iy0)) - GLYPH_PADDING_F;
             const rounded_x = @floor(ideal_x + 0.5);
             const rounded_y = @floor(ideal_y + 0.5);
             const final_pos = Vec2{ .x = rounded_x - 0.5, .y = rounded_y - 0.5 };

@@ -18,6 +18,7 @@ struct MipInfo {
     // struct must have it to ensure correct stride in the buffer.
 };
 
+// Must be kept in sync with Atlas.zig
 const MAX_MIP_LEVELS = 12u;
 struct ImageMipData {
     mips: array<MipInfo, MAX_MIP_LEVELS>,
@@ -50,6 +51,7 @@ fn vs_main(in: VertexInput) -> VertexOutput {
     return out;
 }
 
+// Must be kept in sync with Batch2D.zig
 const IMAGE_ID_MASK = 0x7FFFFFFFu;
 const IS_GLYPH_MASK = 0x80000000u;
 

@@ -122,10 +122,8 @@ pub fn dataProvider(image_id: Atlas.ImageId, user_context: ?*anyopaque) ?Atlas.I
         if (grayscale_pixels == null or w == 0 or h == 0) return null;
         defer stbtt.freeBitmap(grayscale_pixels.?, null);
 
-        const GLYPH_PADDING: u32 = 2;
-
-        const padded_w: u32 = @as(u32, @intCast(w)) + (GLYPH_PADDING * 2);
-        const padded_h: u32 = @as(u32, @intCast(h)) + (GLYPH_PADDING * 2);
+        const padded_w: u32 = @as(u32, @intCast(w)) + (Batch2D.GLYPH_PADDING * 2);
+        const padded_h: u32 = @as(u32, @intCast(h)) + (Batch2D.GLYPH_PADDING * 2);
         const master_rgba_padded_pixels = (frame_allocator.alloc(u8, padded_w * padded_h * 4) catch return null);
 
         @memset(master_rgba_padded_pixels, 0x00);
@@ -142,7 +140,7 @@ pub fn dataProvider(image_id: Atlas.ImageId, user_context: ?*anyopaque) ?Atlas.I
         const padded_pitch: usize = padded_w * 4;
         for (0..@as(usize, @intCast(h))) |row| {
             const src_row = grayscale_pixels.?[(row * original_pitch)..];
-            const dst_row_start_idx = ((row + GLYPH_PADDING) * padded_pitch) + (GLYPH_PADDING * 4);
+            const dst_row_start_idx = ((row + Batch2D.GLYPH_PADDING) * padded_pitch) + (Batch2D.GLYPH_PADDING * 4);
             for (0..original_pitch) |col| {
                 const alpha = src_row[col];
                 const dst_pixel_start = dst_row_start_idx + (col * 4);
