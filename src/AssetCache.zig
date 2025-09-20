@@ -17,6 +17,8 @@ pub const FontId = u8; // Max 256 fonts.
 
 pub const FontSize = u16; // Max 65535 pixel height.
 
+pub const ImageId = Atlas.ImageId;
+
 /// A packed struct representing the components of a glyph or special (e.g. white pixel) ImageID.
 /// This allows for type-safe, error-free conversion to and from a u64 ImageID via @bitCast.
 pub const GlyphId = packed struct(u64) {
@@ -30,12 +32,12 @@ pub const GlyphId = packed struct(u64) {
 };
 
 /// Encodes a GlyphId struct into a u64 ImageID.
-pub fn encodeGlyphId(id_struct: GlyphId) Atlas.ImageId {
+pub fn encodeGlyphId(id_struct: GlyphId) ImageId {
     return @bitCast(id_struct);
 }
 
 /// Decodes a u64 ImageID back into a GlyphId struct.
-pub fn decodeGlyphId(id: Atlas.ImageId) GlyphId {
+pub fn decodeGlyphId(id: ImageId) GlyphId {
     return @bitCast(id);
 }
 
@@ -43,7 +45,7 @@ pub fn decodeGlyphId(id: Atlas.ImageId) GlyphId {
 pub const SPECIAL_ID_font_id: FontId = 0xFF;
 
 /// The canonical ID for a single white pixel, used for drawing solid-colored shapes.
-pub const WHITE_PIXEL_ID: Atlas.ImageId = encodeGlyphId(.{
+pub const WHITE_PIXEL_ID: ImageId = encodeGlyphId(.{
     .char_code = 0,
     .font_size = 0,
     .font_id = SPECIAL_ID_font_id,
@@ -69,7 +71,7 @@ pub const AssetCache = @This();
 allocator: std.mem.Allocator,
 fonts: std.ArrayList(LoadedFont),
 images: std.ArrayList(LoadedImage),
-image_map: std.StringHashMapUnmanaged(Atlas.ImageId),
+image_map: std.StringHashMapUnmanaged(ImageId),
 
 pub fn init(allocator: std.mem.Allocator) AssetCache {
     return .{
@@ -117,9 +119,9 @@ pub fn loadFont(self: *AssetCache, path: []const u8) !FontId {
     return font_id;
 }
 
-/// Loads an image from a file path and returns a unique Atlas.ImageId.
+/// Loads an image from a file path and returns a unique ImageId.
 /// Avoids loading the same image twice.
-pub fn loadImage(self: *AssetCache, path: []const u8, generate_mips: bool) !Atlas.ImageId {
+pub fn loadImage(self: *AssetCache, path: []const u8, generate_mips: bool) !ImageId {
     if (self.image_map.get(path)) |existing_id| {
         return existing_id;
     }
@@ -130,7 +132,7 @@ pub fn loadImage(self: *AssetCache, path: []const u8, generate_mips: bool) !Atla
     var image = try stbi.Image.loadFromMemory(file_data, 4);
     errdefer image.deinit();
 
-    const image_id: Atlas.ImageId = @intCast(self.images.items.len);
+    const image_id: ImageId = @intCast(self.images.items.len);
     try self.images.append(self.allocator, .{ .content = image, .wants_mips = generate_mips });
 
     try self.image_map.put(self.allocator, try self.allocator.dupe(u8, path), image_id);
@@ -140,8 +142,8 @@ pub fn loadImage(self: *AssetCache, path: []const u8, generate_mips: bool) !Atla
 }
 
 /// The data provider callback required by the Atlas.
-/// This function is called by the renderer when it needs pixel data for an Atlas.ImageId.
-pub fn dataProvider(image_id: Atlas.ImageId, context: Atlas.ProviderContext) ?Atlas.InputImage {
+/// This function is called by the renderer when it needs pixel data for an ImageId.
+pub fn dataProvider(image_id: ImageId, context: Atlas.ProviderContext) ?Atlas.InputImage {
     // Cast the opaque user_context pointer to our specific AssetCache struct.
     const cache: *const AssetCache = @ptrCast(@alignCast(context.user_context.?));
     const frame_allocator = context.frame_allocator;

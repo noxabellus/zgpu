@@ -75,6 +75,7 @@ pub fn build(b: *std.Build) void {
 
     const stb_dep = b.dependency("stb", .{});
     const glfw_dep = b.dependency("glfw", .{});
+    const clay_dep = b.dependency("clay", .{});
 
     // --- WGPU Module ---
     const wgpu_mod = b.createModule(.{
@@ -144,6 +145,23 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
     });
 
+    const clay_mod = b.createModule(.{
+        .root_source_file = b.path("libs/clay/clay.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    const clay_test = b.addTest(.{ .root_module = clay_mod });
+    check_step.dependOn(&clay_test.step);
+    test_step.dependOn(&b.addRunArtifact(clay_test).step);
+
+    clay_mod.addIncludePath(clay_dep.path("."));
+    clay_mod.addCSourceFile(.{
+        .file = b.path("libs/clay/clay.c"),
+        .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
+    });
+
     // --- GLFW Module (Zig bindings) ---
     const glfw_mod = b.createModule(.{
         .root_source_file = b.path("libs/glfw.zig"),
@@ -197,6 +215,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("stbi", stbi_mod);
     exe_mod.addImport("stbtt", stbtt_mod);
     exe_mod.addImport("stbrp", stbrp_mod);
+    exe_mod.addImport("clay", clay_mod);
     exe_mod.addImport("glfw", glfw_mod);
     exe_mod.addAnonymousImport("shaders/Renderer.wgsl", .{
         .root_source_file = b.path("static/shaders/Renderer.wgsl"),

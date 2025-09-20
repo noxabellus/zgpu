@@ -22,6 +22,7 @@ pub const GLYPH_PADDING_F = 2.0;
 // --- Public API Structs ---
 pub const Mat4 = [16]f32;
 pub const Vec2 = struct { x: f32 = 0.0, y: f32 = 0.0 };
+pub const UvRect = struct { Vec2, Vec2 };
 pub const Color = struct {
     r: f32 = 0.0,
     g: f32 = 0.0,
@@ -504,7 +505,7 @@ pub fn drawQuad(self: *Batch2D, pos: Vec2, size: Vec2, tint: Color) !void {
     try self.drawTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, tint);
 }
 
-pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: Vec2, size: Vec2, src_rect: ?struct { Vec2, Vec2 }, tint: Color) !void {
+pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: Vec2, size: Vec2, src_rect: ?UvRect, tint: Color) !void {
     const p1 = pos; // Top-left
     const p2 = Vec2{ .x = pos.x + size.x, .y = pos.y }; // Top-right
     const p3 = Vec2{ .x = pos.x + size.x, .y = pos.y + size.y }; // Bottom-right
@@ -708,6 +709,99 @@ pub fn drawRoundedRectLine(self: *Batch2D, pos: Vec2, size: Vec2, radius: Corner
     try self.drawArcLine(.{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - r.bottom_left }, r.bottom_left, 0.5 * pi, pi, t, tint);
 }
 
+// --- This is the new public function you requested ---
+/// Draws a textured quad with rounded corners, using a 9-slice method.
+/// The `src_rect` defines the texture area, and `radius` defines the screen-space corner size.
+pub fn drawRoundedTexturedQuad(
+    self: *Batch2D,
+    image_id: Atlas.ImageId,
+    pos: Vec2,
+    size: Vec2,
+    radius: CornerRadius,
+    src_rect: ?UvRect,
+    tint: Color,
+) !void {
+    if (size.x <= 0 or size.y <= 0) return;
+
+    // 1. Clamp radii to be non-negative and fit within the rectangle's dimensions.
+    var r = CornerRadius{
+        .top_left = @max(0.0, radius.top_left),
+        .top_right = @max(0.0, radius.top_right),
+        .bottom_right = @max(0.0, radius.bottom_right),
+        .bottom_left = @max(0.0, radius.bottom_left),
+    };
+
+    var scale: f32 = 1.0;
+    if (r.top_left + r.top_right > size.x) {
+        scale = @min(scale, size.x / (r.top_left + r.top_right));
+    }
+    if (r.bottom_left + r.bottom_right > size.x) {
+        scale = @min(scale, size.x / (r.bottom_left + r.bottom_right));
+    }
+    if (r.top_left + r.bottom_left > size.y) {
+        scale = @min(scale, size.y / (r.top_left + r.bottom_left));
+    }
+    if (r.top_right + r.bottom_right > size.y) {
+        scale = @min(scale, size.y / (r.top_right + r.bottom_right));
+    }
+
+    r.top_left *= scale;
+    r.top_right *= scale;
+    r.bottom_right *= scale;
+    r.bottom_left *= scale;
+
+    // If all radii are negligible, draw a simple textured quad for performance.
+    if (r.top_left < 0.01 and r.top_right < 0.01 and r.bottom_right < 0.01 and r.bottom_left < 0.01) {
+        return self.drawTexturedQuad(image_id, pos, size, src_rect, tint);
+    }
+
+    const pi = std.math.pi;
+
+    // 2. Define the 9-slice grid in both screen space (positions) and texture space (UVs).
+    const src = src_rect orelse UvRect{ .{ .x = 0.0, .y = 0.0 }, .{ .x = 1.0, .y = 1.0 } };
+    const src_tl = src[0];
+    const src_br = src[1];
+    const uv_size = Vec2{ .x = src_br.x - src_tl.x, .y = src_br.y - src_tl.y };
+
+    // Define the x-coordinates for the grid
+    const pos_x0 = pos.x;
+    const pos_x1 = pos.x + r.top_left;
+    const pos_x2 = pos.x + size.x - r.top_right;
+    const pos_x3 = pos.x + size.x;
+
+    const uv_x0 = src_tl.x;
+    const uv_x1 = src_tl.x + (r.top_left / size.x) * uv_size.x;
+    const uv_x2 = src_br.x - (r.top_right / size.x) * uv_size.x;
+    const uv_x3 = src_br.x;
+
+    // Define the y-coordinates for the grid
+    const pos_y0 = pos.y;
+    const pos_y1 = pos.y + r.top_left;
+    const pos_y2 = pos.y + size.y - r.bottom_left;
+    const pos_y3 = pos.y + size.y;
+
+    const uv_y0 = src_tl.y;
+    const uv_y1 = src_tl.y + (r.top_left / size.y) * uv_size.y;
+    const uv_y2 = src_br.y - (r.bottom_left / size.y) * uv_size.y;
+    const uv_y3 = src_br.y;
+
+    // 3. Draw the 9 slices using the calculated grid coordinates.
+    // Top Row
+    try self.drawTexturedArc(image_id, .{ .x = pos_x1, .y = pos_y1 }, r.top_left, pi, 1.5 * pi, .{ .x = uv_x1, .y = uv_y1 }, .{ .x = uv_x1 - uv_x0, .y = uv_y1 - uv_y0 }, tint);
+    try self.drawTexturedQuad(image_id, .{ .x = pos_x1, .y = pos_y0 }, .{ .x = pos_x2 - pos_x1, .y = pos_y1 - pos_y0 }, UvRect{ .{ .x = uv_x1, .y = uv_y0 }, .{ .x = uv_x2, .y = uv_y1 } }, tint);
+    try self.drawTexturedArc(image_id, .{ .x = pos_x2, .y = pos_y1 }, r.top_right, 1.5 * pi, 2.0 * pi, .{ .x = uv_x2, .y = uv_y1 }, .{ .x = uv_x3 - uv_x2, .y = uv_y1 - uv_y0 }, tint);
+
+    // Middle Row
+    try self.drawTexturedQuad(image_id, .{ .x = pos_x0, .y = pos_y1 }, .{ .x = pos_x1 - pos_x0, .y = pos_y2 - pos_y1 }, UvRect{ .{ .x = uv_x0, .y = uv_y1 }, .{ .x = uv_x1, .y = uv_y2 } }, tint);
+    try self.drawTexturedQuad(image_id, .{ .x = pos_x1, .y = pos_y1 }, .{ .x = pos_x2 - pos_x1, .y = pos_y2 - pos_y1 }, UvRect{ .{ .x = uv_x1, .y = uv_y1 }, .{ .x = uv_x2, .y = uv_y2 } }, tint);
+    try self.drawTexturedQuad(image_id, .{ .x = pos_x2, .y = pos_y1 }, .{ .x = pos_x3 - pos_x2, .y = pos_y2 - pos_y1 }, UvRect{ .{ .x = uv_x2, .y = uv_y1 }, .{ .x = uv_x3, .y = uv_y2 } }, tint);
+
+    // Bottom Row
+    try self.drawTexturedArc(image_id, .{ .x = pos_x1, .y = pos_y2 }, r.bottom_left, 0.5 * pi, pi, .{ .x = uv_x1, .y = uv_y2 }, .{ .x = uv_x1 - uv_x0, .y = uv_y3 - uv_y2 }, tint);
+    try self.drawTexturedQuad(image_id, .{ .x = pos_x1, .y = pos_y2 }, .{ .x = pos_x2 - pos_x1, .y = pos_y3 - pos_y2 }, UvRect{ .{ .x = uv_x1, .y = uv_y2 }, .{ .x = uv_x2, .y = uv_y3 } }, tint);
+    try self.drawTexturedArc(image_id, .{ .x = pos_x2, .y = pos_y2 }, r.bottom_right, 0, 0.5 * pi, .{ .x = uv_x2, .y = uv_y2 }, .{ .x = uv_x3 - uv_x2, .y = uv_y3 - uv_y2 }, tint);
+}
+
 pub fn drawTriangle(self: *Batch2D, v1: Vec2, v2: Vec2, v3: Vec2, tint: Color) !void {
     // Solid triangles use the white pixel texture and have (0,0) UVs, which correctly maps to that single pixel.
     const uv = Vec2{ .x = 0.0, .y = 0.0 };
@@ -844,6 +938,50 @@ pub fn drawArcLine(self: *Batch2D, center: Vec2, radius: f32, start_angle: f32, 
         // Create a quad for the segment
         try self.drawTriangle(v_outer1, v_outer2, v_inner1, tint);
         try self.drawTriangle(v_inner1, v_outer2, v_inner2, tint);
+    }
+}
+
+/// Draws a textured, pie-slice-shaped arc. Angles are in radians.
+pub fn drawTexturedArc(
+    self: *Batch2D,
+    image_id: Atlas.ImageId,
+    center_pos: Vec2,
+    radius: f32,
+    start_angle: f32,
+    end_angle: f32,
+    center_uv: Vec2,
+    radius_uv: Vec2, // Use Vec2 for potentially non-uniform UV radii
+    tint: Color,
+) !void {
+    if (radius <= 0.0) return;
+
+    var normalized_end = end_angle;
+    while (normalized_end < start_angle) {
+        normalized_end += 2.0 * std.math.pi;
+    }
+    const total_angle = normalized_end - start_angle;
+    if (total_angle <= 0.0) return;
+
+    const num_segments = @max(1, @as(u32, @intFromFloat(total_angle * radius / 1.5)));
+    const angle_step = total_angle / @as(f32, @floatFromInt(num_segments));
+
+    var i: u32 = 0;
+    while (i < num_segments) : (i += 1) {
+        const angle1 = start_angle + @as(f32, @floatFromInt(i)) * angle_step;
+        const angle2 = start_angle + @as(f32, @floatFromInt(i + 1)) * angle_step;
+
+        const cos1 = std.math.cos(angle1);
+        const sin1 = std.math.sin(angle1);
+        const cos2 = std.math.cos(angle2);
+        const sin2 = std.math.sin(angle2);
+
+        const p1 = Vec2{ .x = center_pos.x + cos1 * radius, .y = center_pos.y + sin1 * radius };
+        const p2 = Vec2{ .x = center_pos.x + cos2 * radius, .y = center_pos.y + sin2 * radius };
+
+        const uv1 = Vec2{ .x = center_uv.x + cos1 * radius_uv.x, .y = center_uv.y + sin1 * radius_uv.y };
+        const uv2 = Vec2{ .x = center_uv.x + cos2 * radius_uv.x, .y = center_uv.y + sin2 * radius_uv.y };
+
+        try self.drawTexturedTriangle(image_id, center_pos, center_uv, p1, uv1, p2, uv2, tint);
     }
 }
 

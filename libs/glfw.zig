@@ -271,7 +271,7 @@ pub const getKeyName = @extern(*const fn (key: Key, scancode: i32) callconv(.c) 
 pub const getKeyScancode = @extern(*const fn (key: Key) callconv(.c) i32, .{ .name = "glfwGetKeyScancode" });
 pub const getKey = @extern(*const fn (window: *Window, key: Key) callconv(.c) KeyState32, .{ .name = "glfwGetKey" });
 
-pub const getMouseButton = @extern(*const fn (window: *Window, button: i32) callconv(.c) KeyState32, .{ .name = "glfwGetMouseButton" });
+pub const getMouseButton = @extern(*const fn (window: *Window, button: MouseButton) callconv(.c) KeyState32, .{ .name = "glfwGetMouseButton" });
 
 pub const getCursorPos = @extern(*const fn (window: *Window, xpos: *f64, ypos: *f64) callconv(.c) void, .{ .name = "glfwGetCursorPos" });
 pub const setCursorPos = @extern(*const fn (window: *Window, xpos: f64, ypos: f64) callconv(.c) void, .{ .name = "glfwSetCursorPos" });

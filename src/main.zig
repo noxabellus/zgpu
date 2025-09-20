@@ -1,4 +1,4 @@
-//! Test of Batch2d
+//! An example of the Clay UI library running on a custom WGPU backend.
 
 const std = @import("std");
 const log = std.log.scoped(.main);
@@ -6,11 +6,12 @@ const builtin = @import("builtin");
 
 const wgpu = @import("wgpu");
 const stbi = @import("stbi");
-const stbtt = @import("stbtt");
 const glfw = @import("glfw");
+const clay = @import("clay");
 
 const Batch2D = @import("Batch2D.zig");
 const AssetCache = @import("AssetCache.zig");
+const ClayBackend = @import("ClayBackend.zig");
 
 test {
     log.debug("semantic analysis for main.zig", .{});
@@ -23,6 +24,9 @@ pub const std_options = std.Options{
 
 const MSAA_SAMPLE_COUNT: u32 = 4;
 
+// --- Global Application State ---
+
+// WGPU and Window Management
 const Demo = struct {
     instance: wgpu.Instance = null,
     surface: wgpu.Surface = null,
@@ -34,13 +38,480 @@ const Demo = struct {
     msaa_view: wgpu.TextureView = null,
 };
 
-var tts_buf: [1024]u8 = undefined;
+// Asset Identifiers
+var syntax_image_id: AssetCache.ImageId = undefined;
+var check_image1_id: AssetCache.ImageId = undefined;
+var check_image2_id: AssetCache.ImageId = undefined;
+var check_image3_id: AssetCache.ImageId = undefined;
+var check_image4_id: AssetCache.ImageId = undefined;
+var check_image5_id: AssetCache.ImageId = undefined;
+var zig_logo_image_id: AssetCache.ImageId = undefined;
+var wgpu_logo_image_id: AssetCache.ImageId = undefined;
+
+var FONT_ID_BODY: AssetCache.FontId = undefined;
+var FONT_ID_TITLE: AssetCache.FontId = undefined;
+
+// UI State
+var window_height: i32 = 0;
+var window_width: i32 = 0;
+var mobile_screen: bool = false;
+
+// Input Handling
+var mouse_scroll_delta = Batch2D.Vec2{ .x = 0, .y = 0 };
+
+// --- Clay UI Color Constants ---
+const COLOR_LIGHT = clay.Color{ 244, 235, 230, 255 };
+const COLOR_LIGHT_HOVER = clay.Color{ 224, 215, 210, 255 };
+const COLOR_BUTTON_HOVER = clay.Color{ 238, 227, 225, 255 };
+const COLOR_BROWN = clay.Color{ 61, 26, 5, 255 };
+const COLOR_RED = clay.Color{ 168, 66, 28, 255 };
+const COLOR_RED_HOVER = clay.Color{ 148, 46, 8, 255 };
+const COLOR_ORANGE = clay.Color{ 225, 138, 50, 255 };
+const COLOR_BLUE = clay.Color{ 111, 173, 162, 255 };
+const COLOR_TEAL = clay.Color{ 111, 173, 162, 255 };
+const COLOR_BLUE_DARK = clay.Color{ 2, 32, 82, 255 };
+const COLOR_NONE = clay.Color{ 0, 0, 0, 255 };
+
+// Colors for top stripe
+const COLORS_TOP_BORDER = [_]clay.Color{
+    .{ 240, 213, 137, 255 },
+    .{ 236, 189, 80, 255 },
+    .{ 225, 138, 50, 255 },
+    .{ 223, 110, 44, 255 },
+    .{ 168, 66, 28, 255 },
+};
+
+const COLOR_BLOB_BORDER_1 = clay.Color{ 168, 66, 28, 255 };
+const COLOR_BLOB_BORDER_2 = clay.Color{ 203, 100, 44, 255 };
+const COLOR_BLOB_BORDER_3 = clay.Color{ 225, 138, 50, 255 };
+const COLOR_BLOB_BORDER_4 = clay.Color{ 236, 159, 70, 255 };
+const COLOR_BLOB_BORDER_5 = clay.Color{ 240, 189, 100, 255 };
+
+const border_data = clay.BorderData{
+    .width = .{ .top = 2, .bottom = 2, .left = 2, .right = 2 },
+    .color = COLOR_RED,
+};
+
+fn landingPageBlob(index: u32, font_size: u16, font_id: u16, color: clay.Color, image_size: f32, width: f32, text: []const u8, image: AssetCache.ImageId) void {
+    clay.UI()(.{
+        .id = .IDI("HeroBlob", index),
+        .layout = .{ .sizing = .{ .w = .growMinMax(.{ .max = width }) }, .padding = .all(16), .child_gap = 16, .child_alignment = .{ .y = .center } },
+        .border = .{ .width = .outside(2), .color = color },
+        .corner_radius = .all(10),
+    })({
+        clay.UI()(.{ .id = .IDI("CheckImage", index), .layout = .{ .sizing = .{ .w = .fixed(image_size) } }, .aspect_ratio = .{ .aspect_ratio = 1 }, .image = ClayBackend.image(image) })({});
+        clay.text(text, .{ .font_size = font_size, .font_id = font_id, .color = color });
+    });
+}
+
+fn recreatedBlob() void {
+    const index = 0;
+    const font_size = 30;
+    const font_id = FONT_ID_BODY;
+    const image_size = 64;
+    const width = 510;
+    const text = "The official Clay website recreated with zgpu";
+    clay.UI()(.{
+        .id = .IDI("HeroBlob", index),
+        .layout = .{ .sizing = .{ .w = .growMinMax(.{ .max = width }) }, .padding = .all(16), .child_gap = 16, .child_alignment = .{ .y = .center } },
+        .border = .{ .width = .outside(2), .color = COLOR_BLOB_BORDER_5 },
+        .corner_radius = .all(10),
+    })({
+        clay.UI()(.{ .id = .IDI("CheckImage", index), .layout = .{ .sizing = .{ .w = .fixed(image_size) } }, .aspect_ratio = .{ .aspect_ratio = 1 }, .image = ClayBackend.image(zig_logo_image_id) })({});
+        clay.text(text, .{
+            .font_size = font_size,
+            .font_id = font_id,
+            .color = COLOR_BLOB_BORDER_5,
+            .alignment = .center,
+        });
+        clay.UI()(.{ .id = .IDI("CheckImage", index), .layout = .{ .sizing = .{ .w = .fixed(image_size) } }, .aspect_ratio = .{ .aspect_ratio = 1 }, .image = ClayBackend.image(wgpu_logo_image_id) })({});
+    });
+}
+
+fn landingPageDesktop() void {
+    clay.UI()(.{
+        .id = .ID("LandingPage1Desktop"),
+        .layout = .{ .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 70) }) }, .child_alignment = .{ .y = .center }, .padding = .{ .left = 50, .right = 50 } },
+    })({
+        clay.UI()(.{
+            .id = .ID("LandingPage1"),
+            .layout = .{ .sizing = .{ .w = .grow, .h = .grow }, .direction = .top_to_bottom, .child_alignment = .{ .x = .center }, .padding = .all(32), .child_gap = 32 },
+            .border = .{ .width = .{ .left = 2, .right = 2 }, .color = COLOR_RED },
+        })({
+            recreatedBlob();
+            clay.UI()(.{ .id = .ID("ClayPresentation"), .layout = .{ .sizing = .grow, .child_alignment = .{ .y = .center }, .child_gap = 16 } })({
+                clay.UI()(.{
+                    .id = .ID("LeftText"),
+                    .layout = .{ .sizing = .{ .w = .percent(0.55) }, .direction = .top_to_bottom, .child_gap = 8 },
+                })({
+                    clay.text("Clay is a flex-box style UI auto layout library in C, with declarative syntax and microsecond performance.", .{ .font_size = 56, .font_id = FONT_ID_TITLE, .color = COLOR_RED });
+                    clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(32) } } })({});
+                    clay.text("Clay is laying out this window right now!", .{ .font_size = 36, .font_id = FONT_ID_BODY, .color = COLOR_ORANGE });
+                });
+
+                clay.UI()(.{
+                    .id = .ID("HeroImageOuter"),
+                    .layout = .{ .sizing = .{ .w = .percent(0.45) }, .direction = .top_to_bottom, .child_alignment = .{ .x = .center }, .child_gap = 16 },
+                })({
+                    landingPageBlob(1, 30, FONT_ID_BODY, COLOR_BLOB_BORDER_5, 32, 480, "High performance", check_image5_id);
+                    landingPageBlob(2, 30, FONT_ID_BODY, COLOR_BLOB_BORDER_4, 32, 480, "Flexbox-style responsive layout", check_image4_id);
+                    landingPageBlob(3, 30, FONT_ID_BODY, COLOR_BLOB_BORDER_3, 32, 480, "Declarative syntax", check_image3_id);
+                    landingPageBlob(4, 30, FONT_ID_BODY, COLOR_BLOB_BORDER_2, 32, 480, "Single .h file for C/C++", check_image2_id);
+                    landingPageBlob(5, 30, FONT_ID_BODY, COLOR_BLOB_BORDER_1, 32, 480, "Compile to 15kb .wasm", check_image1_id);
+                });
+            });
+        });
+    });
+}
+
+fn landingPageMobile() void {
+    clay.UI()(.{
+        .id = .ID("LandingPage1Mobile"),
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 70) }) },
+            .direction = .top_to_bottom,
+            .child_alignment = .center,
+            .padding = .{ .left = 16, .right = 16, .top = 32, .bottom = 32 },
+            .child_gap = 16,
+        },
+    })({
+        recreatedBlob();
+        clay.UI()(.{
+            .id = .ID("LeftText"),
+            .layout = .{ .sizing = .{ .w = .grow }, .direction = .top_to_bottom, .child_gap = 8 },
+        })({
+            clay.text("Clay is a flex-box style UI auto layout library in C, with declarative syntax and microsecond performance.", .{ .font_size = 56, .font_id = FONT_ID_TITLE, .color = COLOR_RED });
+            clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(32) } } })({});
+            clay.text("Clay is laying out this window right now!", .{ .font_size = 36, .font_id = FONT_ID_BODY, .color = COLOR_ORANGE });
+        });
+
+        clay.UI()(.{
+            .id = .ID("HeroImageOuter"),
+            .layout = .{ .sizing = .{ .w = .grow }, .direction = .top_to_bottom, .child_alignment = .{ .x = .center }, .child_gap = 16 },
+        })({
+            landingPageBlob(1, 30, FONT_ID_BODY, COLOR_BLOB_BORDER_5, 32, 480, "High performance", check_image5_id);
+            landingPageBlob(2, 30, FONT_ID_BODY, COLOR_BLOB_BORDER_4, 32, 480, "Flexbox-style responsive layout", check_image4_id);
+            landingPageBlob(3, 30, FONT_ID_BODY, COLOR_BLOB_BORDER_3, 32, 480, "Declarative syntax", check_image3_id);
+            landingPageBlob(4, 30, FONT_ID_BODY, COLOR_BLOB_BORDER_2, 32, 480, "Single .h file for C/C++", check_image2_id);
+            landingPageBlob(5, 30, FONT_ID_BODY, COLOR_BLOB_BORDER_1, 32, 480, "Compile to 15kb .wasm", check_image1_id);
+        });
+    });
+}
+
+fn featureBlocks(width_sizing: clay.SizingAxis, outer_padding: u16) void {
+    const text_config = clay.TextElementConfig{ .font_size = 24, .font_id = FONT_ID_BODY, .color = COLOR_RED };
+    clay.UI()(.{
+        .id = .ID("HFileBoxOuter"),
+        .layout = .{
+            .direction = .top_to_bottom,
+            .sizing = .{ .w = width_sizing },
+            .child_alignment = .{ .y = .center },
+            .padding = .{ .left = outer_padding, .right = outer_padding, .top = 32, .bottom = 32 },
+            .child_gap = 8,
+        },
+    })({
+        clay.UI()(.{
+            .id = .ID("HFileIncludeOuter"),
+            .layout = .{ .padding = .{ .left = 8, .right = 8, .top = 4, .bottom = 4 } },
+            .background_color = COLOR_RED,
+            .corner_radius = .all(8),
+        })({
+            clay.text("#include clay.h", .{ .font_size = 24, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT });
+        });
+        clay.text("~2000 lines of C99.", text_config);
+        clay.text("Zero dependencies, including no C standard library", text_config);
+    });
+    clay.UI()(.{
+        .id = .ID("BringYourOwnRendererOuter"),
+        .layout = .{
+            .direction = .top_to_bottom,
+            .sizing = .{ .w = width_sizing },
+            .child_alignment = .{ .y = .center },
+            .padding = .{ .left = outer_padding, .right = outer_padding, .top = 32, .bottom = 32 },
+            .child_gap = 8,
+        },
+    })({
+        clay.text("Renderer agnostic.", .{ .font_size = 24, .font_id = FONT_ID_BODY, .color = COLOR_ORANGE });
+        clay.text("Layout with clay, then render with Raylib, WebGL Canvas or even as HTML.", text_config);
+        clay.text("Flexible output for easy compositing in your custom engine or environment.", text_config);
+    });
+}
+
+fn featureBlocksDesktop() void {
+    clay.UI()(.{
+        .id = .ID("FeatureBlocksOuter"),
+        .layout = .{ .sizing = .{ .w = .grow }, .child_alignment = .{ .y = .center } },
+        .border = .{ .width = .{ .between_children = 2 }, .color = COLOR_RED },
+    })({
+        featureBlocks(.percent(0.5), 50);
+    });
+}
+
+fn featureBlocksMobile() void {
+    clay.UI()(.{
+        .id = .ID("FeatureBlocksOuter"),
+        .layout = .{ .sizing = .{ .w = .grow }, .direction = .top_to_bottom },
+        .border = .{ .width = .{ .between_children = 2 }, .color = COLOR_RED },
+    })({
+        featureBlocks(.grow, 16);
+    });
+}
+
+fn declarativeSyntaxPage(title_text_config: clay.TextElementConfig, width_sizing: clay.SizingAxis) void {
+    clay.UI()(.{ .id = .ID("SyntaxPageLeftText"), .layout = .{ .sizing = .{ .w = width_sizing }, .direction = .top_to_bottom, .child_gap = 8 } })({
+        clay.text("Declarative Syntax", title_text_config);
+        clay.UI()(.{ .layout = .{ .sizing = .{ .w = .growMinMax(.{ .max = 16 }) } } })({});
+        const text_conf = clay.TextElementConfig{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED };
+        clay.text("Flexible and readable declarative syntax with nested UI element hierarchies.", text_conf);
+        clay.text("Mix elements with standard C code like loops, conditionals and functions.", text_conf);
+        clay.text("Create your own library of re-usable components from UI primitives like text, images and rectangles.", text_conf);
+    });
+    clay.UI()(.{ .id = .ID("SyntaxPageRightImageOuter"), .layout = .{ .sizing = .{ .w = width_sizing }, .child_alignment = .{ .x = .center } } })({
+        clay.UI()(.{
+            .id = .ID("SyntaxPageRightImage"),
+            .layout = .{ .sizing = .{ .w = .growMinMax(.{ .max = 568 }) } },
+            .aspect_ratio = .{ .aspect_ratio = 1194 / 1136 },
+            .image = ClayBackend.image(syntax_image_id),
+        })({});
+    });
+}
+
+fn declarativeSyntaxPageDesktop() void {
+    clay.UI()(.{
+        .id = .ID("SyntaxPageDesktop"),
+        .layout = .{ .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }) }, .child_alignment = .{ .y = .center }, .padding = .{ .left = 50, .right = 50 } },
+    })({
+        clay.UI()(.{
+            .id = .ID("SyntaxPage"),
+            .layout = .{ .sizing = .{ .w = .grow, .h = .grow }, .child_alignment = .{ .y = .center }, .padding = .all(32), .child_gap = 32 },
+            .border = .{ .width = .{ .left = 2, .right = 2 }, .color = COLOR_RED },
+        })({
+            declarativeSyntaxPage(.{ .font_size = 52, .font_id = FONT_ID_TITLE, .color = COLOR_RED }, .percent(0.5));
+        });
+    });
+}
+
+fn declarativeSyntaxPageMobile() void {
+    clay.UI()(.{
+        .id = .ID("SyntaxPageMobile"),
+        .layout = .{
+            .direction = .top_to_bottom,
+            .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }) },
+            .child_alignment = .center,
+            .padding = .{ .left = 16, .right = 16, .top = 32, .bottom = 32 },
+            .child_gap = 16,
+        },
+    })({
+        declarativeSyntaxPage(.{ .font_size = 48, .font_id = FONT_ID_TITLE, .color = COLOR_RED }, .grow);
+    });
+}
+
+fn colorLerp(a: clay.Color, b: clay.Color, amount: f32) clay.Color {
+    return clay.Color{ a[0] + (b[0] - a[0]) * amount, a[1] + (b[1] - a[1]) * amount, a[2] + (b[2] - a[2]) * amount, a[3] + (b[3] - a[3]) * amount };
+}
+
+const LOREM_IPSUM_TEXT = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.";
+
+fn highPerformancePage(lerp_value: f32, title_text_tonfig: clay.TextElementConfig, width_sizing: clay.SizingAxis) void {
+    clay.UI()(.{ .id = .ID("PerformanceLeftText"), .layout = .{ .sizing = .{ .w = width_sizing }, .direction = .top_to_bottom, .child_gap = 8 } })({
+        clay.text("High Performance", title_text_tonfig);
+        clay.UI()(.{ .layout = .{ .sizing = .{ .w = .growMinMax(.{ .max = 16 }) } } })({});
+        clay.text("Fast enough to recompute your entire UI every frame.", .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT });
+        clay.text("Small memory footprint (3.5mb default) with static allocation & reuse. No malloc / free.", .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT });
+        clay.text("Simplify animations and reactive UI design by avoiding the standard performance hacks.", .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT });
+    });
+    clay.UI()(.{ .id = .ID("PerformanceRightImageOuter"), .layout = .{ .sizing = .{ .w = width_sizing }, .child_alignment = .{ .x = .center } } })({
+        clay.UI()(.{
+            .id = .ID("PerformanceRightBorder"),
+            .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(400) } },
+            .border = .{ .width = .all(2), .color = COLOR_LIGHT },
+        })({
+            clay.UI()(.{
+                .id = .ID("AnimationDemoContainerLeft"),
+                .layout = .{ .sizing = .{ .w = .percent(0.35 + 0.3 * lerp_value), .h = .grow }, .child_alignment = .{ .y = .center }, .padding = .all(16) },
+                .background_color = colorLerp(COLOR_RED, COLOR_ORANGE, lerp_value),
+            })({
+                clay.text(LOREM_IPSUM_TEXT, .{ .font_size = 16, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT });
+            });
+
+            clay.UI()(.{
+                .id = .ID("AnimationDemoContainerRight"),
+                .layout = .{ .sizing = .{ .w = .grow, .h = .grow }, .child_alignment = .{ .y = .center }, .padding = .all(16) },
+                .background_color = colorLerp(COLOR_ORANGE, COLOR_RED, lerp_value),
+            })({
+                clay.text(LOREM_IPSUM_TEXT, .{ .font_size = 16, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT });
+            });
+        });
+    });
+}
+
+fn highPerformancePageDesktop(lerp_value: f32) void {
+    clay.UI()(.{
+        .id = .ID("PerformanceDesktop"),
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }) },
+            .child_alignment = .{ .y = .center },
+            .padding = .{ .left = 82, .right = 82, .top = 32, .bottom = 32 },
+            .child_gap = 64,
+        },
+        .background_color = COLOR_RED,
+    })({
+        highPerformancePage(lerp_value, .{ .font_size = 52, .font_id = FONT_ID_TITLE, .color = COLOR_LIGHT }, .percent(0.5));
+    });
+}
+
+fn highPerformancePageMobile(lerp_value: f32) void {
+    clay.UI()(.{
+        .id = .ID("PerformanceMobile"),
+        .layout = .{
+            .direction = .top_to_bottom,
+            .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }) },
+            .child_alignment = .center,
+            .padding = .{ .left = 16, .right = 16, .top = 32, .bottom = 32 },
+            .child_gap = 32,
+        },
+        .background_color = COLOR_RED,
+    })({
+        highPerformancePage(lerp_value, .{ .font_size = 48, .font_id = FONT_ID_TITLE, .color = COLOR_LIGHT }, .grow);
+    });
+}
+
+fn rendererButtonActive(text: []const u8) void {
+    clay.UI()(.{
+        .layout = .{ .sizing = .{ .w = .fixed(300) }, .padding = .all(16) },
+        .background_color = COLOR_RED,
+        .corner_radius = .all(10),
+    })({
+        clay.text(text, .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT });
+    });
+}
+
+fn rendererButtonInactive(index: u32, text: []const u8) void {
+    clay.UI()(.{ .layout = .{}, .border = .outside(.{ 2, COLOR_RED }, 10) })({
+        clay.UI()(.{
+            .id = .ID("RendererButtonInactiveInner", index),
+            .layout = .{ .sizing = .{ .w = .fixed(300) }, .padding = .all(16) },
+            .background_color = COLOR_LIGHT,
+            .corner_radius = .all(10),
+        })({
+            clay.text(text, .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED });
+        });
+    });
+}
+
+fn rendererPage(title_text_config: clay.TextElementConfig, _: clay.SizingAxis) void {
+    clay.UI()(.{ .id = .ID("RendererLeftText"), .layout = .{ .direction = .top_to_bottom, .child_gap = 8 } })({
+        clay.text("Renderer & Platform Agnostic", title_text_config);
+        clay.UI()(.{ .layout = .{ .sizing = .{ .w = .growMinMax(.{ .max = 16 }) } } })({});
+        clay.text("Clay outputs a sorted array of primitive render commands, such as RECTANGLE, TEXT or IMAGE.", .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED });
+        clay.text("Write your own renderer in a few hundred lines of code, or use the provided examples for Raylib, WebGL canvas and more.", .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED });
+        clay.text("There's even an HTML renderer - you're looking at it right now!", .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED });
+    });
+}
+
+fn rendererPageDesktop() void {
+    clay.UI()(.{
+        .id = .ID("RendererPageDesktop"),
+        .layout = .{ .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }) }, .child_alignment = .{ .y = .center }, .padding = .{ .left = 50, .right = 50 } },
+    })({
+        clay.UI()(.{
+            .id = .ID("RendererPage"),
+            .layout = .{ .sizing = .grow, .child_alignment = .{ .y = .center }, .padding = .all(32), .child_gap = 32 },
+            .border = .{ .width = .{ .left = 2, .right = 2 }, .color = COLOR_RED },
+        })({
+            rendererPage(.{ .font_size = 52, .font_id = FONT_ID_TITLE, .color = COLOR_RED }, .percent(0.5));
+        });
+    });
+}
+
+fn rendererPageMobile() void {
+    clay.UI()(.{
+        .id = .ID("RendererMobile"),
+        .layout = .{
+            .direction = .top_to_bottom,
+            .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }) },
+            .child_alignment = .center,
+            .padding = .{ .left = 16, .right = 16, .top = 32, .bottom = 32 },
+            .child_gap = 32,
+        },
+        .background_color = COLOR_LIGHT,
+    })({
+        rendererPage(.{ .font_size = 52, .font_id = FONT_ID_TITLE, .color = COLOR_RED }, .grow);
+    });
+}
+
+fn createLayout(lerp_value: f32) []clay.RenderCommand {
+    clay.beginLayout();
+    clay.UI()(.{
+        .id = .ID("OuterContainer"),
+        .layout = .{ .sizing = .grow, .direction = .top_to_bottom },
+        .background_color = COLOR_LIGHT,
+    })({
+        clay.UI()(.{
+            .id = .ID("Header"),
+            .layout = .{ .sizing = .{ .h = .fixed(50), .w = .grow }, .child_alignment = .{ .y = .center }, .padding = .{ .left = 32, .right = 32 }, .child_gap = 24 },
+        })({
+            clay.text("Clay", .{ .font_id = FONT_ID_BODY, .font_size = 24, .color = .{ 61, 26, 5, 255 } });
+            clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow } } })({});
+
+            if (!mobile_screen) {
+                clay.UI()(.{ .id = .ID("LinkExamplesInner"), .layout = .{}, .background_color = .{ 0, 0, 0, 0 } })({
+                    clay.text("Examples", .{ .font_id = FONT_ID_BODY, .font_size = 24, .color = .{ 61, 26, 5, 255 } });
+                });
+                clay.UI()(.{ .id = .ID("LinkDocsOuter"), .layout = .{}, .background_color = .{ 0, 0, 0, 0 } })({
+                    clay.text("Docs", .{ .font_id = FONT_ID_BODY, .font_size = 24, .color = .{ 61, 26, 5, 255 } });
+                });
+            }
+
+            clay.UI()(.{
+                .layout = .{ .padding = .{ .left = 32, .right = 32, .top = 6, .bottom = 6 } },
+                .border = .{ .width = .all(2), .color = COLOR_RED },
+                .corner_radius = .all(10),
+                .background_color = if (clay.hovered()) COLOR_LIGHT_HOVER else COLOR_LIGHT,
+            })({
+                clay.text("Github", .{ .font_id = FONT_ID_BODY, .font_size = 24, .color = .{ 61, 26, 5, 255 } });
+            });
+        });
+        for (COLORS_TOP_BORDER, 0..) |color, i| {
+            clay.UI()(.{
+                .id = .IDI("TopBorder", @intCast(i)),
+                .layout = .{ .sizing = .{ .h = .fixed(4), .w = .grow } },
+                .background_color = color,
+            })({});
+        }
+
+        clay.UI()(.{
+            .id = .fromSrc(@src()),
+            .clip = .{ .vertical = true, .child_offset = clay.getScrollOffset() },
+            .layout = .{ .sizing = .grow, .direction = .top_to_bottom },
+            .background_color = COLOR_LIGHT,
+            .border = .{ .width = .{ .between_children = 2 }, .color = COLOR_RED },
+        })({
+            if (!mobile_screen) {
+                landingPageDesktop();
+                featureBlocksDesktop();
+                declarativeSyntaxPageDesktop();
+                highPerformancePageDesktop(lerp_value);
+                rendererPageDesktop();
+            } else {
+                landingPageMobile();
+                featureBlocksMobile();
+                declarativeSyntaxPageMobile();
+                highPerformancePageMobile(lerp_value);
+                rendererPageMobile();
+            }
+        });
+    });
+    return clay.endLayout();
+}
 
 pub fn main() !void {
     var timer = try std.time.Timer.start();
+    var last_frame_time = timer.read();
 
     const gpa = std.heap.page_allocator;
 
+    // --- Core Initialization (GLFW, WGPU, STBI) ---
     if (comptime builtin.os.tag != .windows) {
         glfw.initHint(.{ .platform = .x11 });
     } else {
@@ -64,10 +535,11 @@ pub fn main() !void {
     defer wgpu.instanceRelease(demo.instance);
 
     glfw.windowHint(.{ .client_api = .none });
-    const window = try glfw.createWindow(640, 480, "zgpu", null, null);
+    const window = try glfw.createWindow(1000, 1000, "clay-wgpu-zig example", null, null);
     defer glfw.destroyWindow(window);
     glfw.setWindowUserPointer(window, &demo);
 
+    // --- GLFW Callbacks ---
     _ = glfw.setFramebufferSizeCallback(window, &struct {
         fn handle_glfw_framebuffer_size(w: *glfw.Window, width: i32, height: i32) callconv(.c) void {
             if (width <= 0 and height <= 0) return;
@@ -79,6 +551,16 @@ pub fn main() !void {
             createOrResizeMsaaTexture(d);
         }
     }.handle_glfw_framebuffer_size);
+
+    _ = glfw.setScrollCallback(window, &struct {
+        fn handle_scroll(_: *glfw.Window, xoffset: f64, yoffset: f64) callconv(.c) void {
+            // Invert y-axis to match common UI scrolling behavior
+            mouse_scroll_delta.x += @as(f32, @floatCast(xoffset)) * 6.0;
+            mouse_scroll_delta.y += @as(f32, @floatCast(yoffset)) * 6.0;
+        }
+    }.handle_scroll);
+
+    // --- WGPU Surface, Adapter, Device Setup ---
     if (comptime builtin.os.tag != .windows) {
         const x11_display = glfw.getX11Display();
         const x11_window = glfw.getX11Window(window);
@@ -94,8 +576,7 @@ pub fn main() !void {
     defer wgpu.surfaceRelease(demo.surface);
 
     _ = wgpu.instanceRequestAdapter(demo.instance, &wgpu.RequestAdapterOptions{ .compatible_surface = demo.surface }, .{ .callback = &struct {
-        fn handle_request_adapter(status: wgpu.RequestAdapterStatus, adapter: wgpu.Adapter, msg: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
-            _ = ud2;
+        fn handle_request_adapter(status: wgpu.RequestAdapterStatus, adapter: wgpu.Adapter, msg: wgpu.StringView, ud1: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
             if (status == .success) {
                 const d: *Demo = @ptrCast(@alignCast(ud1.?));
                 d.adapter = adapter;
@@ -108,8 +589,7 @@ pub fn main() !void {
     defer wgpu.adapterRelease(demo.adapter);
 
     _ = wgpu.adapterRequestDevice(demo.adapter, null, .{ .callback = &struct {
-        fn handle_request_device(status: wgpu.RequestDeviceStatus, device: wgpu.Device, msg: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
-            _ = ud2;
+        fn handle_request_device(status: wgpu.RequestDeviceStatus, device: wgpu.Device, msg: wgpu.StringView, ud1: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
             if (status == .success) {
                 const d: *Demo = @ptrCast(@alignCast(ud1.?));
                 d.device = device;
@@ -141,72 +621,122 @@ pub fn main() !void {
     };
 
     {
-        var width: i32 = 0;
-        var height: i32 = 0;
-        glfw.getWindowSize(window, &width, &height);
-        demo.config.width = @intCast(width);
-        demo.config.height = @intCast(height);
+        glfw.getWindowSize(window, &window_width, &window_height);
+        demo.config.width = @intCast(window_width);
+        demo.config.height = @intCast(window_height);
     }
     wgpu.surfaceConfigure(demo.surface, &demo.config);
     createOrResizeMsaaTexture(&demo);
 
+    // --- Application and UI Library Initialization ---
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
 
     var asset_cache = AssetCache.init(gpa);
     defer asset_cache.deinit();
 
-    // Load fonts via the asset cache
-    const roboto_idx = try asset_cache.loadFont("assets/fonts/roboto/regular.ttf");
-    const calistoga_idx = try asset_cache.loadFont("assets/fonts/Calistoga-Regular.ttf");
-    const quicksand_idx = try asset_cache.loadFont("assets/fonts/Quicksand-Semibold.ttf");
+    // Init Clay
+    const min_memory_size = clay.minMemorySize();
+    const clay_memory = try gpa.alloc(u8, min_memory_size);
+    defer gpa.free(clay_memory);
+    const clay_arena = clay.createArenaWithCapacityAndMemory(clay_memory);
+    const ui_context = clay.initialize(clay_arena, .{ .w = @floatFromInt(window_width), .h = @floatFromInt(window_height) }, .{
+        // no error handling for now
+    });
+    _ = ui_context;
 
-    // Load images via the asset cache
-    const LOGO_ID = try asset_cache.loadImage("assets/images/wgpu-logo.png", true);
-    const BANNER_ID = try asset_cache.loadImage("assets/images/ribbon-banner.png", true);
-    const EMBLEM_ID = try asset_cache.loadImage("assets/images/ribbon-emblem.png", true);
-    const BOW_ID = try asset_cache.loadImage("assets/images/tiny-bow-icon.png", true);
-
+    // Init Batch Renderer
     const provider_ctx = Batch2D.ProviderContext{
         .provider = AssetCache.dataProvider,
         .frame_allocator = arena_state.allocator(),
         .user_context = &asset_cache,
     };
-
     demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format, provider_ctx, MSAA_SAMPLE_COUNT);
     defer demo.renderer.deinit();
 
-    const startup_time = timer.lap();
-    const startup_ms = @as(f64, @floatFromInt(startup_time)) / std.time.ns_per_ms;
-    const FRAME_AVG_LEN = 144;
-    var frame_time = startup_time;
-    var frame_ms_buf: [FRAME_AVG_LEN]f64 = [1]f64{startup_ms} ** FRAME_AVG_LEN;
-    var frame_index: usize = 0;
+    // Init Clay Backend Bridge
+    var clay_backend = try ClayBackend.init(gpa, demo.renderer, &asset_cache);
+    defer clay_backend.deinit(gpa);
 
-    log.info("startup completed in {d} ms", .{startup_ms});
+    // --- Load Assets ---
+    FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/Quicksand-Semibold.ttf");
+    FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/Calistoga-Regular.ttf");
+
+    syntax_image_id = try asset_cache.loadImage("assets/images/clay/declarative.png", true);
+    check_image1_id = try asset_cache.loadImage("assets/images/clay/check_1.png", true);
+    check_image2_id = try asset_cache.loadImage("assets/images/clay/check_2.png", true);
+    check_image3_id = try asset_cache.loadImage("assets/images/clay/check_3.png", true);
+    check_image4_id = try asset_cache.loadImage("assets/images/clay/check_4.png", true);
+    check_image5_id = try asset_cache.loadImage("assets/images/clay/check_5.png", true);
+    zig_logo_image_id = try asset_cache.loadImage("assets/images/zig-mark.png", true);
+    wgpu_logo_image_id = try asset_cache.loadImage("assets/images/wgpu-logo.png", true);
+
+    var animation_lerp_value: f32 = -1.0;
+    var debug_mode_enabled = false;
 
     // --- Main Loop ---
     main_loop: while (!glfw.windowShouldClose(window)) {
         glfw.pollEvents();
         _ = arena_state.reset(.free_all);
 
-        if (glfw.getKey(window, .a) == .press) {
+        // --- Calculate Delta Time ---
+        const current_time = timer.read();
+        const delta_time_ns = current_time - last_frame_time;
+        last_frame_time = current_time;
+        const delta_time_f32 = @as(f32, @floatFromInt(delta_time_ns)) / std.time.ns_per_s;
+
+        // --- Update Application State ---
+        animation_lerp_value += delta_time_f32;
+        if (animation_lerp_value > 1.0) {
+            animation_lerp_value -= 2.0;
+        }
+
+        // --- Handle Input ---
+        if (glfw.getKey(window, .d) == .press) {
+            debug_mode_enabled = !debug_mode_enabled;
+            clay.setDebugModeEnabled(debug_mode_enabled);
+        }
+
+        const alt_key_state = glfw.getKey(window, .left_alt);
+        if (glfw.getKey(window, .a) == .press and (alt_key_state == .press or alt_key_state == .repeat)) {
             try demo.renderer.atlas.debugWriteAllAtlasesToPng("debug_atlas");
             log.info("finished writing debug_atlas_*.png", .{});
         }
 
+        // --- Update Clay UI ---
+        glfw.getWindowSize(window, &window_width, &window_height);
+        // TODO: Account for debug view width if clay exposes it
+        mobile_screen = window_width < 750;
+
+        var cursor_x: f64 = 0;
+        var cursor_y: f64 = 0;
+        glfw.getCursorPos(window, &cursor_x, &cursor_y);
+
+        clay.setPointerState(.{
+            .x = @floatCast(cursor_x),
+            .y = @floatCast(cursor_y),
+        }, glfw.getMouseButton(window, .left) == .press);
+
+        // Clay's scroll update function may require delta time.
+        clay.updateScrollContainers(false, .{ .x = mouse_scroll_delta.x, .y = mouse_scroll_delta.y }, delta_time_f32);
+        mouse_scroll_delta = .{ .x = 0, .y = 0 }; // Reset after consumption
+
+        clay.setLayoutDimensions(.{ .w = @floatFromInt(window_width), .h = @floatFromInt(window_height) });
+
+        // Generate the UI layout and get rendering commands
+        const render_commands = createLayout(if (animation_lerp_value < 0) animation_lerp_value + 1 else 1 - animation_lerp_value);
+
+        // --- WGPU Frame Rendering ---
         var surface_texture: wgpu.SurfaceTexture = undefined;
         wgpu.surfaceGetCurrentTexture(demo.surface, &surface_texture);
         switch (surface_texture.status) {
             .success_optimal, .success_suboptimal => {},
             .timeout, .outdated, .lost => {
                 if (surface_texture.texture != null) wgpu.textureRelease(surface_texture.texture);
-                var width: i32 = 0;
-                var height: i32 = 0;
-                glfw.getWindowSize(window, &width, &height);
-                if (width != 0 and height != 0) {
-                    demo.config.width = @intCast(width);
-                    demo.config.height = @intCast(height);
+                glfw.getWindowSize(window, &window_width, &window_height);
+                if (window_width != 0 and window_height != 0) {
+                    demo.config.width = @intCast(window_width);
+                    demo.config.height = @intCast(window_height);
                     wgpu.surfaceConfigure(demo.surface, &demo.config);
                     createOrResizeMsaaTexture(&demo);
                 }
@@ -222,191 +752,20 @@ pub fn main() !void {
         defer wgpu.textureViewRelease(frame_view);
 
         const proj = ortho(0, @floatFromInt(demo.config.width), @floatFromInt(demo.config.height), 0, -1, 1);
-
         demo.renderer.beginFrame(proj, demo.config.width, demo.config.height);
 
-        const tint = Batch2D.Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
-
-        // Draw the WGPU logo at the cursor
-        var cursor_x: f64 = 0;
-        var cursor_y: f64 = 0;
-        glfw.getCursorPos(window, &cursor_x, &cursor_y);
-        const logo_img = asset_cache.images.items[LOGO_ID];
-        const image_scale = 0.2;
-        const quad_width: f32 = @as(f32, @floatFromInt(logo_img.content.width)) * image_scale;
-        const quad_height: f32 = @as(f32, @floatFromInt(logo_img.content.height)) * image_scale;
-        const quad_pos = Batch2D.Vec2{ .x = @as(f32, @floatCast(cursor_x)) - quad_width / 2.0, .y = @as(f32, @floatCast(cursor_y)) - quad_height / 2.0 };
-        const quad_size = Batch2D.Vec2{ .x = quad_width, .y = quad_height };
-        try demo.renderer.drawTexturedQuad(LOGO_ID, quad_pos, quad_size, null, tint);
-
-        const banner_img = asset_cache.images.items[BANNER_ID];
-        try demo.renderer.drawTexturedQuad(BANNER_ID, .{ .x = 100, .y = 200 }, .{ .x = @floatFromInt(@divFloor(banner_img.content.width, 4)), .y = @floatFromInt(@divFloor(banner_img.content.height, 4)) }, null, tint);
-
-        const emblem_img = asset_cache.images.items[EMBLEM_ID];
-        try demo.renderer.drawTexturedQuad(EMBLEM_ID, .{ .x = 500, .y = 50 }, .{ .x = @floatFromInt(emblem_img.content.width), .y = @floatFromInt(emblem_img.content.height) }, null, tint);
-
-        const bow_img = asset_cache.images.items[BOW_ID];
-        try demo.renderer.drawTexturedQuad(BOW_ID, .{ .x = 400, .y = 375 }, .{ .x = @floatFromInt(bow_img.content.width), .y = @floatFromInt(bow_img.content.height) }, null, tint);
-
-        const frame_ms = @as(f64, @floatFromInt(frame_time)) / std.time.ns_per_ms;
-        const frame_fps = 1000.0 / frame_ms;
-
-        frame_ms_buf[frame_index % FRAME_AVG_LEN] = frame_ms;
-        frame_index += 1;
-
-        var avg_ms: f64 = 0;
-        var min_ms: f64 = std.math.inf(f64);
-        var max_ms: f64 = -std.math.inf(f64);
-        for (frame_ms_buf) |ms| {
-            min_ms = @min(min_ms, ms);
-            max_ms = @max(max_ms, ms);
-            avg_ms += ms;
-        }
-        avg_ms /= @as(f64, FRAME_AVG_LEN);
-
-        const avg_fps = 1000.0 / avg_ms;
-
-        var tts_fba = std.heap.FixedBufferAllocator.init(&tts_buf);
-        const fps_text = try std.fmt.allocPrint(tts_fba.allocator(), "FPS: {d:0.1} ({d:0.3}ms) / {d:0.1} ({d:0.3}ms) / {d:0.3}ms : {d:0.3}ms", .{ avg_fps, avg_ms, frame_fps, frame_ms, min_ms, max_ms });
-
-        try chart_fps(demo.renderer, .{ .x = 18, .y = 18 }, max_ms, &frame_ms_buf);
-
-        // --- Draw Text ---
-
-        // Draw with Roboto, 12px
-        try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 16, null, .{ .x = 0, .y = 0 }, .black);
-
-        // Draw with Calistoga, 48px
-        try demo.renderer.drawText("WGPU Batch Renderer", &asset_cache.fonts.items[calistoga_idx].info, calistoga_idx, 48, null, .{ .x = 10, .y = 60 }, .cyan);
-
-        // Draw with Quicksand, 32px
-        try demo.renderer.drawText("Newline\nin\nText", &asset_cache.fonts.items[quicksand_idx].info, quicksand_idx, 32, 20, .{ .x = 20, .y = 120 }, .magenta);
-
-        // --- Draw Primitives ---
-
-        // Draw a solid red quad
-        try demo.renderer.drawQuad(.{ .x = 250, .y = 150 }, .{ .x = 50, .y = 50 }, .red);
-
-        // Draw a solid green triangle
-        try demo.renderer.drawTriangle(.{ .x = 320, .y = 150 }, .{ .x = 370, .y = 300 }, .{ .x = 270, .y = 300 }, .green);
-
-        // Draw a thick blue line
-        try demo.renderer.drawLine(.{ .x = 250, .y = 120 }, .{ .x = 370, .y = 320 }, 5.0, .blue);
-
-        // Draw a yellow circle
-        try demo.renderer.drawCircle(.{ .x = 100, .y = 100 }, 30.0, .yellow);
-
-        // Draw a cyan triangle strip
-        const strip_verts = &[_]Batch2D.Vec2{
-            .{ .x = 400, .y = 150 },
-            .{ .x = 420, .y = 180 },
-            .{ .x = 440, .y = 150 },
-            .{ .x = 460, .y = 180 },
-            .{ .x = 480, .y = 150 },
-        };
-        try demo.renderer.drawSolidTriangleStrip(strip_verts, .{ .r = 0, .g = 1, .b = 1, .a = 1 });
-
-        // Draw a filled, half-pie shape. Angles are in radians (Pi = 180 degrees).
-        try demo.renderer.drawArc(
-            .{ .x = 150.0, .y = 150.0 }, // center
-            80.0, // radius
-            0.0, // start_angle (0 is the 3 o'clock position)
-            std.math.pi, // end_angle (Pi is the 9 o'clock position)
-            .red,
-        );
-
-        // Draw just the outline of an arc, like a progress bar.
-        try demo.renderer.drawArcLine(
-            .{ .x = 400.0, .y = 150.0 }, // center
-            70.0, // radius
-            0.0, // start_angle
-            1.5 * std.math.pi, // end_angle (270 degrees)
-            15.0, // thickness
-            .blue,
-        );
-
-        // Draw a smaller, more acute filled arc.
-        try demo.renderer.drawArc(
-            .{ .x = 150.0, .y = 400.0 }, // center
-            90.0, // radius
-            0.0, // start_angle
-            std.math.pi / 4.0, // end_angle (45 degrees)
-            .green,
-        );
-
-        // Draw from -45 to +45 degrees, testing the angle normalization logic.
-        try demo.renderer.drawArcLine(
-            .{ .x = 400.0, .y = 400.0 }, // center
-            75.0, // radius
-            -std.math.pi / 4.0, // start_angle (-45 degrees)
-            std.math.pi / 4.0, // end_angle (+45 degrees)
-            8.0, // thickness
-            .yellow,
-        );
-
-        // A thin white outline around the blue rectangle.
-        try demo.renderer.drawRectLine(.{ .x = 50, .y = 50 }, .{ .x = 150, .y = 100 }, 2.0, .white);
-
-        // A thicker red outline on a different rectangle.
-        try demo.renderer.drawRectLine(.{ .x = 250, .y = 50 }, .{ .x = 200, .y = 75 }, 8.0, .red);
-
-        // A green rounded rectangle with a moderate corner radius.
-        try demo.renderer.drawRoundedRect(.{ .x = 50, .y = 200 }, .{ .x = 200, .y = 100 }, .all(20.0), .green);
-
-        // A rounded square that becomes a circle because radius >= size/2.
-        try demo.renderer.drawRoundedRect(.{ .x = 300, .y = 200 }, .{ .x = 100, .y = 100 }, .all(50.0), .yellow);
-
-        // A "pill" shape where the radius is clamped to half the height.
-        try demo.renderer.drawRoundedRect(.{ .x = 50, .y = 350 }, .{ .x = 350, .y = 100 }, .all(100.0), Batch2D.Color.red.withAlpha(0.8));
-
-        // A thin outline for the green rounded rectangle.
-        try demo.renderer.drawRoundedRectLine(.{ .x = 50, .y = 200 }, .{ .x = 200, .y = 100 }, .all(20.0), 3.0, .white);
-
-        // A thick outline for the "pill" shape.
-        try demo.renderer.drawRoundedRectLine(.{ .x = 50, .y = 350 }, .{ .x = 350, .y = 100 }, .all(100.0), 10.0, .blue);
-
-        // An outlined circle made from a rounded rect line.
-        try demo.renderer.drawRoundedRectLine(.{ .x = 300, .y = 200 }, .{ .x = 100, .y = 100 }, .all(50.0), 5.0, .magenta);
-
-        // A case where thickness is large relative to the radius. The path_radius will
-        // be clamped, resulting in a shape with a rounded outer edge but a sharp inner corner.
-        try demo.renderer.drawRoundedRectLine(.{ .x = 50, .y = 0 }, .{ .x = 150, .y = 100 }, .all(15.0), 25.0, .yellow);
-
-        // Test of per-corner radius values
-        try demo.renderer.drawRoundedRectLine(.{ .x = 350, .y = 100 }, .{ .x = 150, .y = 100 }, .{
-            .top_left = 30.0,
-            .top_right = 10.0,
-            .bottom_right = 50.0,
-            .bottom_left = 5.0,
-        }, 5.0, .magenta);
-
-        // --- Scissor Test ---
-        try demo.renderer.scissorStart(.{ .x = 450, .y = 250 }, .{ .x = 150, .y = 150 });
-        {
-            // This quad is fully inside the scissor rect and will be drawn normally.
-            try demo.renderer.drawQuad(.{ .x = 460, .y = 260 }, .{ .x = 50, .y = 50 }, .blue);
-
-            // This quad is partially overlapping the scissor rect and will be clipped.
-            try demo.renderer.drawQuad(.{ .x = 550, .y = 350 }, .{ .x = 400, .y = 400 }, .red);
-
-            // This quad is completely outside the scissor rect and will not be visible.
-            try demo.renderer.drawQuad(.{ .x = 200, .y = 200 }, .{ .x = 50, .y = 50 }, .green);
-        }
-        try demo.renderer.scissorEnd();
-
-        // Draw a white outline around the scissor area to visualize it
-        try demo.renderer.drawRectLine(.{ .x = 450, .y = 250 }, .{ .x = 150, .y = 150 }, 1.0, .white);
-
-        // --- End Frame ---
+        // Render the UI using the ClayBackend
+        try clay_backend.render(render_commands);
 
         try demo.renderer.endFrame();
 
+        // --- WGPU Command Submission ---
         const encoder = wgpu.deviceCreateCommandEncoder(demo.device, &.{ .label = .fromSlice("main_encoder") });
         defer wgpu.commandEncoderRelease(encoder);
 
         const render_target_view = if (demo.msaa_view != null) demo.msaa_view else frame_view;
         const resolve_target_view = if (demo.msaa_view != null) frame_view else null;
-        const clear_color = wgpu.Color{ .r = 0.1, .g = 0.1, .b = 0.1, .a = 1 };
+        const clear_color = wgpu.Color{ .r = 0.1, .g = 0.1, .b = 0.1, .a = 1.0 };
 
         const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
             .color_attachment_count = 1,
@@ -430,8 +789,6 @@ pub fn main() !void {
         wgpu.queueSubmit(queue, 1, &.{cmd});
 
         _ = wgpu.surfacePresent(demo.surface);
-
-        frame_time = timer.lap();
     }
 }
 
@@ -473,20 +830,4 @@ fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) [16]
     mat[14] = -(far + near) / (far - near);
     mat[15] = 1.0;
     return mat;
-}
-
-/// draws a bar chart for all frames in the buffer, with each bar scaled by its size relative to the max frame time
-fn chart_fps(renderer: *Batch2D, chart_pos: Batch2D.Vec2, max_ms: f64, frames_ms: []const f64) !void {
-    const bar_width: f32 = 4.0;
-    const chart_height: f32 = 100.0;
-    const chart_color: Batch2D.Color = .{ .r = 0, .g = 0, .b = 0, .a = 0.5 };
-
-    const reference_ms = @max(16.67, max_ms);
-
-    var x: f32 = chart_pos.x;
-    for (frames_ms) |ms| {
-        const height = @as(f32, @floatCast(ms)) / @as(f32, @floatCast(reference_ms)) * chart_height;
-        try renderer.drawQuad(.{ .x = x, .y = chart_pos.y + (chart_height - height) }, .{ .x = bar_width - 1, .y = height }, chart_color);
-        x += bar_width;
-    }
 }
