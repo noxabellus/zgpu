@@ -6,11 +6,50 @@ const stbi = @import("stbi");
 const stbtt = @import("stbtt");
 const Atlas = @import("Atlas.zig");
 
-const Batch2D = @import("Batch2D.zig");
-
 const log = std.log.scoped(.asset_cache);
 
-pub const WHITE_PIXEL_ID: Atlas.ImageId = Batch2D.encodeGlyphId(Batch2D.SPECIAL_ID_FONT_INDEX, 0, 0);
+test {
+    log.debug("semantic analysis for AssetCache.zig", .{});
+    std.testing.refAllDecls(@This());
+}
+
+pub const FontId = u8; // Max 256 fonts.
+
+pub const FontSize = u16; // Max 65535 pixel height.
+
+/// A packed struct representing the components of a glyph or special (e.g. white pixel) ImageID.
+/// This allows for type-safe, error-free conversion to and from a u64 ImageID via @bitCast.
+pub const GlyphId = packed struct(u64) {
+    char_code: u21,
+    font_size: FontSize,
+    font_id: FontId,
+    _reserved: u18,
+    /// If true, this ID refers to a glyph or special ID that requires nearest-neighbor filtering.
+    /// If false, it's a standard image ID.
+    is_glyph_or_special: bool,
+};
+
+/// Encodes a GlyphId struct into a u64 ImageID.
+pub fn encodeGlyphId(id_struct: GlyphId) Atlas.ImageId {
+    return @bitCast(id_struct);
+}
+
+/// Decodes a u64 ImageID back into a GlyphId struct.
+pub fn decodeGlyphId(id: Atlas.ImageId) GlyphId {
+    return @bitCast(id);
+}
+
+/// A font index reserved for special, non-font IDs (like the white pixel).
+pub const SPECIAL_ID_font_id: FontId = 0xFF;
+
+/// The canonical ID for a single white pixel, used for drawing solid-colored shapes.
+pub const WHITE_PIXEL_ID: Atlas.ImageId = encodeGlyphId(.{
+    .char_code = 0,
+    .font_size = 0,
+    .font_id = SPECIAL_ID_font_id,
+    ._reserved = 0,
+    .is_glyph_or_special = true,
+});
 
 pub const LoadedFont = struct {
     info: stbtt.FontInfo,
@@ -62,7 +101,9 @@ pub fn deinit(self: *AssetCache) void {
 }
 
 /// Loads a font from a file path and returns its index.
-pub fn loadFont(self: *AssetCache, path: []const u8) !u32 {
+pub fn loadFont(self: *AssetCache, path: []const u8) !FontId {
+    std.debug.assert(self.fonts.items.len < std.math.maxInt(FontId));
+
     const font_data = try std.fs.cwd().readFileAlloc(self.allocator, path, 10 * 1024 * 1024);
     errdefer self.allocator.free(font_data);
 
@@ -70,10 +111,10 @@ pub fn loadFont(self: *AssetCache, path: []const u8) !u32 {
     const success = stbtt.initFont(&font_info, font_data.ptr, 0).to();
     std.debug.assert(success);
 
-    const font_index: u32 = @intCast(self.fonts.items.len);
+    const font_id: FontId = @intCast(self.fonts.items.len);
     try self.fonts.append(self.allocator, .{ .data = font_data, .info = font_info });
-    log.info("loaded font '{s}' with index {d}", .{ path, font_index });
-    return font_index;
+    log.info("loaded font '{s}' with index {d}", .{ path, font_id });
+    return font_id;
 }
 
 /// Loads an image from a file path and returns a unique Atlas.ImageId.
@@ -105,11 +146,10 @@ pub fn dataProvider(image_id: Atlas.ImageId, user_context: ?*anyopaque) ?Atlas.I
     const ctx: *const ProviderUserContext = @ptrCast(@alignCast(user_context.?));
     const cache = ctx.asset_cache;
     const frame_allocator = ctx.frame_allocator;
+    const decoded = decodeGlyphId(image_id);
 
-    if ((image_id & Batch2D.NEAREST_FILTER_FLAG) != 0) { // This is a glyph or special ID request.
-        const decoded = Batch2D.decodeGlyphId(image_id);
-
-        if (decoded.font_index == Batch2D.SPECIAL_ID_FONT_INDEX) {
+    if (decoded.is_glyph_or_special) { // This is a glyph or special ID request.
+        if (decoded.font_id == SPECIAL_ID_font_id) {
             // This is a special, non-font ID. The white pixel is char_code 0.
             if (decoded.char_code == 0) {
                 const white_pixel = (frame_allocator.alloc(u8, 4) catch return null);
@@ -126,12 +166,13 @@ pub fn dataProvider(image_id: Atlas.ImageId, user_context: ?*anyopaque) ?Atlas.I
         }
 
         // --- Otherwise, it's a regular glyph request ---
-        if (decoded.font_index >= cache.fonts.items.len) {
-            log.err("invalid font index {d} in glyph id", .{decoded.font_index});
+        if (decoded.font_id >= cache.fonts.items.len) {
+            log.err("invalid font index {d} in glyph id", .{decoded.font_id});
             return null;
         }
-        const font = &cache.fonts.items[decoded.font_index];
-        const scale = stbtt.scaleForPixelHeight(&font.info, decoded.pixel_height);
+        const font = &cache.fonts.items[decoded.font_id];
+        const pixel_height_f32 = @as(f32, @floatFromInt(decoded.font_size));
+        const scale = stbtt.scaleForPixelHeight(&font.info, pixel_height_f32);
 
         var w: i32 = 0;
         var h: i32 = 0;
@@ -142,8 +183,8 @@ pub fn dataProvider(image_id: Atlas.ImageId, user_context: ?*anyopaque) ?Atlas.I
         if (grayscale_pixels == null or w == 0 or h == 0) return null;
         defer stbtt.freeBitmap(grayscale_pixels.?, null);
 
-        const padded_w: u32 = @as(u32, @intCast(w)) + (Batch2D.GLYPH_PADDING * 2);
-        const padded_h: u32 = @as(u32, @intCast(h)) + (Batch2D.GLYPH_PADDING * 2);
+        const padded_w: u32 = @as(u32, @intCast(w)) + (@import("Batch2D.zig").GLYPH_PADDING * 2);
+        const padded_h: u32 = @as(u32, @intCast(h)) + (@import("Batch2D.zig").GLYPH_PADDING * 2);
         const master_rgba_padded_pixels = (frame_allocator.alloc(u8, padded_w * padded_h * 4) catch return null);
 
         @memset(master_rgba_padded_pixels, 0x00);
@@ -158,9 +199,10 @@ pub fn dataProvider(image_id: Atlas.ImageId, user_context: ?*anyopaque) ?Atlas.I
 
         const original_pitch: usize = @intCast(w);
         const padded_pitch: usize = padded_w * 4;
+        const glyph_padding = @import("Batch2D.zig").GLYPH_PADDING;
         for (0..@as(usize, @intCast(h))) |row| {
             const src_row = grayscale_pixels.?[(row * original_pitch)..];
-            const dst_row_start_idx = ((row + Batch2D.GLYPH_PADDING) * padded_pitch) + (Batch2D.GLYPH_PADDING * 4);
+            const dst_row_start_idx = ((row + glyph_padding) * padded_pitch) + (glyph_padding * 4);
             for (0..original_pitch) |col| {
                 const alpha = src_row[col];
                 const dst_pixel_start = dst_row_start_idx + (col * 4);

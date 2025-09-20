@@ -293,14 +293,14 @@ pub fn main() !void {
         const fps_text = try std.fmt.allocPrint(tts_fba.allocator(), "FPS: {d:0.1} ({d:0.3}ms) / {d:0.1} ({d:0.3}ms)", .{ avg_fps, avg_ms, frame_fps, frame_ms });
 
         // Draw with Roboto, 12px
-        try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 16.0, .{ .x = 0, .y = 0 }, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
+        try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 16, .{ .x = 0, .y = 0 }, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
         const text_to_draw = "WGPU Batch Renderer";
 
         // Draw with Calistoga, 48px
-        try demo.renderer.drawText(text_to_draw, &asset_cache.fonts.items[calistoga_idx].info, calistoga_idx, 48.0, .{ .x = 10, .y = 60 }, .{ .r = 0, .g = 1, .b = 1, .a = 1 });
+        try demo.renderer.drawText(text_to_draw, &asset_cache.fonts.items[calistoga_idx].info, calistoga_idx, 48, .{ .x = 10, .y = 60 }, .{ .r = 0, .g = 1, .b = 1, .a = 1 });
 
         // Draw with Quicksand, 32px
-        try demo.renderer.drawText(text_to_draw, &asset_cache.fonts.items[quicksand_idx].info, quicksand_idx, 32.0, .{ .x = 20, .y = 120 }, .{ .r = 1, .g = 0, .b = 1, .a = 1 });
+        try demo.renderer.drawText(text_to_draw, &asset_cache.fonts.items[quicksand_idx].info, quicksand_idx, 32, .{ .x = 20, .y = 120 }, .{ .r = 1, .g = 0, .b = 1, .a = 1 });
 
         // --- Draw New Primitives ---
 

@@ -16,37 +16,8 @@ test {
 }
 
 // --- Public Constants ---
-pub const NEAREST_FILTER_FLAG: u32 = 0x80000000;
-pub const GLYPH_PADDING: u32 = 2;
-pub const GLYPH_PADDING_F: f32 = 2.0;
-const USE_NEAREST_MASK = 0x80000000;
-
-// --- Glyph ID Encoding ---
-const FONT_INDEX_SHIFT = 28;
-const PIXEL_HEIGHT_SHIFT = 21;
-const CHAR_CODE_MASK: u32 = 0x1FFFFF;
-const PIXEL_HEIGHT_MASK: u32 = 0x7F;
-const FONT_INDEX_MASK: u32 = 0x7;
-
-/// A font index reserved for special, non-font IDs that still need nearest filtering.
-pub const SPECIAL_ID_FONT_INDEX: u32 = FONT_INDEX_MASK;
-
-pub fn encodeGlyphId(font_index: u32, pixel_height: f32, char_code: u21) Atlas.ImageId {
-    const height_encoded = @as(u32, @intFromFloat(pixel_height));
-    return NEAREST_FILTER_FLAG |
-        ((font_index & FONT_INDEX_MASK) << FONT_INDEX_SHIFT) |
-        ((height_encoded & PIXEL_HEIGHT_MASK) << PIXEL_HEIGHT_SHIFT) |
-        (@as(u32, @intCast(char_code)) & CHAR_CODE_MASK);
-}
-
-pub const DecodedGlyphId = struct { font_index: u32, pixel_height: f32, char_code: u21 };
-pub fn decodeGlyphId(id: Atlas.ImageId) DecodedGlyphId {
-    return .{
-        .font_index = @intCast((id >> FONT_INDEX_SHIFT) & FONT_INDEX_MASK),
-        .pixel_height = @as(f32, @floatFromInt((id >> PIXEL_HEIGHT_SHIFT) & PIXEL_HEIGHT_MASK)),
-        .char_code = @intCast(id & CHAR_CODE_MASK),
-    };
-}
+pub const GLYPH_PADDING = 2;
+pub const GLYPH_PADDING_F = 2.0;
 
 // --- Public API Structs ---
 pub const Mat4 = [16]f32;
@@ -55,6 +26,8 @@ pub const Color = struct { r: f32 = 0.0, g: f32 = 0.0, b: f32 = 0.0, a: f32 = 0.
 pub const UvRect = struct { x: f32, y: f32, w: f32, h: f32 };
 
 // --- Internal Structs ---
+const USE_NEAREST_MASK: u32 = 0x80000000;
+const IMAGE_ID_MASK: u32 = 0x7FFFFFFF;
 
 const Vertex = extern struct {
     position: [2]f32,
@@ -65,8 +38,6 @@ const Vertex = extern struct {
     /// - Bits 0-30: Logical Image ID (index into the indirection table storage buffer)
     encoded_params: u32,
 };
-
-const IMAGE_ID_MASK: u32 = 0x7FFFFFFF;
 
 const Uniforms = extern struct {
     projection: Mat4,
@@ -260,17 +231,15 @@ pub fn beginFrame(self: *Batch2D, projection: Mat4, context: Atlas.ProviderConte
 pub fn endFrame(self: *Batch2D) !void {
     const atlas_recreated = try self.atlas.flush(self.provider_context);
 
-    // --- VERTEX PATCHING (CORRECTED) ---
-    // This is now identical to your original, correct logic.
-    // We ONLY patch the `encoded_params` so the shader can find the image.
-    // We DO NOT touch the `tex_coords`, as they are always in image-relative (0-1) space.
     for (self.patch_list.items) |p| {
         const location = self.atlas.query(p.image_id, p.wants_mips, self.provider_context) catch |err| {
             log.err("image {any} not found in cache after flush. error: {any}", .{ p.image_id, err });
             continue;
         };
-        const use_nearest_flag = p.image_id & USE_NEAREST_MASK;
+
+        const use_nearest_flag = if (AssetCache.decodeGlyphId(p.image_id).is_glyph_or_special) USE_NEAREST_MASK else 0;
         const encoded_params = use_nearest_flag | (location.indirection_table_index & IMAGE_ID_MASK);
+
         const verts = self.vertices.items[p.vertex_start_index .. p.vertex_start_index + p.vertex_count];
         for (verts) |*v| v.encoded_params = encoded_params;
     }
@@ -400,7 +369,7 @@ pub fn drawTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, wants_mips:
 
     // PACKED PATH: The image is in the atlas.
     // 1. Calculate the final `encoded_params` with the correct indirection table index.
-    const use_nearest_flag = image_id & USE_NEAREST_MASK;
+    const use_nearest_flag = if (AssetCache.decodeGlyphId(image_id).is_glyph_or_special) USE_NEAREST_MASK else 0;
     const encoded_params = use_nearest_flag | (location.indirection_table_index & IMAGE_ID_MASK);
 
     // 2. Push the triangle with the final `encoded_params` and the ORIGINAL image-relative UVs.
@@ -455,58 +424,77 @@ pub fn drawSolidTriangleStrip(self: *Batch2D, vertices: []const Vec2, tint: Colo
     }
 }
 
-pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.FontInfo, font_index: u32, pixel_height: f32, pos: Vec2, tint: Color) !void {
-    const font_scale = stbtt.scaleForPixelHeight(font_info, pixel_height);
+pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.FontInfo, font_id: AssetCache.FontId, font_size: AssetCache.FontSize, pos: Vec2, tint: Color) !void {
+    // We still need the f32 versions for the stbtt API calls.
+    const font_size_f32 = @as(f32, @floatFromInt(font_size));
+    const font_scale_f32 = stbtt.scaleForPixelHeight(font_info, font_size_f32);
+    const font_scale: f64 = font_scale_f32;
+
+    // First, iterate through the string to find the highest-rising glyph.
+    // This allows us to align the entire string's top boundary to pos.y.
     var min_iy0: i32 = 0;
     for (string) |char| {
         var iy0: i32 = 0;
-        stbtt.getCodepointBitmapBox(font_info, @intCast(@as(u21, @intCast(char))), font_scale, font_scale, null, &iy0, null, null);
+        stbtt.getCodepointBitmapBox(font_info, @intCast(@as(u21, @intCast(char))), font_scale_f32, font_scale_f32, null, &iy0, null, null);
         min_iy0 = @min(min_iy0, iy0);
     }
 
-    const baseline_y = pos.y - @as(f32, @floatFromInt(min_iy0));
-    var xpos = pos.x;
+    // Calculate the baseline's y-position in high precision.
+    const baseline_y: f64 = @as(f64, pos.y) - @as(f64, @floatFromInt(min_iy0));
+    // Initialize the high-precision horizontal cursor position.
+    var xpos: f64 = pos.x;
     var prev_char: u21 = 0;
 
     for (string) |char| {
         const char_code = @as(u21, @intCast(char));
 
+        // Apply kerning if this is not the first character.
         if (prev_char != 0) {
             const kern = stbtt.getCodepointKernAdvance(font_info, prev_char, char_code);
-            xpos += @as(f32, @floatFromInt(kern)) * font_scale;
+            xpos += @as(f64, @floatFromInt(kern)) * font_scale;
         }
 
-        var adv: i32 = 0;
-        stbtt.getCodepointHMetrics(font_info, @intCast(char_code), &adv, null);
-
+        // Get glyph metrics (already scaled to integer pixel offsets by stbtt).
         var ix0: i32 = 0;
         var iy0: i32 = 0;
         var ix1: i32 = 0;
         var iy1: i32 = 0;
-        stbtt.getCodepointBitmapBox(font_info, @intCast(char_code), font_scale, font_scale, &ix0, &iy0, &ix1, &iy1);
+        stbtt.getCodepointBitmapBox(font_info, @intCast(char_code), font_scale_f32, font_scale_f32, &ix0, &iy0, &ix1, &iy1);
 
-        const width: f32 = @floatFromInt(ix1 - ix0);
-        const height: f32 = @floatFromInt(iy1 - iy0);
+        const width: f64 = @floatFromInt(ix1 - ix0);
+        const height: f64 = @floatFromInt(iy1 - iy0);
 
         if (width > 0 and height > 0) {
             const padded_width = width + (GLYPH_PADDING_F * 2.0);
             const padded_height = height + (GLYPH_PADDING_F * 2.0);
 
-            const ideal_x = xpos + @as(f32, @floatFromInt(ix0)) - GLYPH_PADDING_F;
-            const ideal_y = baseline_y + @as(f32, @floatFromInt(iy0)) - GLYPH_PADDING_F;
+            // Calculate the ideal, un-rounded position for the glyph's quad in f64.
+            const ideal_x = xpos + @as(f64, @floatFromInt(ix0)) - GLYPH_PADDING_F;
+            const ideal_y = baseline_y + @as(f64, @floatFromInt(iy0)) - GLYPH_PADDING_F;
 
+            // Round to the nearest whole pixel ("pixel snapping") for crisp rendering.
             const rounded_x = @floor(ideal_x + 0.5);
             const rounded_y = @floor(ideal_y + 0.5);
 
-            const final_pos = Vec2{ .x = rounded_x, .y = rounded_y };
-            const char_size = Vec2{ .x = padded_width, .y = padded_height };
+            // Convert to f32 only at the very end when creating the vertex data.
+            const final_pos = Vec2{ .x = @floatCast(rounded_x), .y = @floatCast(rounded_y) };
+            const char_size = Vec2{ .x = @floatCast(padded_width), .y = @floatCast(padded_height) };
 
-            const glyph_id = encodeGlyphId(font_index, pixel_height, char_code);
+            const glyph_id: Atlas.ImageId = AssetCache.encodeGlyphId(.{
+                .char_code = char_code,
+                .font_size = font_size,
+                .font_id = @intCast(font_id),
+                ._reserved = 0,
+                .is_glyph_or_special = true,
+            });
+
             try self.drawTexturedQuad(glyph_id, false, final_pos, char_size, tint);
         }
 
-        const adv_scale = @as(f32, @floatFromInt(adv)) * font_scale;
-        xpos += adv_scale;
+        // Advance the cursor for the next character.
+        var adv: i32 = 0;
+        stbtt.getCodepointHMetrics(font_info, @intCast(char_code), &adv, null);
+        xpos += @as(f64, @floatFromInt(adv)) * font_scale;
         prev_char = char_code;
     }
 }

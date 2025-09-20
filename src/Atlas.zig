@@ -9,7 +9,7 @@ const stbi = @import("stbi");
 
 const log = std.log.scoped(.multi_atlas);
 
-pub const ImageId = u32;
+pub const ImageId = u64;
 
 pub const MAX_MIP_LEVELS = 12;
 
@@ -75,6 +75,8 @@ pub fn init(
     atlas_height: u32,
     mip_level_count: u32,
 ) !*Atlas {
+    std.debug.assert(mip_level_count <= MAX_MIP_LEVELS);
+    
     const self = try allocator.create(Atlas);
     errdefer allocator.destroy(self);
 
