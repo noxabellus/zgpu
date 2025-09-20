@@ -1,16 +1,14 @@
 //! Simple asset loading and caching; currently supports images and fonts.
-//! Acts as a provider for the MultiAtlas used by Batch2D.
+//! Acts as a provider for the Atlas used by Batch2D.
 
 const std = @import("std");
 const stbi = @import("stbi");
 const stbtt = @import("stbtt");
-
 const Atlas = @import("Atlas.zig");
+
 const Batch2D = @import("Batch2D.zig");
 
 const log = std.log.scoped(.asset_cache);
-
-pub const ImageId = @import("MultiAtlas.zig").ImageId;
 
 pub const LoadedFont = struct {
     info: stbtt.FontInfo,
@@ -30,7 +28,7 @@ pub const AssetCache = @This();
 allocator: std.mem.Allocator,
 fonts: std.ArrayList(LoadedFont),
 images: std.ArrayList(stbi.Image),
-image_map: std.StringHashMapUnmanaged(ImageId),
+image_map: std.StringHashMapUnmanaged(Atlas.ImageId),
 
 pub fn init(allocator: std.mem.Allocator) AssetCache {
     return .{
@@ -76,9 +74,9 @@ pub fn loadFont(self: *AssetCache, path: []const u8) !u32 {
     return font_index;
 }
 
-/// Loads an image from a file path and returns a unique ImageId.
+/// Loads an image from a file path and returns a unique Atlas.ImageId.
 /// Avoids loading the same image twice.
-pub fn loadImage(self: *AssetCache, path: []const u8) !ImageId {
+pub fn loadImage(self: *AssetCache, path: []const u8) !Atlas.ImageId {
     if (self.image_map.get(path)) |existing_id| {
         return existing_id;
     }
@@ -89,7 +87,7 @@ pub fn loadImage(self: *AssetCache, path: []const u8) !ImageId {
     var image = try stbi.Image.loadFromMemory(file_data, 4);
     errdefer image.deinit();
 
-    const image_id: ImageId = @intCast(self.images.items.len);
+    const image_id: Atlas.ImageId = @intCast(self.images.items.len);
     try self.images.append(self.allocator, image);
 
     try self.image_map.put(self.allocator, try self.allocator.dupe(u8, path), image_id);
@@ -98,9 +96,9 @@ pub fn loadImage(self: *AssetCache, path: []const u8) !ImageId {
     return image_id;
 }
 
-/// The data provider callback required by the MultiAtlas.
-/// This function is called by the renderer when it needs pixel data for an ImageId.
-pub fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputImage {
+/// The data provider callback required by the Atlas.
+/// This function is called by the renderer when it needs pixel data for an Atlas.ImageId.
+pub fn dataProvider(image_id: Atlas.ImageId, user_context: ?*anyopaque) ?Atlas.InputImage {
     // Cast the opaque pointer to our specific context struct.
     const ctx: *const ProviderUserContext = @ptrCast(@alignCast(user_context.?));
     const cache = ctx.asset_cache;

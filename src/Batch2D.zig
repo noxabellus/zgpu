@@ -1,10 +1,11 @@
 //! A batched 2D renderer for shapes, images, and text.
+
 const Batch2D = @This();
 
 const std = @import("std");
 const wgpu = @import("wgpu");
 const stbtt = @import("stbtt");
-const MultiAtlas = @import("MultiAtlas.zig");
+const Atlas = @import("Atlas.zig");
 
 const log = std.log.scoped(.renderer);
 
@@ -24,7 +25,7 @@ const CHAR_CODE_MASK: u32 = 0x1FFFFF;
 const PIXEL_HEIGHT_MASK: u32 = 0x7F;
 const FONT_INDEX_MASK: u32 = 0x7;
 
-pub fn encodeGlyphId(font_index: u32, pixel_height: f32, char_code: u21) MultiAtlas.ImageId {
+pub fn encodeGlyphId(font_index: u32, pixel_height: f32, char_code: u21) Atlas.ImageId {
     const height_encoded = @as(u32, @intFromFloat(pixel_height));
     return GLYPH_ID_FLAG |
         ((font_index & FONT_INDEX_MASK) << FONT_INDEX_SHIFT) |
@@ -33,7 +34,7 @@ pub fn encodeGlyphId(font_index: u32, pixel_height: f32, char_code: u21) MultiAt
 }
 
 pub const DecodedGlyphId = struct { font_index: u32, pixel_height: f32, char_code: u21 };
-pub fn decodeGlyphId(id: MultiAtlas.ImageId) DecodedGlyphId {
+pub fn decodeGlyphId(id: Atlas.ImageId) DecodedGlyphId {
     return .{
         .font_index = @intCast((id >> FONT_INDEX_SHIFT) & FONT_INDEX_MASK),
         .pixel_height = @as(f32, @floatFromInt((id >> PIXEL_HEIGHT_SHIFT) & PIXEL_HEIGHT_MASK)),
@@ -65,16 +66,14 @@ const Uniforms = extern struct {
 };
 
 const Patch = struct {
-    image_id: MultiAtlas.ImageId,
+    image_id: Atlas.ImageId,
     wants_mips: bool,
     vertex_start_index: usize,
     vertex_count: usize,
 };
 
-pub const ProviderContext = struct {
-    provider: MultiAtlas.DataProvider,
-    user_context: ?*anyopaque,
-};
+pub const DataProvider = Atlas.DataProvider;
+pub const ProviderContext = Atlas.ProviderContext;
 
 // --- WGPU Resources and State ---
 allocator: std.mem.Allocator,
@@ -85,11 +84,12 @@ uniform_buffer: wgpu.Buffer,
 vertex_buffer: wgpu.Buffer,
 vertex_buffer_capacity: usize,
 vertices: std.ArrayList(Vertex),
-atlas: *MultiAtlas,
+atlas: *Atlas,
 bind_group: wgpu.BindGroup,
-sampler: wgpu.Sampler,
+linear_sampler: wgpu.Sampler,
+nearest_sampler: wgpu.Sampler,
 patch_list: std.ArrayList(Patch),
-provider_context: ProviderContext,
+provider_context: Atlas.ProviderContext,
 indirection_buffer: wgpu.Buffer,
 indirection_buffer_capacity: usize,
 
@@ -103,7 +103,7 @@ pub fn init(
     const self = try allocator.create(Batch2D);
     errdefer allocator.destroy(self);
 
-    const atlas = try MultiAtlas.init(allocator, device, queue, 2048, 2048, MultiAtlas.MAX_MIP_LEVELS);
+    const atlas = try Atlas.init(allocator, device, queue, 2048, 2048, Atlas.MAX_MIP_LEVELS);
     errdefer atlas.deinit();
 
     const shader_module = try wgpu.loadShaderText(device, "Renderer", @embedFile("shaders/Renderer.wgsl"));
@@ -121,30 +121,40 @@ pub fn init(
     const indirection_buffer = wgpu.deviceCreateBuffer(device, &.{
         .label = .fromSlice("indirection_buffer"),
         .usage = .{ .storage = true, .copy_dst = true },
-        .size = initial_indirection_capacity * @sizeOf(MultiAtlas.ImageMipData),
+        .size = initial_indirection_capacity * @sizeOf(Atlas.ImageMipData),
     });
     std.debug.assert(indirection_buffer != null);
     errdefer wgpu.bufferRelease(indirection_buffer);
 
-    const sampler = wgpu.deviceCreateSampler(device, &.{
-        .label = .fromSlice("image_texture_sampler"),
+    const linear_sampler = wgpu.deviceCreateSampler(device, &.{
+        .label = .fromSlice("linear_sampler"),
         .address_mode_u = .clamp_to_edge,
         .address_mode_v = .clamp_to_edge,
         .mag_filter = .linear,
         .min_filter = .linear,
-        .mipmap_filter = .linear,
     });
-    std.debug.assert(sampler != null);
-    errdefer wgpu.samplerRelease(sampler);
+    std.debug.assert(linear_sampler != null);
+    errdefer wgpu.samplerRelease(linear_sampler);
+
+    const nearest_sampler = wgpu.deviceCreateSampler(device, &.{
+        .label = .fromSlice("nearest_sampler"),
+        .address_mode_u = .clamp_to_edge,
+        .address_mode_v = .clamp_to_edge,
+        .mag_filter = .nearest,
+        .min_filter = .nearest,
+    });
+    std.debug.assert(nearest_sampler != null);
+    errdefer wgpu.samplerRelease(nearest_sampler);
 
     const bind_group_layout = wgpu.deviceCreateBindGroupLayout(device, &.{
         .label = .fromSlice("bind_group_layout"),
-        .entry_count = 4,
+        .entry_count = 5,
         .entries = &[_]wgpu.BindGroupLayoutEntry{
             .{ .binding = 0, .visibility = .vertexStage, .buffer = .{ .type = .uniform } },
-            .{ .binding = 1, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } },
-            .{ .binding = 2, .visibility = .fragmentStage, .texture = .{ .sample_type = .float, .view_dimension = .@"2d_array" } },
-            .{ .binding = 3, .visibility = .fragmentStage, .buffer = .{ .type = .read_only_storage } },
+            .{ .binding = 1, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } }, // Linear
+            .{ .binding = 2, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } }, // Nearest
+            .{ .binding = 3, .visibility = .fragmentStage, .texture = .{ .sample_type = .float, .view_dimension = .@"2d_array" } },
+            .{ .binding = 4, .visibility = .fragmentStage, .buffer = .{ .type = .read_only_storage } },
         },
     });
     std.debug.assert(bind_group_layout != null);
@@ -205,7 +215,8 @@ pub fn init(
         .vertices = .empty,
         .atlas = atlas,
         .bind_group = null,
-        .sampler = sampler,
+        .linear_sampler = linear_sampler,
+        .nearest_sampler = nearest_sampler,
         .patch_list = .empty,
         .provider_context = .{ .provider = undefined, .user_context = null },
         .indirection_buffer = indirection_buffer,
@@ -224,14 +235,15 @@ pub fn deinit(self: *Batch2D) void {
     if (self.vertex_buffer_capacity > 0) wgpu.bufferRelease(self.vertex_buffer);
     wgpu.bufferRelease(self.indirection_buffer);
     wgpu.bufferRelease(self.uniform_buffer);
-    wgpu.samplerRelease(self.sampler);
+    wgpu.samplerRelease(self.linear_sampler);
+    wgpu.samplerRelease(self.nearest_sampler);
     wgpu.renderPipelineRelease(self.pipeline);
     self.vertices.deinit(self.allocator);
     self.patch_list.deinit(self.allocator);
     self.allocator.destroy(self);
 }
 
-pub fn beginFrame(self: *Batch2D, projection: Mat4, context: ProviderContext) void {
+pub fn beginFrame(self: *Batch2D, projection: Mat4, context: Atlas.ProviderContext) void {
     wgpu.queueWriteBuffer(self.queue, self.uniform_buffer, 0, &Uniforms{ .projection = projection }, @sizeOf(Uniforms));
     self.vertices.clearRetainingCapacity();
     self.patch_list.clearRetainingCapacity();
@@ -260,7 +272,7 @@ pub fn endFrame(self: *Batch2D) !void {
             self.indirection_buffer = wgpu.deviceCreateBuffer(self.device, &.{
                 .label = .fromSlice("indirection_buffer"),
                 .usage = .{ .storage = true, .copy_dst = true },
-                .size = new_capacity * @sizeOf(MultiAtlas.ImageMipData),
+                .size = new_capacity * @sizeOf(Atlas.ImageMipData),
             });
             self.indirection_buffer_capacity = new_capacity;
             log.info("resized indirection buffer to capacity {d}", .{new_capacity});
@@ -269,7 +281,7 @@ pub fn endFrame(self: *Batch2D) !void {
                 self.bind_group = null;
             }
         }
-        wgpu.queueWriteBuffer(self.queue, self.indirection_buffer, 0, self.atlas.indirection_table.items.ptr, required_capacity * @sizeOf(MultiAtlas.ImageMipData));
+        wgpu.queueWriteBuffer(self.queue, self.indirection_buffer, 0, self.atlas.indirection_table.items.ptr, required_capacity * @sizeOf(Atlas.ImageMipData));
     }
 
     if (self.vertices.items.len > 0) {
@@ -283,7 +295,7 @@ pub fn endFrame(self: *Batch2D) !void {
                 .size = new_capacity,
             });
             self.vertex_buffer_capacity = new_capacity;
-            log.info("resized vertex buffer to {d} bytes", .{new_capacity});
+            log.debug("resized vertex buffer to {d} bytes", .{new_capacity});
         }
         wgpu.queueWriteBuffer(self.queue, self.vertex_buffer, 0, self.vertices.items.ptr, required_size);
     }
@@ -307,7 +319,7 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
     wgpu.renderPassEncoderDraw(render_pass, @intCast(self.vertices.items.len), 1, 0, 0);
 }
 
-pub fn drawTexturedQuad(self: *Batch2D, image_id: MultiAtlas.ImageId, wants_mips: bool, pos: Vec2, size: Vec2, tint: Color) !void {
+pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, wants_mips: bool, pos: Vec2, size: Vec2, tint: Color) !void {
     const location = self.atlas.query(image_id, wants_mips, self.provider_context) catch |err| {
         if (err == error.ImageNotYetPacked) {
             const vertex_start_index = self.vertices.items.len;
@@ -402,12 +414,13 @@ fn recreateBindGroup(self: *Batch2D) !void {
     const bg = wgpu.deviceCreateBindGroup(self.device, &.{
         .label = .fromSlice("atlas_array_bind_group"),
         .layout = layout,
-        .entry_count = 4,
+        .entry_count = 5,
         .entries = &[_]wgpu.BindGroupEntry{
             .{ .binding = 0, .buffer = self.uniform_buffer, .size = @sizeOf(Uniforms) },
-            .{ .binding = 1, .sampler = self.sampler },
-            .{ .binding = 2, .texture_view = self.atlas.view },
-            .{ .binding = 3, .buffer = self.indirection_buffer, .size = self.indirection_buffer_capacity * @sizeOf(MultiAtlas.ImageMipData) },
+            .{ .binding = 1, .sampler = self.linear_sampler },
+            .{ .binding = 2, .sampler = self.nearest_sampler },
+            .{ .binding = 3, .texture_view = self.atlas.view },
+            .{ .binding = 4, .buffer = self.indirection_buffer, .size = self.indirection_buffer_capacity * @sizeOf(Atlas.ImageMipData) },
         },
     });
     std.debug.assert(bg != null);

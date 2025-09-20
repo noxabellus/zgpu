@@ -1,11 +1,14 @@
 @group(0) @binding(0)
-var<uniform> u_projection: mat4x4<f32>;
+var<uniform> projection_matrix: mat4x4<f32>;
 
 @group(0) @binding(1)
-var t_sampler: sampler;
+var linear_sampler: sampler;
 
 @group(0) @binding(2)
-var t_texture: texture_2d_array<f32>;
+var nearest_sampler: sampler;
+
+@group(0) @binding(3)
+var atlas_texture: texture_2d_array<f32>;
 
 // Updated MipInfo struct with layer index and padding
 struct MipInfo {
@@ -20,7 +23,7 @@ struct ImageMipData {
     mips: array<MipInfo, MAX_MIP_LEVELS>,
 };
 
-@group(0) @binding(3)
+@group(0) @binding(4)
 var<storage, read> image_mip_table: array<ImageMipData>;
 
 struct VertexInput {
@@ -40,7 +43,7 @@ struct VertexOutput {
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
-    out.clip_position = u_projection * vec4<f32>(in.position, 0.0, 1.0);
+    out.clip_position = projection_matrix * vec4<f32>(in.position, 0.0, 1.0);
     out.tex_coords = in.tex_coords;
     out.color = in.color;
     out.encoded_params = in.encoded_params;
@@ -48,13 +51,14 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 }
 
 const IMAGE_ID_MASK = 0x7FFFFFFFu;
+const IS_GLYPH_MASK = 0x80000000u;
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let image_id = in.encoded_params & IMAGE_ID_MASK;
+    let is_glyph = (in.encoded_params & IS_GLYPH_MASK) != 0u;
 
-    // 1. Calculate the required Level of Detail (LOD) using screen-space derivatives.
-    let atlas_dims = vec2<f32>(textureDimensions(t_texture, 0).xy);
+    let atlas_dims = vec2<f32>(textureDimensions(atlas_texture, 0).xy);
     let rect_mip0 = image_mip_table[image_id].mips[0u].uv_rect;
     let scale_texels = rect_mip0.zw * atlas_dims;
 
@@ -63,31 +67,41 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let p = max(dot(dx, dx), dot(dy, dy));
     let lod = 0.5 * log2(max(p, 1e-8));
 
-    // 2. Clamp the LOD and find the two nearest mip levels to blend between.
-    let clamped_lod = clamp(lod, 0.0, f32(MAX_MIP_LEVELS - 1u) - 0.001);
-    let lod_floor = floor(clamped_lod);
-    let lod_ceil = ceil(clamped_lod);
-    let lod_fract = fract(clamped_lod);
+    var sampled_color: vec4<f32>;
 
-    // 3. Fetch the indirection info (UV rect and layer index) for both mip levels.
-    let info_floor = image_mip_table[image_id].mips[u32(lod_floor)];
-    let info_ceil = image_mip_table[image_id].mips[u32(lod_ceil)];
+    if (is_glyph) {
+        // --- NEAREST PATH (for text) ---
+        // 1. Clamp the LOD and round to the nearest integer.
+        let nearest_lod_index = u32(round(clamp(lod, 0.0, f32(MAX_MIP_LEVELS - 1u))));
 
-    // 4. Calculate the 2D texture coordinates for each sample.
-    let coords_2d_floor = info_floor.uv_rect.xy + in.tex_coords * info_floor.uv_rect.zw;
-    let coords_2d_ceil = info_ceil.uv_rect.xy + in.tex_coords * info_ceil.uv_rect.zw;
+        // 2. Fetch the indirection info for that single mip level.
+        let info = image_mip_table[image_id].mips[nearest_lod_index];
+        let coords_2d = info.uv_rect.xy + in.tex_coords * info.uv_rect.zw;
 
-    // 5. Sample from both layers using the correct 5-argument function signature.
-    // textureSampleLevel(texture, sampler, coords_2d, array_index, level)
-    let color_floor = textureSampleLevel(t_texture, t_sampler, coords_2d_floor, info_floor.atlas_layer_index, 0.0);
-    let color_ceil = textureSampleLevel(t_texture, t_sampler, coords_2d_ceil, info_ceil.atlas_layer_index, 0.0);
+        // 3. Sample using the nearest sampler.
+        sampled_color = textureSampleLevel(atlas_texture, nearest_sampler, coords_2d, info.atlas_layer_index, 0.0);
+    } else {
+        // --- LINEAR PATH (for images) ---
+        // This is the original trilinear filtering logic.
+        let clamped_lod = clamp(lod, 0.0, f32(MAX_MIP_LEVELS - 1u) - 0.001);
+        let lod_floor = floor(clamped_lod);
+        let lod_ceil = ceil(clamped_lod);
+        let lod_fract = fract(clamped_lod);
 
-    // 6. Manually interpolate between the two samples to achieve trilinear filtering.
-    let sampled_color = mix(color_floor, color_ceil, lod_fract);
+        let info_floor = image_mip_table[image_id].mips[u32(lod_floor)];
+        let info_ceil = image_mip_table[image_id].mips[u32(lod_ceil)];
 
-    // 7. Apply tint and convert to pre-multiplied alpha for correct blending.
+        let coords_2d_floor = info_floor.uv_rect.xy + in.tex_coords * info_floor.uv_rect.zw;
+        let coords_2d_ceil = info_ceil.uv_rect.xy + in.tex_coords * info_ceil.uv_rect.zw;
+
+        let color_floor = textureSampleLevel(atlas_texture, linear_sampler, coords_2d_floor, info_floor.atlas_layer_index, 0.0);
+        let color_ceil = textureSampleLevel(atlas_texture, linear_sampler, coords_2d_ceil, info_ceil.atlas_layer_index, 0.0);
+
+        sampled_color = mix(color_floor, color_ceil, lod_fract);
+    }
+
+    // Apply tint and convert to pre-multiplied alpha for correct blending.
     var final_color = sampled_color * in.color;
-    // you can't *= swizzles in WGSL, do it component-wise
     final_color.r *= final_color.a;
     final_color.g *= final_color.a;
     final_color.b *= final_color.a;

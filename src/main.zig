@@ -10,8 +10,6 @@ const stbtt = @import("stbtt");
 const glfw = @import("glfw");
 
 const Batch2D = @import("Batch2D.zig");
-const Atlas = @import("Atlas.zig");
-const MultiAtlas = @import("MultiAtlas.zig");
 const AssetCache = @import("AssetCache.zig");
 
 pub const std_options = std.Options{
@@ -85,7 +83,11 @@ fn linearToSrgb(c: f32) f32 {
     }
 }
 
+var tts_buf: [1024]u8 = undefined;
+
 pub fn main() !void {
+    var timer = try std.time.Timer.start();
+
     const gpa = std.heap.page_allocator;
 
     if (comptime builtin.os.tag != .windows) {
@@ -168,8 +170,16 @@ pub fn main() !void {
     var surface_capabilities: wgpu.SurfaceCapabilities = undefined;
     _ = wgpu.surfaceGetCapabilities(demo.surface, demo.adapter, &surface_capabilities);
     defer wgpu.surfaceCapabilitiesFreeMembers(surface_capabilities);
+
     const surface_format = surface_capabilities.formats.?[0];
-    demo.config = .{ .device = demo.device, .usage = .renderAttachmentUsage, .format = surface_format, .present_mode = .fifo, .alpha_mode = surface_capabilities.alpha_modes.?[0] };
+    demo.config = .{
+        .device = demo.device,
+        .usage = .renderAttachmentUsage,
+        .format = surface_format,
+        .present_mode = .immediate,
+        .alpha_mode = surface_capabilities.alpha_modes.?[0],
+    };
+
     {
         var width: i32 = 0;
         var height: i32 = 0;
@@ -199,6 +209,15 @@ pub fn main() !void {
 
     demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format, MSAA_SAMPLE_COUNT);
     defer demo.renderer.deinit();
+
+    const startup_time = timer.lap();
+    const startup_ms = @as(f64, @floatFromInt(startup_time)) / std.time.ns_per_ms;
+    const FRAME_AVG_LEN = 100;
+    var frame_time = startup_time;
+    var frame_ms_buf: [FRAME_AVG_LEN]f64 = [1]f64{startup_ms} ** FRAME_AVG_LEN;
+    var frame_index: usize = 0;
+
+    log.info("startup completed in {d} ms", .{startup_ms});
 
     // --- Main Loop ---
     main_loop: while (!glfw.windowShouldClose(window)) {
@@ -274,10 +293,25 @@ pub fn main() !void {
         const bow_img = asset_cache.images.items[BOW_ID];
         try demo.renderer.drawTexturedQuad(BOW_ID, true, .{ .x = 400, .y = 375 }, .{ .x = @floatFromInt(bow_img.width), .y = @floatFromInt(bow_img.height) }, tint);
 
-        const text_to_draw = "WGPU Batch Renderer";
+        var tts_fba = std.heap.FixedBufferAllocator.init(&tts_buf);
 
-        // Draw with Roboto, 40px
-        try demo.renderer.drawText(text_to_draw, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 40.0, .{ .x = 0, .y = 0 }, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
+        const frame_ms = @as(f64, @floatFromInt(frame_time)) / std.time.ns_per_ms;
+        const frame_fps = 1000.0 / frame_ms;
+
+        frame_ms_buf[frame_index % FRAME_AVG_LEN] = frame_ms;
+        frame_index += 1;
+
+        var avg_ms: f64 = 0;
+        for (frame_ms_buf) |ms| avg_ms += ms;
+        avg_ms /= @as(f64, FRAME_AVG_LEN);
+
+        const avg_fps = 1000.0 / avg_ms;
+
+        const fps_text = try std.fmt.allocPrint(tts_fba.allocator(), "FPS: {d:0.1} ({d:0.3}ms) / {d:0.1} ({d:0.3}ms)", .{ avg_fps, avg_ms, frame_fps, frame_ms });
+
+        // Draw with Roboto, 12px
+        try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 12.0, .{ .x = 0, .y = 0 }, .{ .r = 1, .g = 1, .b = 1, .a = 1 });
+        const text_to_draw = "WGPU Batch Renderer";
 
         // Draw with Calistoga, 48px
         try demo.renderer.drawText(text_to_draw, &asset_cache.fonts.items[calistoga_idx].info, calistoga_idx, 48.0, .{ .x = 10, .y = 60 }, .{ .r = 0, .g = 1, .b = 1, .a = 1 });
@@ -316,5 +350,7 @@ pub fn main() !void {
         wgpu.queueSubmit(queue, 1, &.{cmd});
 
         _ = wgpu.surfacePresent(demo.surface);
+
+        frame_time = timer.lap();
     }
 }
