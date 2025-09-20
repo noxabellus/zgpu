@@ -480,42 +480,82 @@ pub fn drawSolidTriangleStrip(self: *Batch2D, vertices: []const Vec2, tint: Colo
     }
 }
 
-pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.FontInfo, font_id: AssetCache.FontId, font_size: AssetCache.FontSize, pos: Vec2, tint: Color) !void {
-    // We still need the f32 versions for the stbtt API calls.
+// Gelper struct to pass layout info from the generic layout function to the specific callbacks.
+pub const GlyphLayoutInfo = struct {
+    glyph_id: Atlas.ImageId,
+    pos: Vec2,
+    size: Vec2,
+};
+
+/// Generic text layout engine. Iterates through a string and calls a callback for each glyph's calculated position and size.
+/// This internal function contains the shared logic for both `drawText` and `measureText`.
+pub fn layoutText(
+    // Common text parameters
+    string: []const u8,
+    font_info: *const stbtt.FontInfo,
+    font_id: AssetCache.FontId,
+    font_size: AssetCache.FontSize,
+    line_spacing_override: ?u16,
+    pos: Vec2,
+
+    // Generic callback mechanism
+    comptime T: type,
+    comptime E: ?type,
+    context: *T,
+    callback: fn (context: *T, info: GlyphLayoutInfo) if (E) |e| e!void else void,
+) if (E) |e| e!void else void {
+    // --- Identical Setup ---
     const font_size_f32 = @as(f32, @floatFromInt(font_size));
     const font_scale_f32 = stbtt.scaleForPixelHeight(font_info, font_size_f32);
     const font_scale: f64 = font_scale_f32;
+
+    // --- LINE SPACING LOGIC ---
+    // Use the override if provided, otherwise calculate from font metrics.
+    const line_height: f64 = if (line_spacing_override) |spacing|
+        @as(f64, @floatFromInt(spacing))
+    else blk: {
+        var ascent: i32 = 0;
+        var descent: i32 = 0;
+        var line_gap: i32 = 0;
+        stbtt.getFontVMetrics(font_info, &ascent, &descent, &line_gap);
+        break :blk @as(f64, @floatFromInt(ascent - descent + line_gap)) * font_scale;
+    };
 
     // First, iterate through the string to find the highest-rising glyph.
     // This allows us to align the entire string's top boundary to pos.y.
     var min_iy0: i32 = 0;
     for (string) |char| {
+        if (char < 32) continue; // Skip control characters
         var iy0: i32 = 0;
         stbtt.getCodepointBitmapBox(font_info, @intCast(@as(u21, @intCast(char))), font_scale_f32, font_scale_f32, null, &iy0, null, null);
         min_iy0 = @min(min_iy0, iy0);
     }
 
-    // Calculate the baseline's y-position in high precision.
-    const baseline_y: f64 = @as(f64, pos.y) - @as(f64, @floatFromInt(min_iy0));
-    // Initialize the high-precision horizontal cursor position.
+    // --- Layout Loop ---
+    var baseline_y: f64 = @as(f64, pos.y) - @as(f64, @floatFromInt(min_iy0));
     var xpos: f64 = pos.x;
     var prev_char: u21 = 0;
 
     for (string) |char| {
+        if (char == '\n') {
+            xpos = pos.x;
+            baseline_y += line_height;
+            prev_char = 0;
+            continue;
+        }
+
         const char_code = @as(u21, @intCast(char));
 
-        // Apply kerning if this is not the first character.
         if (prev_char != 0) {
             const kern = stbtt.getCodepointKernAdvance(font_info, prev_char, char_code);
             xpos += @as(f64, @floatFromInt(kern)) * font_scale;
         }
 
-        // Get glyph metrics (already scaled to integer pixel offsets by stbtt).
         var ix0: i32 = 0;
         var iy0: i32 = 0;
         var ix1: i32 = 0;
         var iy1: i32 = 0;
-        stbtt.getCodepointBitmapBox(font_info, @intCast(char_code), font_scale_f32, font_scale_f32, &ix0, &iy0, &ix1, &iy1);
+        stbtt.getCodepointBitmapBox(font_info, char_code, font_scale_f32, font_scale_f32, &ix0, &iy0, &ix1, &iy1);
 
         const width: f64 = @floatFromInt(ix1 - ix0);
         const height: f64 = @floatFromInt(iy1 - iy0);
@@ -524,35 +564,114 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.Font
             const padded_width = width + (GLYPH_PADDING_F * 2.0);
             const padded_height = height + (GLYPH_PADDING_F * 2.0);
 
-            // Calculate the ideal, un-rounded position for the glyph's quad in f64.
             const ideal_x = xpos + @as(f64, @floatFromInt(ix0)) - GLYPH_PADDING_F;
             const ideal_y = baseline_y + @as(f64, @floatFromInt(iy0)) - GLYPH_PADDING_F;
 
-            // Round to the nearest whole pixel ("pixel snapping") for crisp rendering.
             const rounded_x = @floor(ideal_x + 0.5);
             const rounded_y = @floor(ideal_y + 0.5);
 
-            // Convert to f32 only at the very end when creating the vertex data.
-            const final_pos = Vec2{ .x = @floatCast(rounded_x), .y = @floatCast(rounded_y) };
-            const char_size = Vec2{ .x = @floatCast(padded_width), .y = @floatCast(padded_height) };
+            // Create the layout info and pass it to the callback.
+            const info = GlyphLayoutInfo{
+                .pos = .{ .x = @floatCast(rounded_x), .y = @floatCast(rounded_y) },
+                .size = .{ .x = @floatCast(padded_width), .y = @floatCast(padded_height) },
+                .glyph_id = AssetCache.encodeGlyphId(.{
+                    .char_code = char_code,
+                    .font_size = font_size,
+                    .font_id = @intCast(font_id),
+                    ._reserved = 0,
+                    .is_glyph_or_special = true,
+                }),
+            };
 
-            const glyph_id: Atlas.ImageId = AssetCache.encodeGlyphId(.{
-                .char_code = char_code,
-                .font_size = font_size,
-                .font_id = @intCast(font_id),
-                ._reserved = 0,
-                .is_glyph_or_special = true,
-            });
+            const res = callback(context, info);
 
-            try self.drawTexturedQuad(glyph_id, final_pos, char_size, null, tint);
+            if (comptime E != null) try res;
         }
 
-        // Advance the cursor for the next character.
         var adv: i32 = 0;
-        stbtt.getCodepointHMetrics(font_info, @intCast(char_code), &adv, null);
+        stbtt.getCodepointHMetrics(font_info, char_code, &adv, null);
         xpos += @as(f64, @floatFromInt(adv)) * font_scale;
         prev_char = char_code;
     }
+}
+
+// State for the measurement operation.
+const MeasureState = struct {
+    bounds_min: Vec2 = .{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32) },
+    bounds_max: Vec2 = .{ .x = std.math.floatMin(f32), .y = std.math.floatMin(f32) },
+    has_glyphs: bool = false,
+
+    // Callback function to update the bounds for each glyph.
+    fn measureGlyph(self: *MeasureState, info: GlyphLayoutInfo) void {
+        self.has_glyphs = true;
+        self.bounds_min.x = @min(self.bounds_min.x, info.pos.x);
+        self.bounds_min.y = @min(self.bounds_min.y, info.pos.y);
+        self.bounds_max.x = @max(self.bounds_max.x, info.pos.x + info.size.x);
+        self.bounds_max.y = @max(self.bounds_max.y, info.pos.y + info.size.y);
+    }
+};
+
+/// Measures the pixel dimensions that a string will occupy when drawn.
+/// This function precisely replicates the layout logic of `drawText`.
+pub fn measureText(string: []const u8, font_info: *const stbtt.FontInfo, font_size: AssetCache.FontSize, line_spacing_override: ?u16) ?Vec2 {
+    if (string.len == 0) return .{ .x = 0, .y = 0 };
+
+    var state = MeasureState{};
+
+    // Use the generic layout engine with our measurement callback.
+    // The font_id and potential error can be ignored as they aren't relevant for measurement.
+    layoutText(
+        string,
+        font_info,
+        0, // dummy font_id
+        font_size,
+        line_spacing_override,
+        .{ .x = 0, .y = 0 }, // measure from origin
+        MeasureState,
+        @as(?type, null),
+        &state,
+        MeasureState.measureGlyph,
+    );
+
+    if (!state.has_glyphs) return null;
+
+    return .{
+        .x = state.bounds_max.x - state.bounds_min.x,
+        .y = state.bounds_max.y - state.bounds_min.y,
+    };
+}
+
+// Context for the drawing operation.
+const DrawContext = struct {
+    batch: *Batch2D,
+    tint: Color,
+
+    // Callback function to draw each glyph's quad.
+    fn drawGlyph(self: *DrawContext, info: GlyphLayoutInfo) !void {
+        try self.batch.drawTexturedQuad(info.glyph_id, info.pos, info.size, null, self.tint);
+    }
+};
+
+/// Draws a string of text, handling multiple lines.
+pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.FontInfo, font_id: AssetCache.FontId, font_size: AssetCache.FontSize, line_spacing_override: ?u16, pos: Vec2, tint: Color) !void {
+    var context = DrawContext{
+        .batch = self,
+        .tint = tint,
+    };
+
+    // Use the generic layout engine with our drawing callback.
+    try layoutText(
+        string,
+        font_info,
+        font_id,
+        font_size,
+        line_spacing_override,
+        pos,
+        DrawContext,
+        @typeInfo(@typeInfo(@TypeOf(DrawContext.drawGlyph)).@"fn".return_type.?).error_union.error_set,
+        &context,
+        DrawContext.drawGlyph,
+    );
 }
 
 fn pushTriangle(self: *Batch2D, encoded_params: u32, v1: Vec2, uv1: Vec2, v2: Vec2, uv2: Vec2, v3: Vec2, uv3: Vec2, tint: Color) !void {
