@@ -223,7 +223,7 @@ pub fn main() !void {
 
         const proj = ortho(0, @floatFromInt(demo.config.width), @floatFromInt(demo.config.height), 0, -1, 1);
 
-        demo.renderer.beginFrame(proj);
+        demo.renderer.beginFrame(proj, demo.config.width, demo.config.height);
 
         const tint = Batch2D.Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
 
@@ -380,6 +380,23 @@ pub fn main() !void {
             .bottom_left = 5.0,
         }, 5.0, .magenta);
 
+        // --- Scissor Test ---
+        try demo.renderer.scissorStart(.{ .x = 450, .y = 250 }, .{ .x = 150, .y = 150 });
+        {
+            // This quad is fully inside the scissor rect and will be drawn normally.
+            try demo.renderer.drawQuad(.{ .x = 460, .y = 260 }, .{ .x = 50, .y = 50 }, .blue);
+
+            // This quad is partially overlapping the scissor rect and will be clipped.
+            try demo.renderer.drawQuad(.{ .x = 550, .y = 350 }, .{ .x = 400, .y = 400 }, .red);
+
+            // This quad is completely outside the scissor rect and will not be visible.
+            try demo.renderer.drawQuad(.{ .x = 200, .y = 200 }, .{ .x = 50, .y = 50 }, .green);
+        }
+        try demo.renderer.scissorEnd();
+
+        // Draw a white outline around the scissor area to visualize it
+        try demo.renderer.drawRectLine(.{ .x = 450, .y = 250 }, .{ .x = 150, .y = 150 }, 1.0, .white);
+
         // --- End Frame ---
 
         try demo.renderer.endFrame();
@@ -389,7 +406,7 @@ pub fn main() !void {
 
         const render_target_view = if (demo.msaa_view != null) demo.msaa_view else frame_view;
         const resolve_target_view = if (demo.msaa_view != null) frame_view else null;
-        const clear_color = wgpu.Color{ .r = 1, .g = 1, .b = 1, .a = 1 };
+        const clear_color = wgpu.Color{ .r = 0.1, .g = 0.1, .b = 0.1, .a = 1 };
 
         const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
             .color_attachment_count = 1,

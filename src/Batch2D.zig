@@ -46,6 +46,19 @@ pub const Color = struct {
 const USE_NEAREST_MASK: u32 = 0x80000000;
 const IMAGE_ID_MASK: u32 = 0x7FFFFFFF;
 
+const ScissorRect = extern struct {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+};
+
+const RenderBatch = struct {
+    vertex_start: usize,
+    vertex_count: usize,
+    scissor: ScissorRect,
+};
+
 const Vertex = extern struct {
     position: [2]f32,
     tex_coords: [2]f32,
@@ -76,19 +89,27 @@ queue: wgpu.Queue,
 pipeline: wgpu.RenderPipeline,
 uniform_buffer: wgpu.Buffer,
 
+// Viewport State
+viewport_width: u32,
+viewport_height: u32,
+
 // Vertex Buffers
 vertex_buffer: wgpu.Buffer,
 vertex_buffer_capacity: usize,
 vertex_staging_buffer: wgpu.Buffer,
 vertex_staging_buffer_capacity: usize,
-
 vertices: std.ArrayList(Vertex),
+
+// Drawing State
 atlas: *Atlas,
 bind_group: wgpu.BindGroup,
 linear_sampler: wgpu.Sampler,
 nearest_sampler: wgpu.Sampler,
 patch_list: std.ArrayList(Patch),
 provider_context: Atlas.ProviderContext,
+batch_list: std.ArrayList(RenderBatch),
+scissor_stack: std.ArrayList(ScissorRect),
+current_batch_vertex_start: usize,
 
 // Indirection Table Buffers
 indirection_buffer: wgpu.Buffer,
@@ -230,6 +251,8 @@ pub fn init(
         .queue = queue,
         .pipeline = pipeline,
         .uniform_buffer = uniform_buffer,
+        .viewport_width = 0,
+        .viewport_height = 0,
         .vertex_buffer = null,
         .vertex_buffer_capacity = 0,
         .vertex_staging_buffer = vertex_staging_buffer,
@@ -241,6 +264,9 @@ pub fn init(
         .nearest_sampler = nearest_sampler,
         .patch_list = .empty,
         .provider_context = provider_context,
+        .batch_list = .empty,
+        .scissor_stack = .empty,
+        .current_batch_vertex_start = 0,
         .indirection_buffer = indirection_buffer,
         .indirection_buffer_capacity = initial_indirection_capacity,
         .indirection_staging_buffer = indirection_staging_buffer,
@@ -249,6 +275,8 @@ pub fn init(
 
     try self.vertices.ensureTotalCapacity(self.allocator, initial_capacity);
     try self.patch_list.ensureTotalCapacity(self.allocator, 128);
+    try self.batch_list.ensureTotalCapacity(self.allocator, 32);
+    try self.scissor_stack.ensureTotalCapacity(self.allocator, 8);
 
     return self;
 }
@@ -266,16 +294,87 @@ pub fn deinit(self: *Batch2D) void {
     wgpu.renderPipelineRelease(self.pipeline);
     self.vertices.deinit(self.allocator);
     self.patch_list.deinit(self.allocator);
+    self.batch_list.deinit(self.allocator);
+    self.scissor_stack.deinit(self.allocator);
     self.allocator.destroy(self);
 }
 
-pub fn beginFrame(self: *Batch2D, projection: Mat4) void {
+pub fn beginFrame(self: *Batch2D, projection: Mat4, viewport_width: u32, viewport_height: u32) void {
+    self.viewport_width = viewport_width;
+    self.viewport_height = viewport_height;
+
     wgpu.queueWriteBuffer(self.queue, self.uniform_buffer, 0, &Uniforms{ .projection = projection }, @sizeOf(Uniforms));
     self.vertices.clearRetainingCapacity();
     self.patch_list.clearRetainingCapacity();
+    self.batch_list.clearRetainingCapacity();
+    self.scissor_stack.clearRetainingCapacity();
+
+    // Start with a default scissor rect that covers the whole screen.
+    self.scissor_stack.appendAssumeCapacity(.{
+        .x = 0,
+        .y = 0,
+        .width = viewport_width,
+        .height = viewport_height,
+    });
+    self.current_batch_vertex_start = 0;
+}
+
+fn endCurrentBatch(self: *Batch2D) !void {
+    const vertex_count = self.vertices.items.len - self.current_batch_vertex_start;
+    if (vertex_count > 0) {
+        std.debug.assert(self.scissor_stack.items.len > 0);
+        const current_scissor = self.scissor_stack.items[self.scissor_stack.items.len - 1];
+        try self.batch_list.append(self.allocator, .{
+            .vertex_start = self.current_batch_vertex_start,
+            .vertex_count = vertex_count,
+            .scissor = current_scissor,
+        });
+    }
+    self.current_batch_vertex_start = self.vertices.items.len;
+}
+
+pub fn scissorStart(self: *Batch2D, pos: Vec2, size: Vec2) !void {
+    // End the current batch of drawing with the old scissor rect
+    try self.endCurrentBatch();
+
+    // Get the current scissor rect to clip against
+    std.debug.assert(self.scissor_stack.items.len > 0);
+    const parent = self.scissor_stack.items[self.scissor_stack.items.len - 1];
+
+    // Clamp and convert the requested rect to integer coordinates
+    const new_x1 = @max(0, @as(i32, @intFromFloat(pos.x)));
+    const new_y1 = @max(0, @as(i32, @intFromFloat(pos.y)));
+    const new_x2 = @max(new_x1, @as(i32, @intFromFloat(pos.x + size.x)));
+    const new_y2 = @max(new_y1, @as(i32, @intFromFloat(pos.y + size.y)));
+
+    // Intersect with the parent rect
+    const final_x1 = @max(@as(i32, @intCast(parent.x)), new_x1);
+    const final_y1 = @max(@as(i32, @intCast(parent.y)), new_y1);
+    const final_x2 = @min(@as(i32, @intCast(parent.x + parent.width)), new_x2);
+    const final_y2 = @min(@as(i32, @intCast(parent.y + parent.height)), new_y2);
+
+    // Push the new, clipped scissor rect onto the stack
+    try self.scissor_stack.append(self.allocator, .{
+        .x = @intCast(final_x1),
+        .y = @intCast(final_y1),
+        .width = @intCast(@max(0, final_x2 - final_x1)),
+        .height = @intCast(@max(0, final_y2 - final_y1)),
+    });
+}
+
+pub fn scissorEnd(self: *Batch2D) !void {
+    // End the current batch of drawing with the old scissor rect
+    try self.endCurrentBatch();
+
+    // Pop the current scissor rect from the stack
+    std.debug.assert(self.scissor_stack.items.len > 1); // Should not pop the root
+    _ = self.scissor_stack.pop();
 }
 
 pub fn endFrame(self: *Batch2D) !void {
+    // Finalize the last batch of the frame
+    try self.endCurrentBatch();
+
     const atlas_recreated = try self.atlas.flush();
 
     for (self.patch_list.items) |p| {
@@ -391,7 +490,14 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
     wgpu.renderPassEncoderSetPipeline(render_pass, self.pipeline);
     wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.vertex_buffer, 0, self.vertices.items.len * @sizeOf(Vertex));
     wgpu.renderPassEncoderSetBindGroup(render_pass, 0, self.bind_group, 0, null);
-    wgpu.renderPassEncoderDraw(render_pass, @intCast(self.vertices.items.len), 1, 0, 0);
+
+    // Iterate through the batches and issue a draw call for each one with its specific scissor rect
+    for (self.batch_list.items) |batch| {
+        if (batch.vertex_count == 0) continue;
+
+        wgpu.renderPassEncoderSetScissorRect(render_pass, batch.scissor.x, batch.scissor.y, batch.scissor.width, batch.scissor.height);
+        wgpu.renderPassEncoderDraw(render_pass, @intCast(batch.vertex_count), 1, @intCast(batch.vertex_start), 0);
+    }
 }
 
 pub fn drawQuad(self: *Batch2D, pos: Vec2, size: Vec2, tint: Color) !void {
