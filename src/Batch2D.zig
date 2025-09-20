@@ -538,10 +538,13 @@ pub fn drawRoundedRect(self: *Batch2D, pos: Vec2, size: Vec2, radius: CornerRadi
     try self.drawArc(.{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - r.bottom_left }, r.bottom_left, 0.5 * pi, pi, tint);
 }
 
-/// Draws the outline of a rectangle with potentially different radii for each corner.
+/// Draws the outline of a rectangle with potentially different radii for each corner,
+/// drawn inwards from the specified boundary.
 /// `pos` and `size` define the outer bounding box. `radius` defines the outer corner radii.
 pub fn drawRoundedRectLine(self: *Batch2D, pos: Vec2, size: Vec2, radius: CornerRadius, thickness: f32, tint: Color) !void {
-    if (thickness <= 0.0) return;
+    // Clamp thickness to be non-negative and not larger than the rectangle itself.
+    const t = @min(thickness, @min(size.x / 2.0, size.y / 2.0));
+    if (t <= 0.0) return;
 
     // 1. Clamp radii to be non-negative and fit within the rectangle's dimensions.
     var r = CornerRadius{
@@ -572,37 +575,31 @@ pub fn drawRoundedRectLine(self: *Batch2D, pos: Vec2, size: Vec2, radius: Corner
 
     // If all radii are negligible, draw a simple rectangle line for performance.
     if (r.top_left < 0.01 and r.top_right < 0.01 and r.bottom_right < 0.01 and r.bottom_left < 0.01) {
-        return self.drawRectLine(pos, size, thickness, tint);
+        return self.drawRectLine(pos, size, t, tint);
     }
 
-    const half_t = thickness / 2.0;
     const pi = std.math.pi;
 
-    // 2. Draw the four straight line segments connecting the arc tangent points.
+    // 2. Draw the four straight line segments as quads inside the boundary.
     // Top
-    try self.drawLine(.{ .x = pos.x + r.top_left, .y = pos.y + half_t }, .{ .x = pos.x + size.x - r.top_right, .y = pos.y + half_t }, thickness, tint);
+    try self.drawQuad(.{ .x = pos.x + r.top_left, .y = pos.y }, .{ .x = size.x - r.top_left - r.top_right, .y = t }, tint);
     // Bottom
-    try self.drawLine(.{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - half_t }, .{ .x = pos.x + size.x - r.bottom_right, .y = pos.y + size.y - half_t }, thickness, tint);
+    try self.drawQuad(.{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - t }, .{ .x = size.x - r.bottom_left - r.bottom_right, .y = t }, tint);
     // Left
-    try self.drawLine(.{ .x = pos.x + half_t, .y = pos.y + r.top_left }, .{ .x = pos.x + half_t, .y = pos.y + size.y - r.bottom_left }, thickness, tint);
+    try self.drawQuad(.{ .x = pos.x, .y = pos.y + r.top_left }, .{ .x = t, .y = size.y - r.top_left - r.bottom_left }, tint);
     // Right
-    try self.drawLine(.{ .x = pos.x + size.x - half_t, .y = pos.y + r.top_right }, .{ .x = pos.x + size.x - half_t, .y = pos.y + size.y - r.bottom_right }, thickness, tint);
+    try self.drawQuad(.{ .x = pos.x + size.x - t, .y = pos.y + r.top_right }, .{ .x = t, .y = size.y - r.top_right - r.bottom_right }, tint);
 
     // 3. Draw the four corner arcs.
-    // The radius for the path at the center of the stroke cannot be negative.
-    const path_r_tl = @max(0.0, r.top_left - half_t);
-    const path_r_tr = @max(0.0, r.top_right - half_t);
-    const path_r_br = @max(0.0, r.bottom_right - half_t);
-    const path_r_bl = @max(0.0, r.bottom_left - half_t);
-
+    // The `radius` passed to drawArcLine is the outer radius of the stroke.
     // Top-left
-    try self.drawArcLine(.{ .x = pos.x + r.top_left, .y = pos.y + r.top_left }, path_r_tl, pi, 1.5 * pi, thickness, tint);
+    try self.drawArcLine(.{ .x = pos.x + r.top_left, .y = pos.y + r.top_left }, r.top_left, pi, 1.5 * pi, t, tint);
     // Top-right
-    try self.drawArcLine(.{ .x = pos.x + size.x - r.top_right, .y = pos.y + r.top_right }, path_r_tr, 1.5 * pi, 2.0 * pi, thickness, tint);
+    try self.drawArcLine(.{ .x = pos.x + size.x - r.top_right, .y = pos.y + r.top_right }, r.top_right, 1.5 * pi, 2.0 * pi, t, tint);
     // Bottom-right
-    try self.drawArcLine(.{ .x = pos.x + size.x - r.bottom_right, .y = pos.y + size.y - r.bottom_right }, path_r_br, 0, 0.5 * pi, thickness, tint);
+    try self.drawArcLine(.{ .x = pos.x + size.x - r.bottom_right, .y = pos.y + size.y - r.bottom_right }, r.bottom_right, 0, 0.5 * pi, t, tint);
     // Bottom-left
-    try self.drawArcLine(.{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - r.bottom_left }, path_r_bl, 0.5 * pi, pi, thickness, tint);
+    try self.drawArcLine(.{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - r.bottom_left }, r.bottom_left, 0.5 * pi, pi, t, tint);
 }
 
 pub fn drawTriangle(self: *Batch2D, v1: Vec2, v2: Vec2, v3: Vec2, tint: Color) !void {
@@ -701,9 +698,12 @@ pub fn drawArc(self: *Batch2D, center: Vec2, radius: f32, start_angle: f32, end_
     }
 }
 
-/// Draws the outline of an arc with a specified thickness. Angles are in radians.
+/// Draws the outline of an arc with a specified thickness, drawn inwards from the path.
+/// The `radius` parameter defines the outer edge of the arc's stroke.
 pub fn drawArcLine(self: *Batch2D, center: Vec2, radius: f32, start_angle: f32, end_angle: f32, thickness: f32, tint: Color) !void {
-    if (radius <= 0.0 or thickness <= 0.0) return;
+    // Ensure thickness is positive and does not exceed the radius, creating an inversion.
+    const t = @min(thickness, radius);
+    if (radius <= 0.0 or t <= 0.0) return;
 
     // Normalize angles to ensure we always draw counter-clockwise
     var normalized_end = end_angle;
@@ -713,9 +713,9 @@ pub fn drawArcLine(self: *Batch2D, center: Vec2, radius: f32, start_angle: f32, 
     const total_angle = normalized_end - start_angle;
     if (total_angle <= 0.0) return;
 
-    // Calculate radii and number of segments for a smooth curve based on the outer radius.
-    const outer_radius = radius + thickness / 2.0;
-    const inner_radius = @max(0.0, radius - thickness / 2.0);
+    // The outer radius is the one specified. The stroke is drawn inwards from there.
+    const outer_radius = radius;
+    const inner_radius = radius - t;
 
     const num_segments = @max(1, @as(u32, @intFromFloat(total_angle * outer_radius / 1.5)));
     const angle_step = total_angle / @as(f32, @floatFromInt(num_segments));
