@@ -379,44 +379,26 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
 }
 
 pub fn drawQuad(self: *Batch2D, pos: Vec2, size: Vec2, tint: Color) !void {
-    // This now correctly calls the textured version with the white pixel.
-    try self.drawTexturedQuad(AssetCache.WHITE_PIXEL_ID, false, pos, size, tint);
+    try self.drawTexturedQuad(AssetCache.WHITE_PIXEL_ID, false, pos, size, null, tint);
 }
 
-pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, wants_mips: bool, pos: Vec2, size: Vec2, tint: Color) !void {
-    // This is a good simplification. It creates the quad from two triangles with standard 0-1 UVs.
+pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, wants_mips: bool, pos: Vec2, size: Vec2, src_rect: ?struct { Vec2, Vec2 }, tint: Color) !void {
     const p1 = pos; // Top-left
     const p2 = Vec2{ .x = pos.x + size.x, .y = pos.y }; // Top-right
     const p3 = Vec2{ .x = pos.x + size.x, .y = pos.y + size.y }; // Bottom-right
     const p4 = Vec2{ .x = pos.x, .y = pos.y + size.y }; // Bottom-left
 
-    const uv1 = Vec2{ .x = 0.0, .y = 0.0 }; // Top-left UV
-    const uv2 = Vec2{ .x = 1.0, .y = 0.0 }; // Top-right UV
-    const uv3 = Vec2{ .x = 1.0, .y = 1.0 }; // Bottom-right UV
-    const uv4 = Vec2{ .x = 0.0, .y = 1.0 }; // Bottom-left UV
+    const tl, const br = if (src_rect) |rect| rect else .{
+        Vec2{ .x = 0.0, .y = 0.0 },
+        Vec2{ .x = 1.0, .y = 1.0 },
+    };
+
+    const tr = Vec2{ .x = br.x, .y = tl.y };
+    const bl = Vec2{ .x = tl.x, .y = br.y };
 
     // Note the winding order for standard quads: TL, TR, BL and TR, BR, BL
-    try self.drawTexturedTriangle(image_id, wants_mips, p1, uv1, p2, uv2, p4, uv4, tint);
-    try self.drawTexturedTriangle(image_id, wants_mips, p2, uv2, p3, uv3, p4, uv4, tint);
-}
-
-pub fn drawTexturedQuadUV(self: *Batch2D, image_id: Atlas.ImageId, wants_mips: bool, pos: Vec2, size: Vec2, uv_rect: UvRect, tint: Color) !void {
-    // Vertex positions
-    const p1 = pos; // Top-left
-    const p2 = Vec2{ .x = pos.x + size.x, .y = pos.y }; // Top-right
-    const p3 = Vec2{ .x = pos.x + size.x, .y = pos.y + size.y }; // Bottom-right
-    const p4 = Vec2{ .x = pos.x, .y = pos.y + size.y }; // Bottom-left
-
-    // UV coordinates based on uv_rect
-    const uv1 = Vec2{ .x = uv_rect.x, .y = uv_rect.y }; // Top-left
-    const uv2 = Vec2{ .x = uv_rect.x + uv_rect.w, .y = uv_rect.y }; // Top-right
-    const uv3 = Vec2{ .x = uv_rect.x + uv_rect.w, .y = uv_rect.y + uv_rect.h }; // Bottom-right
-    const uv4 = Vec2{ .x = uv_rect.x, .y = uv_rect.y + uv_rect.h }; // Bottom-left
-
-    // First triangle: p1, p2, p4 (Top-left, Top-right, Bottom-left)
-    try self.drawTexturedTriangle(image_id, wants_mips, p1, uv1, p2, uv2, p4, uv4, tint);
-    // Second triangle: p2, p3, p4 (Top-right, Bottom-right, Bottom-left)
-    try self.drawTexturedTriangle(image_id, wants_mips, p2, uv2, p3, uv3, p4, uv4, tint);
+    try self.drawTexturedTriangle(image_id, wants_mips, p1, tl, p2, tr, p4, bl, tint);
+    try self.drawTexturedTriangle(image_id, wants_mips, p2, tr, p3, br, p4, bl, tint);
 }
 
 pub fn drawTriangle(self: *Batch2D, v1: Vec2, v2: Vec2, v3: Vec2, tint: Color) !void {
@@ -426,9 +408,6 @@ pub fn drawTriangle(self: *Batch2D, v1: Vec2, v2: Vec2, v3: Vec2, tint: Color) !
 }
 
 pub fn drawTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, wants_mips: bool, v1: Vec2, uv1: Vec2, v2: Vec2, uv2: Vec2, v3: Vec2, uv3: Vec2, tint: Color) !void {
-    // We no longer transform UVs on the CPU. We push the original, image-relative UVs
-    // and let the shader handle the transformation to atlas-space.
-
     const location = self.atlas.query(image_id, wants_mips, self.provider_context) catch |err| {
         if (err == error.ImageNotYetPacked) {
             // UNPACKED PATH: The image isn't in the atlas yet.
@@ -567,7 +546,7 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.Font
                 .is_glyph_or_special = true,
             });
 
-            try self.drawTexturedQuad(glyph_id, false, final_pos, char_size, tint);
+            try self.drawTexturedQuad(glyph_id, false, final_pos, char_size, null, tint);
         }
 
         // Advance the cursor for the next character.
