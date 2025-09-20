@@ -160,7 +160,7 @@ pub fn main() !void {
         .device = demo.device,
         .usage = .renderAttachmentUsage,
         .format = surface_format,
-        .present_mode = .immediate,
+        .present_mode = .fifo,
         .alpha_mode = surface_capabilities.alpha_modes.?[0],
     };
 
@@ -196,7 +196,7 @@ pub fn main() !void {
 
     const startup_time = timer.lap();
     const startup_ms = @as(f64, @floatFromInt(startup_time)) / std.time.ns_per_ms;
-    const FRAME_AVG_LEN = 100;
+    const FRAME_AVG_LEN = 144;
     var frame_time = startup_time;
     var frame_ms_buf: [FRAME_AVG_LEN]f64 = [1]f64{startup_ms} ** FRAME_AVG_LEN;
     var frame_index: usize = 0;
@@ -284,13 +284,19 @@ pub fn main() !void {
         frame_index += 1;
 
         var avg_ms: f64 = 0;
-        for (frame_ms_buf) |ms| avg_ms += ms;
+        var min_ms: f64 = std.math.inf(f64);
+        var max_ms: f64 = -std.math.inf(f64);
+        for (frame_ms_buf) |ms| {
+            min_ms = @min(min_ms, ms);
+            max_ms = @max(max_ms, ms);
+            avg_ms += ms;
+        }
         avg_ms /= @as(f64, FRAME_AVG_LEN);
 
         const avg_fps = 1000.0 / avg_ms;
 
         var tts_fba = std.heap.FixedBufferAllocator.init(&tts_buf);
-        const fps_text = try std.fmt.allocPrint(tts_fba.allocator(), "FPS: {d:0.1} ({d:0.3}ms) / {d:0.1} ({d:0.3}ms)", .{ avg_fps, avg_ms, frame_fps, frame_ms });
+        const fps_text = try std.fmt.allocPrint(tts_fba.allocator(), "FPS: {d:0.1} ({d:0.3}ms) / {d:0.1} ({d:0.3}ms) / {d:0.3}ms : {d:0.3}ms", .{ avg_fps, avg_ms, frame_fps, frame_ms, min_ms, max_ms });
 
         // Draw with Roboto, 12px
         try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 16, .{ .x = 0, .y = 0 }, .{ .r = 0, .g = 0, .b = 0, .a = 1 });

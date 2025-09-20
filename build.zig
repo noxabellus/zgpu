@@ -185,7 +185,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const exe = b.addExecutable(.{
-        .name = "wgpu_zig",
+        .name = "zgpu",
         .root_module = exe_mod,
     });
 
