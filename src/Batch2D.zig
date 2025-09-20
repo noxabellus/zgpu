@@ -438,67 +438,171 @@ pub fn drawRectLine(self: *Batch2D, pos: Vec2, size: Vec2, thickness: f32, tint:
     try self.drawQuad(.{ .x = pos.x + size.x - t, .y = pos.y + t }, .{ .x = t, .y = size.y - 2 * t }, tint);
 }
 
-/// Draws a filled rectangle with rounded corners.
-pub fn drawRoundedRect(self: *Batch2D, pos: Vec2, size: Vec2, radius: f32, tint: Color) !void {
-    // Clamp radius to half of the smallest dimension
-    const r = @max(0.0, @min(radius, @min(size.x, size.y) / 2.0));
+pub const CornerRadius = struct {
+    top_left: f32,
+    top_right: f32,
+    bottom_right: f32,
+    bottom_left: f32,
 
-    // If radius is negligible, just draw a standard quad.
-    if (r < 0.01) {
+    pub fn all(radius: f32) CornerRadius {
+        return .{ .top_left = radius, .top_right = radius, .bottom_right = radius, .bottom_left = radius };
+    }
+
+    pub fn nonUniform(top_left: f32, top_right: f32, bottom_right: f32, bottom_left: f32) CornerRadius {
+        return .{ .top_left = top_left, .top_right = top_right, .bottom_right = bottom_right, .bottom_left = bottom_left };
+    }
+};
+
+/// Draws a filled rectangle with potentially different radii for each corner.
+pub fn drawRoundedRect(self: *Batch2D, pos: Vec2, size: Vec2, radius: CornerRadius, tint: Color) !void {
+    // 1. Clamp radii to be non-negative and fit within the rectangle's dimensions.
+    var r = CornerRadius{
+        .top_left = @max(0.0, radius.top_left),
+        .top_right = @max(0.0, radius.top_right),
+        .bottom_right = @max(0.0, radius.bottom_right),
+        .bottom_left = @max(0.0, radius.bottom_left),
+    };
+
+    var scale: f32 = 1.0;
+    if (r.top_left + r.top_right > size.x) {
+        scale = @min(scale, size.x / (r.top_left + r.top_right));
+    }
+    if (r.bottom_left + r.bottom_right > size.x) {
+        scale = @min(scale, size.x / (r.bottom_left + r.bottom_right));
+    }
+    if (r.top_left + r.bottom_left > size.y) {
+        scale = @min(scale, size.y / (r.top_left + r.bottom_left));
+    }
+    if (r.top_right + r.bottom_right > size.y) {
+        scale = @min(scale, size.y / (r.top_right + r.bottom_right));
+    }
+
+    r.top_left *= scale;
+    r.top_right *= scale;
+    r.bottom_right *= scale;
+    r.bottom_left *= scale;
+
+    // If all radii are negligible, draw a simple rectangle for performance.
+    if (r.top_left < 0.01 and r.top_right < 0.01 and r.bottom_right < 0.01 and r.bottom_left < 0.01) {
         return self.drawQuad(pos, size, tint);
     }
 
     const pi = std.math.pi;
 
-    // Draw the central cross shape using three rectangles
-    try self.drawQuad(.{ .x = pos.x + r, .y = pos.y }, .{ .x = size.x - 2 * r, .y = size.y }, tint);
-    try self.drawQuad(.{ .x = pos.x, .y = pos.y + r }, .{ .x = r, .y = size.y - 2 * r }, tint);
-    try self.drawQuad(.{ .x = pos.x + size.x - r, .y = pos.y + r }, .{ .x = r, .y = size.y - 2 * r }, tint);
+    // 2. Draw the body of the rectangle using a 5-quad decomposition.
+    // This handles asymmetric radii correctly by building a central cross-shape.
+    const max_r_left = @max(r.top_left, r.bottom_left);
+    const max_r_right = @max(r.top_right, r.bottom_right);
+    const max_r_top = @max(r.top_left, r.top_right);
+    const max_r_bottom = @max(r.bottom_left, r.bottom_right);
 
-    // Draw the four corner quarter-circles
-    try self.drawArc(.{ .x = pos.x + r, .y = pos.y + r }, r, pi, 1.5 * pi, tint);
-    try self.drawArc(.{ .x = pos.x + size.x - r, .y = pos.y + r }, r, 1.5 * pi, 2.0 * pi, tint);
-    try self.drawArc(.{ .x = pos.x + size.x - r, .y = pos.y + size.y - r }, r, 0, 0.5 * pi, tint);
-    try self.drawArc(.{ .x = pos.x + r, .y = pos.y + size.y - r }, r, 0.5 * pi, pi, tint);
+    // Center quad
+    try self.drawQuad(
+        .{ .x = pos.x + max_r_left, .y = pos.y + max_r_top },
+        .{ .x = size.x - max_r_left - max_r_right, .y = size.y - max_r_top - max_r_bottom },
+        tint,
+    );
+    // Top quad
+    try self.drawQuad(
+        .{ .x = pos.x + r.top_left, .y = pos.y },
+        .{ .x = size.x - r.top_left - r.top_right, .y = max_r_top },
+        tint,
+    );
+    // Bottom quad
+    try self.drawQuad(
+        .{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - max_r_bottom },
+        .{ .x = size.x - r.bottom_left - r.bottom_right, .y = max_r_bottom },
+        tint,
+    );
+    // Left quad
+    try self.drawQuad(
+        .{ .x = pos.x, .y = pos.y + r.top_left },
+        .{ .x = max_r_left, .y = size.y - r.top_left - r.bottom_left },
+        tint,
+    );
+    // Right quad
+    try self.drawQuad(
+        .{ .x = pos.x + size.x - max_r_right, .y = pos.y + r.top_right },
+        .{ .x = max_r_right, .y = size.y - r.top_right - r.bottom_right },
+        tint,
+    );
+
+    // 3. Draw the four corner quarter-circles.
+    // Top-left
+    try self.drawArc(.{ .x = pos.x + r.top_left, .y = pos.y + r.top_left }, r.top_left, pi, 1.5 * pi, tint);
+    // Top-right
+    try self.drawArc(.{ .x = pos.x + size.x - r.top_right, .y = pos.y + r.top_right }, r.top_right, 1.5 * pi, 2.0 * pi, tint);
+    // Bottom-right
+    try self.drawArc(.{ .x = pos.x + size.x - r.bottom_right, .y = pos.y + size.y - r.bottom_right }, r.bottom_right, 0, 0.5 * pi, tint);
+    // Bottom-left
+    try self.drawArc(.{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - r.bottom_left }, r.bottom_left, 0.5 * pi, pi, tint);
 }
 
-/// Draws the outline of a rectangle with rounded corners.
-/// `pos` and `size` define the outer bounding box. `radius` is the radius of the outer corner.
-pub fn drawRoundedRectLine(self: *Batch2D, pos: Vec2, size: Vec2, radius: f32, thickness: f32, tint: Color) !void {
+/// Draws the outline of a rectangle with potentially different radii for each corner.
+/// `pos` and `size` define the outer bounding box. `radius` defines the outer corner radii.
+pub fn drawRoundedRectLine(self: *Batch2D, pos: Vec2, size: Vec2, radius: CornerRadius, thickness: f32, tint: Color) !void {
     if (thickness <= 0.0) return;
 
-    // Clamp radius to not exceed half the size of the rectangle.
-    const r = @max(0.0, @min(radius, @min(size.x, size.y) / 2.0));
+    // 1. Clamp radii to be non-negative and fit within the rectangle's dimensions.
+    var r = CornerRadius{
+        .top_left = @max(0.0, radius.top_left),
+        .top_right = @max(0.0, radius.top_right),
+        .bottom_right = @max(0.0, radius.bottom_right),
+        .bottom_left = @max(0.0, radius.bottom_left),
+    };
 
-    // If radius is negligible, draw a sharp-cornered rectangle.
-    if (r < 0.01) {
+    var scale: f32 = 1.0;
+    if (r.top_left + r.top_right > size.x) {
+        scale = @min(scale, size.x / (r.top_left + r.top_right));
+    }
+    if (r.bottom_left + r.bottom_right > size.x) {
+        scale = @min(scale, size.x / (r.bottom_left + r.bottom_right));
+    }
+    if (r.top_left + r.bottom_left > size.y) {
+        scale = @min(scale, size.y / (r.top_left + r.bottom_left));
+    }
+    if (r.top_right + r.bottom_right > size.y) {
+        scale = @min(scale, size.y / (r.top_right + r.bottom_right));
+    }
+
+    r.top_left *= scale;
+    r.top_right *= scale;
+    r.bottom_right *= scale;
+    r.bottom_left *= scale;
+
+    // If all radii are negligible, draw a simple rectangle line for performance.
+    if (r.top_left < 0.01 and r.top_right < 0.01 and r.bottom_right < 0.01 and r.bottom_left < 0.01) {
         return self.drawRectLine(pos, size, thickness, tint);
     }
 
     const half_t = thickness / 2.0;
-    // The radius for the path at the center of the stroke cannot be negative.
-    const path_radius = @max(0.0, r - half_t);
     const pi = std.math.pi;
 
-    // Draw the four straight line segments connecting the arc tangent points.
+    // 2. Draw the four straight line segments connecting the arc tangent points.
     // Top
-    try self.drawLine(.{ .x = pos.x + r, .y = pos.y + half_t }, .{ .x = pos.x + size.x - r, .y = pos.y + half_t }, thickness, tint);
+    try self.drawLine(.{ .x = pos.x + r.top_left, .y = pos.y + half_t }, .{ .x = pos.x + size.x - r.top_right, .y = pos.y + half_t }, thickness, tint);
     // Bottom
-    try self.drawLine(.{ .x = pos.x + r, .y = pos.y + size.y - half_t }, .{ .x = pos.x + size.x - r, .y = pos.y + size.y - half_t }, thickness, tint);
+    try self.drawLine(.{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - half_t }, .{ .x = pos.x + size.x - r.bottom_right, .y = pos.y + size.y - half_t }, thickness, tint);
     // Left
-    try self.drawLine(.{ .x = pos.x + half_t, .y = pos.y + r }, .{ .x = pos.x + half_t, .y = pos.y + size.y - r }, thickness, tint);
+    try self.drawLine(.{ .x = pos.x + half_t, .y = pos.y + r.top_left }, .{ .x = pos.x + half_t, .y = pos.y + size.y - r.bottom_left }, thickness, tint);
     // Right
-    try self.drawLine(.{ .x = pos.x + size.x - half_t, .y = pos.y + r }, .{ .x = pos.x + size.x - half_t, .y = pos.y + size.y - r }, thickness, tint);
+    try self.drawLine(.{ .x = pos.x + size.x - half_t, .y = pos.y + r.top_right }, .{ .x = pos.x + size.x - half_t, .y = pos.y + size.y - r.bottom_right }, thickness, tint);
 
-    // Draw the four corner arcs. The center of each corner is offset from the bounding box corner by the outer radius `r`.
+    // 3. Draw the four corner arcs.
+    // The radius for the path at the center of the stroke cannot be negative.
+    const path_r_tl = @max(0.0, r.top_left - half_t);
+    const path_r_tr = @max(0.0, r.top_right - half_t);
+    const path_r_br = @max(0.0, r.bottom_right - half_t);
+    const path_r_bl = @max(0.0, r.bottom_left - half_t);
+
     // Top-left
-    try self.drawArcLine(.{ .x = pos.x + r, .y = pos.y + r }, path_radius, pi, 1.5 * pi, thickness, tint);
+    try self.drawArcLine(.{ .x = pos.x + r.top_left, .y = pos.y + r.top_left }, path_r_tl, pi, 1.5 * pi, thickness, tint);
     // Top-right
-    try self.drawArcLine(.{ .x = pos.x + size.x - r, .y = pos.y + r }, path_radius, 1.5 * pi, 2.0 * pi, thickness, tint);
+    try self.drawArcLine(.{ .x = pos.x + size.x - r.top_right, .y = pos.y + r.top_right }, path_r_tr, 1.5 * pi, 2.0 * pi, thickness, tint);
     // Bottom-right
-    try self.drawArcLine(.{ .x = pos.x + size.x - r, .y = pos.y + size.y - r }, path_radius, 0, 0.5 * pi, thickness, tint);
+    try self.drawArcLine(.{ .x = pos.x + size.x - r.bottom_right, .y = pos.y + size.y - r.bottom_right }, path_r_br, 0, 0.5 * pi, thickness, tint);
     // Bottom-left
-    try self.drawArcLine(.{ .x = pos.x + r, .y = pos.y + size.y - r }, path_radius, 0.5 * pi, pi, thickness, tint);
+    try self.drawArcLine(.{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - r.bottom_left }, path_r_bl, 0.5 * pi, pi, thickness, tint);
 }
 
 pub fn drawTriangle(self: *Batch2D, v1: Vec2, v2: Vec2, v3: Vec2, tint: Color) !void {
