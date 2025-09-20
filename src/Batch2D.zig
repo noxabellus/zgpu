@@ -417,6 +417,90 @@ pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: Vec2, size
     try self.drawTexturedTriangle(image_id, p2, tr, p3, br, p4, bl, tint);
 }
 
+/// Draws a filled rectangle. This is a convenience wrapper around drawQuad.
+pub fn drawRect(self: *Batch2D, pos: Vec2, size: Vec2, tint: Color) !void {
+    try self.drawQuad(pos, size, tint);
+}
+
+/// Draws the outline of a rectangle with a specified thickness.
+pub fn drawRectLine(self: *Batch2D, pos: Vec2, size: Vec2, thickness: f32, tint: Color) !void {
+    // Ensure thickness isn't larger than the rectangle itself
+    const t = @min(thickness, @min(size.x / 2.0, size.y / 2.0));
+    if (t <= 0.0) return;
+
+    // Top bar
+    try self.drawQuad(pos, .{ .x = size.x, .y = t }, tint);
+    // Bottom bar
+    try self.drawQuad(.{ .x = pos.x, .y = pos.y + size.y - t }, .{ .x = size.x, .y = t }, tint);
+    // Left bar (between top and bottom bars)
+    try self.drawQuad(.{ .x = pos.x, .y = pos.y + t }, .{ .x = t, .y = size.y - 2 * t }, tint);
+    // Right bar (between top and bottom bars)
+    try self.drawQuad(.{ .x = pos.x + size.x - t, .y = pos.y + t }, .{ .x = t, .y = size.y - 2 * t }, tint);
+}
+
+/// Draws a filled rectangle with rounded corners.
+pub fn drawRoundedRect(self: *Batch2D, pos: Vec2, size: Vec2, radius: f32, tint: Color) !void {
+    // Clamp radius to half of the smallest dimension
+    const r = @max(0.0, @min(radius, @min(size.x, size.y) / 2.0));
+
+    // If radius is negligible, just draw a standard quad.
+    if (r < 0.01) {
+        return self.drawQuad(pos, size, tint);
+    }
+
+    const pi = std.math.pi;
+
+    // Draw the central cross shape using three rectangles
+    try self.drawQuad(.{ .x = pos.x + r, .y = pos.y }, .{ .x = size.x - 2 * r, .y = size.y }, tint);
+    try self.drawQuad(.{ .x = pos.x, .y = pos.y + r }, .{ .x = r, .y = size.y - 2 * r }, tint);
+    try self.drawQuad(.{ .x = pos.x + size.x - r, .y = pos.y + r }, .{ .x = r, .y = size.y - 2 * r }, tint);
+
+    // Draw the four corner quarter-circles
+    try self.drawArc(.{ .x = pos.x + r, .y = pos.y + r }, r, pi, 1.5 * pi, tint);
+    try self.drawArc(.{ .x = pos.x + size.x - r, .y = pos.y + r }, r, 1.5 * pi, 2.0 * pi, tint);
+    try self.drawArc(.{ .x = pos.x + size.x - r, .y = pos.y + size.y - r }, r, 0, 0.5 * pi, tint);
+    try self.drawArc(.{ .x = pos.x + r, .y = pos.y + size.y - r }, r, 0.5 * pi, pi, tint);
+}
+
+/// Draws the outline of a rectangle with rounded corners.
+/// `pos` and `size` define the outer bounding box. `radius` is the radius of the outer corner.
+pub fn drawRoundedRectLine(self: *Batch2D, pos: Vec2, size: Vec2, radius: f32, thickness: f32, tint: Color) !void {
+    if (thickness <= 0.0) return;
+
+    // Clamp radius to not exceed half the size of the rectangle.
+    const r = @max(0.0, @min(radius, @min(size.x, size.y) / 2.0));
+
+    // If radius is negligible, draw a sharp-cornered rectangle.
+    if (r < 0.01) {
+        return self.drawRectLine(pos, size, thickness, tint);
+    }
+
+    const half_t = thickness / 2.0;
+    // The radius for the path at the center of the stroke cannot be negative.
+    const path_radius = @max(0.0, r - half_t);
+    const pi = std.math.pi;
+
+    // Draw the four straight line segments connecting the arc tangent points.
+    // Top
+    try self.drawLine(.{ .x = pos.x + r, .y = pos.y + half_t }, .{ .x = pos.x + size.x - r, .y = pos.y + half_t }, thickness, tint);
+    // Bottom
+    try self.drawLine(.{ .x = pos.x + r, .y = pos.y + size.y - half_t }, .{ .x = pos.x + size.x - r, .y = pos.y + size.y - half_t }, thickness, tint);
+    // Left
+    try self.drawLine(.{ .x = pos.x + half_t, .y = pos.y + r }, .{ .x = pos.x + half_t, .y = pos.y + size.y - r }, thickness, tint);
+    // Right
+    try self.drawLine(.{ .x = pos.x + size.x - half_t, .y = pos.y + r }, .{ .x = pos.x + size.x - half_t, .y = pos.y + size.y - r }, thickness, tint);
+
+    // Draw the four corner arcs. The center of each corner is offset from the bounding box corner by the outer radius `r`.
+    // Top-left
+    try self.drawArcLine(.{ .x = pos.x + r, .y = pos.y + r }, path_radius, pi, 1.5 * pi, thickness, tint);
+    // Top-right
+    try self.drawArcLine(.{ .x = pos.x + size.x - r, .y = pos.y + r }, path_radius, 1.5 * pi, 2.0 * pi, thickness, tint);
+    // Bottom-right
+    try self.drawArcLine(.{ .x = pos.x + size.x - r, .y = pos.y + size.y - r }, path_radius, 0, 0.5 * pi, thickness, tint);
+    // Bottom-left
+    try self.drawArcLine(.{ .x = pos.x + r, .y = pos.y + size.y - r }, path_radius, 0.5 * pi, pi, thickness, tint);
+}
+
 pub fn drawTriangle(self: *Batch2D, v1: Vec2, v2: Vec2, v3: Vec2, tint: Color) !void {
     // Solid triangles use the white pixel texture and have (0,0) UVs, which correctly maps to that single pixel.
     const uv = Vec2{ .x = 0.0, .y = 0.0 };

@@ -344,6 +344,34 @@ pub fn main() !void {
             .yellow,
         );
 
+        // A thin white outline around the blue rectangle.
+        try demo.renderer.drawRectLine(.{ .x = 50, .y = 50 }, .{ .x = 150, .y = 100 }, 2.0, .white);
+
+        // A thicker red outline on a different rectangle.
+        try demo.renderer.drawRectLine(.{ .x = 250, .y = 50 }, .{ .x = 200, .y = 75 }, 8.0, .red);
+
+        // A green rounded rectangle with a moderate corner radius.
+        try demo.renderer.drawRoundedRect(.{ .x = 50, .y = 200 }, .{ .x = 200, .y = 100 }, 20.0, .green);
+
+        // A rounded square that becomes a circle because radius >= size/2.
+        try demo.renderer.drawRoundedRect(.{ .x = 300, .y = 200 }, .{ .x = 100, .y = 100 }, 50.0, .yellow);
+
+        // A "pill" shape where the radius is clamped to half the height.
+        try demo.renderer.drawRoundedRect(.{ .x = 50, .y = 350 }, .{ .x = 350, .y = 100 }, 100.0, Batch2D.Color.red.withAlpha(0.8));
+
+        // A thin outline for the green rounded rectangle.
+        try demo.renderer.drawRoundedRectLine(.{ .x = 50, .y = 200 }, .{ .x = 200, .y = 100 }, 20.0, 3.0, .white);
+
+        // A thick outline for the "pill" shape.
+        try demo.renderer.drawRoundedRectLine(.{ .x = 50, .y = 350 }, .{ .x = 350, .y = 100 }, 100.0, 10.0, .blue);
+
+        // An outlined circle made from a rounded rect line.
+        try demo.renderer.drawRoundedRectLine(.{ .x = 300, .y = 200 }, .{ .x = 100, .y = 100 }, 50.0, 5.0, .magenta);
+
+        // A case where thickness is large relative to the radius. The path_radius will
+        // be clamped, resulting in a shape with a rounded outer edge but a sharp inner corner.
+        try demo.renderer.drawRoundedRectLine(.{ .x = 50, .y = 500 }, .{ .x = 150, .y = 100 }, 15.0, 25.0, .yellow);
+
         // --- End Frame ---
 
         try demo.renderer.endFrame();
