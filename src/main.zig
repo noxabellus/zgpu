@@ -206,8 +206,8 @@ pub fn main() !void {
         _ = arena_state.reset(.free_all);
 
         if (glfw.getKey(window, .a) == .press) {
-            try demo.renderer.glyph_atlas.debugWriteAllAtlasesToPng("debug_glyph_atlas");
-            try demo.renderer.image_atlas.debugWriteAllAtlasesToPng("debug_image_atlas");
+            try demo.renderer.atlas.debugWriteAllAtlasesToPng("debug_atlas");
+            log.info("finished writing debug_atlas_*.png", .{});
         }
 
         var surface_texture: wgpu.SurfaceTexture = undefined;
@@ -263,16 +263,16 @@ pub fn main() !void {
         const quad_height: f32 = @as(f32, @floatFromInt(logo_img.height)) * image_scale;
         const quad_pos = Batch2D.Vec2{ .x = @as(f32, @floatCast(cursor_x)) - quad_width / 2.0, .y = @as(f32, @floatCast(cursor_y)) - quad_height / 2.0 };
         const quad_size = Batch2D.Vec2{ .x = quad_width, .y = quad_height };
-        try demo.renderer.drawTexturedQuad(LOGO_ID, quad_pos, quad_size, tint);
+        try demo.renderer.drawTexturedQuad(LOGO_ID, true, quad_pos, quad_size, tint);
 
         const banner_img = asset_cache.images.items[BANNER_ID];
-        try demo.renderer.drawTexturedQuad(BANNER_ID, .{ .x = 100, .y = 200 }, .{ .x = @floatFromInt(@divFloor(banner_img.width, 4)), .y = @floatFromInt(@divFloor(banner_img.height, 4)) }, tint);
+        try demo.renderer.drawTexturedQuad(BANNER_ID, true, .{ .x = 100, .y = 200 }, .{ .x = @floatFromInt(@divFloor(banner_img.width, 4)), .y = @floatFromInt(@divFloor(banner_img.height, 4)) }, tint);
 
         const emblem_img = asset_cache.images.items[EMBLEM_ID];
-        try demo.renderer.drawTexturedQuad(EMBLEM_ID, .{ .x = 500, .y = 50 }, .{ .x = @floatFromInt(emblem_img.width), .y = @floatFromInt(emblem_img.height) }, tint);
+        try demo.renderer.drawTexturedQuad(EMBLEM_ID, true, .{ .x = 500, .y = 50 }, .{ .x = @floatFromInt(emblem_img.width), .y = @floatFromInt(emblem_img.height) }, tint);
 
         const bow_img = asset_cache.images.items[BOW_ID];
-        try demo.renderer.drawTexturedQuad(BOW_ID, .{ .x = 400, .y = 375 }, .{ .x = @floatFromInt(bow_img.width), .y = @floatFromInt(bow_img.height) }, tint);
+        try demo.renderer.drawTexturedQuad(BOW_ID, true, .{ .x = 400, .y = 375 }, .{ .x = @floatFromInt(bow_img.width), .y = @floatFromInt(bow_img.height) }, tint);
 
         const text_to_draw = "WGPU Batch Renderer";
 

@@ -119,7 +119,7 @@ pub fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputIm
         var h: i32 = 0;
         var xoff: i32 = 0;
         var yoff: i32 = 0;
-        const grayscale_pixels = stbtt.getCodepointBitmap(&font.info, 0, scale, @intCast(decoded.char_code), &w, &h, &xoff, &yoff);
+        const grayscale_pixels = stbtt.getCodepointBitmap(&font.info, scale, scale, @intCast(decoded.char_code), &w, &h, &xoff, &yoff);
 
         if (grayscale_pixels == null or w == 0 or h == 0) return null;
         defer stbtt.freeBitmap(grayscale_pixels.?, null);
@@ -130,9 +130,14 @@ pub fn dataProvider(image_id: ImageId, user_context: ?*anyopaque) ?Atlas.InputIm
         const padded_h: u32 = @as(u32, @intCast(h)) + (GLYPH_PADDING * 2);
         const master_rgba_padded_pixels = (frame_allocator.alloc(u8, padded_w * padded_h * 4) catch return null);
 
-        @memset(master_rgba_padded_pixels, 0xFF);
+        @memset(master_rgba_padded_pixels, 0x00);
+        // Set RGB to 255 and alpha to 0 by default, then fill alpha from grayscale.
         for (0..padded_w * padded_h) |i| {
-            master_rgba_padded_pixels[i * 4 + 3] = 0;
+            const base = i * 4;
+            master_rgba_padded_pixels[base + 0] = 255;
+            master_rgba_padded_pixels[base + 1] = 255;
+            master_rgba_padded_pixels[base + 2] = 255;
+            master_rgba_padded_pixels[base + 3] = 0;
         }
 
         const original_pitch: usize = @intCast(w);
