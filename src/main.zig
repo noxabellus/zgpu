@@ -271,6 +271,8 @@ pub fn main() !void {
 
         try chart_fps(demo.renderer, .{ .x = 18, .y = 18 }, max_ms, &frame_ms_buf);
 
+        // --- Draw Text ---
+
         // Draw with Roboto, 12px
         try demo.renderer.drawText(fps_text, &asset_cache.fonts.items[roboto_idx].info, roboto_idx, 16, .{ .x = 0, .y = 0 }, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
         const text_to_draw = "WGPU Batch Renderer";
@@ -281,7 +283,7 @@ pub fn main() !void {
         // Draw with Quicksand, 32px
         try demo.renderer.drawText(text_to_draw, &asset_cache.fonts.items[quicksand_idx].info, quicksand_idx, 32, .{ .x = 20, .y = 120 }, .{ .r = 1, .g = 0, .b = 1, .a = 1 });
 
-        // --- Draw New Primitives ---
+        // --- Draw Primitives ---
 
         // Draw a solid red quad
         try demo.renderer.drawQuad(.{ .x = 250, .y = 150 }, .{ .x = 50, .y = 50 }, .{ .r = 1, .g = 0, .b = 0, .a = 1 });
@@ -304,6 +306,8 @@ pub fn main() !void {
             .{ .x = 480, .y = 150 },
         };
         try demo.renderer.drawSolidTriangleStrip(strip_verts, .{ .r = 0, .g = 1, .b = 1, .a = 1 });
+
+        // --- End Frame ---
 
         try demo.renderer.endFrame();
 
