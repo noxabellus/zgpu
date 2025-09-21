@@ -1217,6 +1217,65 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.Font
     );
 }
 
+/// Pre-packs and uploads all images known to the AssetCache into the renderer's atlas.
+/// This is intended to be called during a loading screen to "prime" the atlas and
+/// prevent stuttering from on-the-fly atlasing during gameplay or interaction.
+///
+/// This function will repeatedly call the atlas's query and flush mechanisms until
+/// all known images have been processed and uploaded to the GPU.
+///
+/// Parameters:
+///   - ui: The main Ui struct instance.
+///   - asset_cache: The AssetCache containing the images to be pre-atlased.
+///   - renderer: The Batch2D renderer containing the atlas.
+pub fn preAtlasAllImages(renderer: *Batch2D, asset_cache: *const AssetCache) !void {
+    log.info("Beginning pre-atlasing of {d} images...", .{asset_cache.images.items.len});
+    var timer = try std.time.Timer.start();
+
+    // The Atlas needs a provider context to function. We'll create one here.
+    // We use a temporary arena allocator because the provider might generate
+    // temporary data (like mipmaps), and we want to clean that up easily.
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+
+    const provider_ctx = Atlas.ProviderContext{
+        .provider = AssetCache.dataProvider,
+        .frame_allocator = arena.allocator(),
+        .user_context = @constCast(asset_cache),
+    };
+
+    // We need to iterate over all *logical* images, not the internal storage.
+    // The image_map's value iterator gives us the ImageIds.
+    var image_id_iterator = asset_cache.image_map.valueIterator();
+    while (image_id_iterator.next()) |image_id_ptr| {
+        // 1. Query the image. This will add it to the atlas's pending list.
+        //    We expect it to return ImageNotYetPacked. If it returns anything
+        //    else, that's either success (already packed) or an error.
+        _ = renderer.atlas.query(image_id_ptr.*, provider_ctx) catch |err| {
+            if (err != error.ImageNotYetPacked) {
+                log.err("Error while querying image {d} for pre-atlasing: {any}", .{ image_id_ptr.*, err });
+                return err;
+            }
+        };
+    }
+
+    // Now that all images are in the pending list, we flush.
+    if (try renderer.atlas.flush()) {
+        // If the flush caused the underlying texture to be recreated, we MUST
+        // recreate the renderer's bind group to point to the new texture view.
+        // This is a critical step that's normally handled in endFrame.
+        log.warn("Atlas was recreated during pre-loading, recreating bind group.", .{});
+        if (renderer.bind_group != null) {
+            wgpu.bindGroupRelease(renderer.bind_group);
+            renderer.bind_group = null;
+        }
+        try renderer.recreateBindGroup();
+    }
+
+    const duration_ms = @as(f64, @floatFromInt(timer.read())) / @as(f64, @floatFromInt(std.time.ns_per_ms));
+    log.info("Finished pre-atlasing all images in {:.2}ms.", .{duration_ms});
+}
+
 fn pushTriangle(self: *Batch2D, encoded_params: u32, v1: Vec2, uv1: Vec2, v2: Vec2, uv2: Vec2, v3: Vec2, uv3: Vec2, tint: Color) !void {
     const c: [4]f32 = .{ tint.r, tint.g, tint.b, tint.a };
     try self.vertices.appendSlice(self.allocator, &[_]Vertex{

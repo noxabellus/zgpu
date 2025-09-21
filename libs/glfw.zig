@@ -219,8 +219,8 @@ pub const focusWindow = @extern(*const fn (window: *Window) callconv(.c) void, .
 pub const requestWindowAttention = @extern(*const fn (window: *Window) callconv(.c) void, .{ .name = "glfwRequestWindowAttention" });
 pub const getWindowMonitor = @extern(*const fn (window: *Window) callconv(.c) ?*Monitor, .{ .name = "glfwGetWindowMonitor" });
 pub const setWindowMonitor = @extern(*const fn (window: *Window, monitor: ?*Monitor, xpos: i32, ypos: i32, width: i32, height: i32, refreshRate: i32) callconv(.c) void, .{ .name = "glfwSetWindowMonitor" });
-pub const getWindowAttrib = @extern(*const fn (window: *Window, attrib: i32) callconv(.c) i32, .{ .name = "glfwGetWindowAttrib" });
-pub const setWindowAttrib = @extern(*const fn (window: *Window, attrib: i32, value: i32) callconv(.c) void, .{ .name = "glfwSetWindowAttrib" });
+pub const getWindowAttrib = @extern(*const fn (window: *Window, attrib: WindowHintTag) callconv(.c) i32, .{ .name = "glfwGetWindowAttrib" });
+pub const setWindowAttrib = @extern(*const fn (window: *Window, attrib: WindowHintTag, value: i32) callconv(.c) void, .{ .name = "glfwSetWindowAttrib" });
 pub const setWindowUserPointer = @extern(*const fn (window: *Window, pointer: ?*anyopaque) callconv(.c) void, .{ .name = "glfwSetWindowUserPointer" });
 pub const getWindowUserPointer = @extern(*const fn (window: *Window) callconv(.c) ?*anyopaque, .{ .name = "glfwGetWindowUserPointer" });
 pub const setWindowPosCallback = @extern(*const fn (window: *Window, callback: WindowPosCallback) callconv(.c) WindowPosCallback, .{ .name = "glfwSetWindowPosCallback" });
@@ -391,12 +391,36 @@ pub const KeyState8 = enum(u8) {
     release = 0,
     press = 1,
     repeat = 2,
+
+    pub fn isDown(self: KeyState32) bool {
+        return self != .release;
+    }
+
+    pub fn from32(self: KeyState32) KeyState8 {
+        return @enumFromInt(@intFromEnum(self));
+    }
+
+    pub fn to32(self: KeyState8) KeyState32 {
+        return @enumFromInt(@intFromEnum(self));
+    }
 };
 
 pub const KeyState32 = enum(i32) {
     release = 0,
     press = 1,
     repeat = 2,
+
+    pub fn isDown(self: KeyState32) bool {
+        return self != .release;
+    }
+
+    pub fn from8(self: KeyState8) KeyState32 {
+        return @enumFromInt(@intFromEnum(self));
+    }
+
+    pub fn to8(self: KeyState32) KeyState8 {
+        return @enumFromInt(@intFromEnum(self));
+    }
 };
 
 pub fn KeyStateInverse(comptime T: type) type {
@@ -568,7 +592,6 @@ pub const Key = enum(i32) {
     right_alt = 346,
     right_super = 347,
     menu = 348,
-    KEY_MEN,
 };
 
 pub const Modifier = packed struct(i32) {
@@ -724,6 +747,7 @@ pub const WaylandLibDecorPreference = enum(i32) {
     disable = 0x00038002,
 };
 
+// FIXME: some of these are *attributes*, not hints.
 pub const WindowHintTag = enum(i32) {
     focused = 0x00020001,
     iconified = 0x00020002,

@@ -39,7 +39,7 @@ pub const cdefs = struct {
     pub extern fn Clay_SetPointerState(position: Vector2, pointerDown: bool) void;
     pub extern fn Clay_Initialize(arena: Arena, layoutDimensions: Dimensions, errorHandler: ErrorHandler) *Context;
     pub extern fn Clay_GetCurrentContext() *Context;
-    pub extern fn Clay_SetCurrentContext(context: *Context) void;
+    pub extern fn Clay_SetCurrentContext(context: ?*Context) void;
     pub extern fn Clay_UpdateScrollContainers(enableDragScrolling: bool, scrollDelta: Vector2, deltaTime: f32) void;
     pub extern fn Clay_GetScrollOffset() Vector2;
     pub extern fn Clay_SetLayoutDimensions(dimensions: Dimensions) void;
@@ -789,48 +789,12 @@ pub const ElementDeclaration = extern struct {
     user_data: ?*anyopaque = null,
 };
 
-/// Main API for creating UI elements with children
-///
-/// Clay should be initialized with initialize() before using this function
-/// The beginLayout() function should be called before using this function
-///
-/// The default background_color is fully transparent,
-/// so background_color should be set for the element to be visible
-///
-/// Example:
-/// ```
-/// UI()(.{
-///    .id = .ID("container"),
-///    .layout = .{
-///       .padding = .all(16),
-///       .direction = .top_to_bottom,
-///    },
-///    .background_color = .{220, 220, 230, 255},
-/// })({
-///    text("Hello world", .{ .font_size = 24 });
-///
-///    UI()(.{
-///       .background_color = .{180, 180, 200, 255},
-///       .corner_radius = .all(8),
-///    })({
-///       text("Nested element", .{});
-///    });
-/// });
-/// ```
-pub inline fn UI() fn (config: ElementDeclaration) callconv(.@"inline") fn (void) void {
-    const local = struct {
-        fn closeElement(_: void) void {
-            cdefs.Clay__CloseElement();
-        }
-
-        inline fn configureOpenElement(config: ElementDeclaration) fn (void) void {
-            cdefs.Clay__ConfigureOpenElement(config);
-            return @This().closeElement;
-        }
-    };
-
+pub fn beginElement() void {
     cdefs.Clay__OpenElement();
-    return local.configureOpenElement;
+}
+
+pub fn configureElement(config: ElementDeclaration) void {
+    cdefs.Clay__ConfigureOpenElement(config);
 }
 
 pub fn openElement(config: ElementDeclaration) void {

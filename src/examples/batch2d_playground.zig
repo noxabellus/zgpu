@@ -13,6 +13,7 @@ const clay = @import("clay");
 const Batch2D = @import("Batch2D.zig");
 const AssetCache = @import("AssetCache.zig");
 const ClayBackend = @import("ClayBackend.zig");
+const debug = @import("debug.zig");
 
 test {
     log.debug("semantic analysis for main.zig", .{});
@@ -179,12 +180,7 @@ pub fn main() !void {
     demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format, provider_ctx, MSAA_SAMPLE_COUNT);
     defer demo.renderer.deinit();
 
-    const startup_time = timer.lap();
-    const startup_ms = @as(f64, @floatFromInt(startup_time)) / std.time.ns_per_ms;
-    const FRAME_AVG_LEN = 144;
-    var frame_time = startup_time;
-    var frame_ms_buf: [FRAME_AVG_LEN]f64 = [1]f64{startup_ms} ** FRAME_AVG_LEN;
-    var frame_index: usize = 0;
+    const startup_ms = debug.start(&timer);
 
     log.info("startup completed in {d} ms", .{startup_ms});
 
@@ -251,28 +247,11 @@ pub fn main() !void {
         const bow_img = asset_cache.images.items[BOW_ID];
         try demo.renderer.drawTexturedQuad(BOW_ID, .{ .x = 400, .y = 375 }, .{ .x = @floatFromInt(bow_img.content.width), .y = @floatFromInt(bow_img.content.height) }, null, tint);
 
-        const frame_ms = @as(f64, @floatFromInt(frame_time)) / std.time.ns_per_ms;
-        const frame_fps = 1000.0 / frame_ms;
-
-        frame_ms_buf[frame_index % FRAME_AVG_LEN] = frame_ms;
-        frame_index += 1;
-
-        var avg_ms: f64 = 0;
-        var min_ms: f64 = std.math.inf(f64);
-        var max_ms: f64 = -std.math.inf(f64);
-        for (frame_ms_buf) |ms| {
-            min_ms = @min(min_ms, ms);
-            max_ms = @max(max_ms, ms);
-            avg_ms += ms;
-        }
-        avg_ms /= @as(f64, FRAME_AVG_LEN);
-
-        const avg_fps = 1000.0 / avg_ms;
-
         var tts_fba = std.heap.FixedBufferAllocator.init(&tts_buf);
-        const fps_text = try std.fmt.allocPrint(tts_fba.allocator(), "FPS: {d:0.1} ({d:0.3}ms) / {d:0.1} ({d:0.3}ms) / {d:0.3}ms : {d:0.3}ms", .{ avg_fps, avg_ms, frame_fps, frame_ms, min_ms, max_ms });
 
-        try chart_fps(demo.renderer, .{ .x = 18, .y = 18 }, max_ms, &frame_ms_buf);
+        const fps_text = try std.fmt.allocPrint(tts_fba.allocator(), "FPS: {d:0.1} ({d:0.3}ms) / {d:0.1} ({d:0.3}ms) / {d:0.3}ms : {d:0.3}ms", .{ debug.avg_fps, debug.avg_ms, debug.frame_fps, debug.frame_ms, debug.min_ms, debug.max_ms });
+
+        try debug.drawFpsChart(demo.renderer, .{ .x = 18, .y = 18 });
 
         // --- Draw Text ---
 
@@ -437,7 +416,7 @@ pub fn main() !void {
 
         _ = wgpu.surfacePresent(demo.surface);
 
-        frame_time = timer.lap();
+        debug.lap();
     }
 }
 
@@ -479,20 +458,4 @@ fn ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: f32) [16]
     mat[14] = -(far + near) / (far - near);
     mat[15] = 1.0;
     return mat;
-}
-
-/// draws a bar chart for all frames in the buffer, with each bar scaled by its size relative to the max frame time
-fn chart_fps(renderer: *Batch2D, chart_pos: Batch2D.Vec2, max_ms: f64, frames_ms: []const f64) !void {
-    const bar_width: f32 = 4.0;
-    const chart_height: f32 = 100.0;
-    const chart_color: Batch2D.Color = .{ .r = 0, .g = 0, .b = 0, .a = 0.5 };
-
-    const reference_ms = @max(16.67, max_ms);
-
-    var x: f32 = chart_pos.x;
-    for (frames_ms) |ms| {
-        const height = @as(f32, @floatCast(ms)) / @as(f32, @floatCast(reference_ms)) * chart_height;
-        try renderer.drawQuad(.{ .x = x, .y = chart_pos.y + (chart_height - height) }, .{ .x = bar_width - 1, .y = height }, chart_color);
-        x += bar_width;
-    }
 }
