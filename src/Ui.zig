@@ -22,15 +22,23 @@ pub const Vec2 = Batch2D.Vec2;
 pub const Color = Batch2D.Color;
 
 allocator: std.mem.Allocator,
+
 renderer: *Batch2D,
 asset_cache: *AssetCache,
-clay_context: *clay.Context,
 inputs: *InputState,
-clay_memory: []const u8,
-render_commands: ?[]clay.RenderCommand = null,
 
+clay_context: *clay.Context,
+clay_memory: []const u8,
+
+render_commands: ?[]clay.RenderCommand = null,
+events: std.ArrayList(Event) = .empty,
+
+custom_element_interaction: ?*const fn (*Ui, ?*anyopaque, clay.RenderCommand) anyerror!void = null,
 custom_element_renderer: ?*const fn (*Ui, ?*anyopaque, clay.RenderCommand) anyerror!void = null,
 user_data: ?*anyopaque = null,
+
+state: State = .{},
+last_state: State = .{},
 
 pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, inputs: *InputState) !*Ui {
     const self = try allocator.create(Ui);
@@ -78,9 +86,10 @@ pub fn deinit(self: *Ui) void {
 }
 
 /// Call this at any time in the update stage to begin declaring the ui layout. Caller must ensure `Ui.endLayout` is called before the next `Ui.beginLayout` and/or `Ui.render`.
-/// Note: it is acceptable to run the layout code multiple times per frame if needed, but any queued render commands will be discarded when calling this function.
+/// Note: it is acceptable to run the layout code multiple times per frame if needed, but any queued render commands and events will be discarded when calling this function.
 pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
     self.render_commands = null; // Discard any existing render commands
+    self.events.clearRetainingCapacity(); // Discard any existing events
 
     clay.setCurrentContext(self.clay_context);
 
@@ -110,6 +119,8 @@ pub fn endLayout(self: *Ui) void {
 
     const render_commands = clay.endLayout();
     self.render_commands = render_commands;
+
+    try self.generateEvents();
 
     clay.setCurrentContext(null);
 }
@@ -187,9 +198,26 @@ pub fn scrollOffset() Vec2 {
     return vec2FromClay(clay.getScrollOffset());
 }
 
-// --- Translated Clay UI structures ---
+// --- Structures ---
+
+pub const Event = struct {
+    element_id: ElementId,
+    bounding_box: BoundingBox,
+    data: Data,
+
+    pub const Data = union(enum) {};
+};
+
+pub const State = struct {
+    hovered_id: ?ElementId = null,
+    active_id: ?ElementId = null,
+    focused_id: ?ElementId = null,
+
+    drag_location: ?Vec2 = null,
+};
 
 pub const ElementId = clay.ElementId;
+pub const BoundingBox = clay.BoundingBox;
 pub const SizingMinMax = clay.SizingMinMax;
 pub const SizingConstraint = clay.SizingConstraint;
 pub const SizingType = clay.SizingType;
@@ -431,6 +459,9 @@ fn clayColorToBatchColor(c: clay.Color) Batch2D.Color {
 }
 
 // --- Backend implementation --- //
+
+/// The error reporting function that Clay calls when it encounters an error.
+/// This function is registered in `init`.
 fn reportClayError(data: clay.ErrorData) callconv(.c) void {
     std.log.scoped(.clay).err("{s} - {s}", .{ @tagName(data.error_type), data.error_text.toSlice() });
 }
@@ -465,10 +496,22 @@ fn measureTextCallback(
     }
 }
 
+/// Processes the current array of RenderCommands from Clay and generates any corresponding interaction events.
+fn generateEvents(self: *Ui) !void {
+    const render_commands = self.render_commands orelse {
+        log.debug("Ui.endLayout call generated no render commands", .{});
+        return;
+    };
+
+    for (render_commands) |cmd| {
+        _ = cmd;
+    }
+}
+
 /// Processes the current array of RenderCommands from Clay and issues draw calls to Batch2D.
 fn draw(self: *Ui) !void {
     const render_commands = self.render_commands orelse {
-        log.warn("Ui.render called without any render commands (did you forget to call Ui.beginLayout/Ui.endLayout?)", .{});
+        log.debug("Ui.render called without any render commands (did you forget to call Ui.beginLayout/Ui.endLayout?)", .{});
         return;
     };
 
