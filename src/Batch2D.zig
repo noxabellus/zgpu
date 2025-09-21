@@ -21,7 +21,15 @@ pub const GLYPH_PADDING_F = 2.0;
 
 // --- Public API Structs ---
 pub const Mat4 = [16]f32;
-pub const Vec2 = struct { x: f32 = 0.0, y: f32 = 0.0 };
+pub const Vec2 = struct {
+    x: f32 = 0.0,
+    y: f32 = 0.0,
+
+    /// `std.fmt` impl
+    pub fn format(self: *const Vec2, writer: *std.io.Writer) std.io.Writer.Error!void {
+        try writer.print("({d:.2}, {d:.2})", .{ self.x, self.y });
+    }
+};
 pub const UvRect = struct { Vec2, Vec2 };
 pub const Color = struct {
     r: f32 = 0.0,
