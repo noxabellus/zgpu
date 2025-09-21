@@ -1,4 +1,4 @@
-//! An example of the new UI wrapper over clay.
+//! An example of the new UI wrapper over Ui.
 
 const std = @import("std");
 const log = std.log.scoped(.main);
@@ -7,12 +7,10 @@ const builtin = @import("builtin");
 const wgpu = @import("wgpu");
 const stbi = @import("stbi");
 const glfw = @import("glfw");
-const clay = @import("clay");
 
 const debug = @import("debug.zig");
 const Batch2D = @import("Batch2D.zig");
 const AssetCache = @import("AssetCache.zig");
-const ClayBackend = @import("ClayBackend.zig");
 const InputState = @import("InputState.zig");
 const Ui = @import("Ui.zig");
 
@@ -59,64 +57,61 @@ var window_height: i32 = 0;
 var window_width: i32 = 0;
 var mobile_screen: bool = false;
 
-// Input Handling
-var mouse_scroll_delta = Batch2D.Vec2{ .x = 0, .y = 0 };
-
 // --- Clay UI Color Constants ---
-const COLOR_LIGHT = clay.Color{ 244, 235, 230, 255 };
-const COLOR_LIGHT_HOVER = clay.Color{ 224, 215, 210, 255 };
-const COLOR_BUTTON_HOVER = clay.Color{ 238, 227, 225, 255 };
-const COLOR_BROWN = clay.Color{ 61, 26, 5, 255 };
-const COLOR_RED = clay.Color{ 168, 66, 28, 255 };
-const COLOR_RED_HOVER = clay.Color{ 148, 46, 8, 255 };
-const COLOR_ORANGE = clay.Color{ 225, 138, 50, 255 };
-const COLOR_BLUE = clay.Color{ 111, 173, 162, 255 };
-const COLOR_TEAL = clay.Color{ 111, 173, 162, 255 };
-const COLOR_BLUE_DARK = clay.Color{ 2, 32, 82, 255 };
-const COLOR_NONE = clay.Color{ 0, 0, 0, 255 };
+const COLOR_LIGHT = Ui.Color.init(244, 235, 230, 255);
+const COLOR_LIGHT_HOVER = Ui.Color.init(224, 215, 210, 255);
+const COLOR_BUTTON_HOVER = Ui.Color.init(238, 227, 225, 255);
+const COLOR_BROWN = Ui.Color.init(61, 26, 5, 255);
+const COLOR_RED = Ui.Color.init(168, 66, 28, 255);
+const COLOR_RED_HOVER = Ui.Color.init(148, 46, 8, 255);
+const COLOR_ORANGE = Ui.Color.init(225, 138, 50, 255);
+const COLOR_BLUE = Ui.Color.init(111, 173, 162, 255);
+const COLOR_TEAL = Ui.Color.init(111, 173, 162, 255);
+const COLOR_BLUE_DARK = Ui.Color.init(2, 32, 82, 255);
+const COLOR_NONE = Ui.Color.init(0, 0, 0, 255);
 
 // Colors for top stripe
-const COLORS_TOP_BORDER = [_]clay.Color{
-    .{ 240, 213, 137, 255 },
-    .{ 236, 189, 80, 255 },
-    .{ 225, 138, 50, 255 },
-    .{ 223, 110, 44, 255 },
-    .{ 168, 66, 28, 255 },
+const COLORS_TOP_BORDER = [_]Ui.Color{
+    .init(240, 213, 137, 255),
+    .init(236, 189, 80, 255),
+    .init(225, 138, 50, 255),
+    .init(223, 110, 44, 255),
+    .init(168, 66, 28, 255),
 };
 
-const COLOR_BLOB_BORDER_1 = clay.Color{ 168, 66, 28, 255 };
-const COLOR_BLOB_BORDER_2 = clay.Color{ 203, 100, 44, 255 };
-const COLOR_BLOB_BORDER_3 = clay.Color{ 225, 138, 50, 255 };
-const COLOR_BLOB_BORDER_4 = clay.Color{ 236, 159, 70, 255 };
-const COLOR_BLOB_BORDER_5 = clay.Color{ 240, 189, 100, 255 };
+const COLOR_BLOB_BORDER_1 = Ui.Color.init(168, 66, 28, 255);
+const COLOR_BLOB_BORDER_2 = Ui.Color.init(203, 100, 44, 255);
+const COLOR_BLOB_BORDER_3 = Ui.Color.init(225, 138, 50, 255);
+const COLOR_BLOB_BORDER_4 = Ui.Color.init(236, 159, 70, 255);
+const COLOR_BLOB_BORDER_5 = Ui.Color.init(240, 189, 100, 255);
 
-const border_data = clay.BorderData{
+const border_data = Ui.BorderData{
     .width = .{ .top = 2, .bottom = 2, .left = 2, .right = 2 },
     .color = COLOR_RED,
 };
 
-fn landingPageBlob(index: u32, font_size: u16, font_id: u16, color: clay.Color, image_size: f32, width: f32, text: []const u8, image: AssetCache.ImageId) void {
-    clay.openElement(.{
-        .id = .IDI("HeroBlob", index),
+fn landingPageBlob(index: u32, font_size: u16, font_id: AssetCache.FontId, color: Ui.Color, image_size: f32, width: f32, text: []const u8, image: AssetCache.ImageId) void {
+    Ui.openElement(.{
+        .id = .indexed("HeroBlob", index),
         .layout = .{
             .sizing = .{ .w = .growMinMax(.{ .max = width }) },
             .padding = .all(16),
             .child_gap = 16,
             .child_alignment = .{ .y = .center },
         },
-        .border = .{ .width = .outside(2), .color = color },
+        .border = .{ .width = .all(2), .color = color },
         .corner_radius = .all(10),
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
-    clay.elem(.{
-        .id = .IDI("CheckImage", index),
+    Ui.elem(.{
+        .id = .indexed("CheckImage", index),
         .layout = .{ .sizing = .{ .w = .fixed(image_size) } },
-        .aspect_ratio = .{ .aspect_ratio = 1 },
-        .image = ClayBackend.image(image),
+        .aspect_ratio = 1,
+        .image = image,
     });
 
-    clay.text(text, .{ .font_size = font_size, .font_id = font_id, .color = color });
+    Ui.text(text, .{ .font_size = font_size, .font_id = font_id, .color = color });
 }
 
 fn recreatedBlob() void {
@@ -126,44 +121,44 @@ fn recreatedBlob() void {
     const width = 510;
     const text = "The official Clay website recreated with zgpu";
 
-    clay.openElement(.{
-        .id = .ID("RecreatedBlob"),
+    Ui.openElement(.{
+        .id = .fromSlice("RecreatedBlob"),
         .layout = .{
             .sizing = .{ .w = .growMinMax(.{ .max = width }) },
             .padding = .all(16),
             .child_gap = 16,
             .child_alignment = .{ .y = .center },
         },
-        .border = .{ .width = .outside(2), .color = COLOR_BLOB_BORDER_5 },
+        .border = .{ .width = .all(2), .color = COLOR_BLOB_BORDER_5 },
         .corner_radius = .all(10),
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
-    clay.elem(.{
-        .id = .ID("ZigLogo"),
+    Ui.elem(.{
+        .id = .fromSlice("ZigLogo"),
         .layout = .{ .sizing = .{ .w = .fixed(image_size) } },
-        .aspect_ratio = .{ .aspect_ratio = 1 },
-        .image = ClayBackend.image(zig_logo_image_id),
+        .aspect_ratio = 1,
+        .image = zig_logo_image_id,
     });
 
-    clay.text(text, .{
+    Ui.text(text, .{
         .font_size = font_size,
         .font_id = font_id,
         .color = COLOR_BLOB_BORDER_5,
         .alignment = .center,
     });
 
-    clay.elem(.{
-        .id = .ID("WGPULogo"),
+    Ui.elem(.{
+        .id = .fromSlice("WGPULogo"),
         .layout = .{ .sizing = .{ .w = .fixed(image_size) } },
-        .aspect_ratio = .{ .aspect_ratio = 1 },
-        .image = ClayBackend.image(wgpu_logo_image_id),
+        .aspect_ratio = 1,
+        .image = wgpu_logo_image_id,
     });
 }
 
 fn landingPageDesktop() void {
-    clay.openElement(.{
-        .id = .ID("LandingPage1Desktop"),
+    Ui.openElement(.{
+        .id = .fromSlice("LandingPage1Desktop"),
         .layout = .{
             .sizing = .{
                 .w = .grow,
@@ -173,11 +168,11 @@ fn landingPageDesktop() void {
             .padding = .{ .left = 50, .right = 50 },
         },
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
     {
-        clay.openElement(.{
-            .id = .ID("LandingPage1"),
+        Ui.openElement(.{
+            .id = .fromSlice("LandingPage1"),
             .layout = .{
                 .sizing = .{ .w = .grow, .h = .grow },
                 .direction = .top_to_bottom,
@@ -187,47 +182,47 @@ fn landingPageDesktop() void {
             },
             .border = .{ .width = .{ .left = 2, .right = 2 }, .color = COLOR_RED },
         });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
         recreatedBlob();
 
         {
-            clay.openElement(.{ .id = .ID("ClayPresentation"), .layout = .{
+            Ui.openElement(.{ .id = .fromSlice("ClayPresentation"), .layout = .{
                 .sizing = .grow,
                 .child_alignment = .{ .y = .center },
                 .child_gap = 16,
             } });
-            defer clay.closeElement();
+            defer Ui.closeElement();
 
             {
-                clay.openElement(.{
-                    .id = .ID("LeftText"),
+                Ui.openElement(.{
+                    .id = .fromSlice("LeftText"),
                     .layout = .{
                         .sizing = .{ .w = .percent(0.55) },
                         .direction = .top_to_bottom,
                         .child_gap = 8,
                     },
                 });
-                defer clay.closeElement();
+                defer Ui.closeElement();
 
-                clay.text(
+                Ui.text(
                     "Clay is a flex-box style UI auto layout library in C, with declarative syntax and microsecond performance.",
                     .{ .font_size = 56, .font_id = FONT_ID_TITLE, .color = COLOR_RED },
                 );
-                clay.elem(.{
+                Ui.elem(.{
                     .layout = .{
                         .sizing = .{ .w = .grow, .h = .fixed(32) },
                     },
                 });
-                clay.text(
+                Ui.text(
                     "Clay is laying out this window right now!",
                     .{ .font_size = 36, .font_id = FONT_ID_BODY, .color = COLOR_ORANGE },
                 );
             }
 
             {
-                clay.openElement(.{
-                    .id = .ID("HeroImageOuter"),
+                Ui.openElement(.{
+                    .id = .fromSlice("HeroImageOuter"),
                     .layout = .{
                         .sizing = .{ .w = .percent(0.45) },
                         .direction = .top_to_bottom,
@@ -235,7 +230,7 @@ fn landingPageDesktop() void {
                         .child_gap = 16,
                     },
                 });
-                defer clay.closeElement();
+                defer Ui.closeElement();
 
                 landingPageBlob(
                     1,
@@ -297,8 +292,8 @@ fn landingPageDesktop() void {
 }
 
 fn landingPageMobile() void {
-    clay.openElement(.{
-        .id = .ID("LandingPage1Mobile"),
+    Ui.openElement(.{
+        .id = .fromSlice("LandingPage1Mobile"),
         .layout = .{
             .sizing = .{
                 .w = .grow,
@@ -310,45 +305,45 @@ fn landingPageMobile() void {
             .child_gap = 16,
         },
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
     recreatedBlob();
 
     {
-        clay.openElement(.{
-            .id = .ID("LeftText"),
+        Ui.openElement(.{
+            .id = .fromSlice("LeftText"),
             .layout = .{
                 .sizing = .{ .w = .grow },
                 .direction = .top_to_bottom,
                 .child_gap = 8,
             },
         });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
-        clay.text(
+        Ui.text(
             "Clay is a flex-box style UI auto layout library in C, with declarative syntax and microsecond performance.",
             .{ .font_size = 56, .font_id = FONT_ID_TITLE, .color = COLOR_RED },
         );
-        clay.elem(.{ .layout = .{
+        Ui.elem(.{ .layout = .{
             .sizing = .{
                 .w = .grow,
                 .h = .fixed(32),
             },
         } });
-        clay.text(
+        Ui.text(
             "Clay is laying out this window right now!",
             .{ .font_size = 36, .font_id = FONT_ID_BODY, .color = COLOR_ORANGE },
         );
     }
 
     {
-        clay.openElement(.{ .id = .ID("HeroImageOuter"), .layout = .{
+        Ui.openElement(.{ .id = .fromSlice("HeroImageOuter"), .layout = .{
             .sizing = .{ .w = .grow },
             .direction = .top_to_bottom,
             .child_alignment = .{ .x = .center },
             .child_gap = 16,
         } });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
         landingPageBlob(
             1,
@@ -407,12 +402,12 @@ fn landingPageMobile() void {
     }
 }
 
-fn featureBlocks(width_sizing: clay.SizingAxis, outer_padding: u16) void {
-    const text_config = clay.TextElementConfig{ .font_size = 24, .font_id = FONT_ID_BODY, .color = COLOR_RED };
+fn featureBlocks(width_sizing: Ui.SizingAxis, outer_padding: u16) void {
+    const text_config = Ui.TextElementConfig{ .font_size = 24, .font_id = FONT_ID_BODY, .color = COLOR_RED };
 
     {
-        clay.openElement(.{
-            .id = .ID("HFileBoxOuter"),
+        Ui.openElement(.{
+            .id = .fromSlice("HFileBoxOuter"),
             .layout = .{
                 .direction = .top_to_bottom,
                 .sizing = .{ .w = width_sizing },
@@ -421,30 +416,30 @@ fn featureBlocks(width_sizing: clay.SizingAxis, outer_padding: u16) void {
                 .child_gap = 8,
             },
         });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
         {
-            clay.openElement(.{
-                .id = .ID("HFileIncludeOuter"),
+            Ui.openElement(.{
+                .id = .fromSlice("HFileIncludeOuter"),
                 .layout = .{ .padding = .{ .left = 8, .right = 8, .top = 4, .bottom = 4 } },
                 .background_color = COLOR_RED,
                 .corner_radius = .all(8),
             });
-            defer clay.closeElement();
+            defer Ui.closeElement();
 
-            clay.text(
-                "#include clay.h",
+            Ui.text(
+                "#include Ui.h",
                 .{ .font_size = 24, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT },
             );
         }
 
-        clay.text("~2000 lines of C99.", text_config);
-        clay.text("Zero dependencies, including no C standard library", text_config);
+        Ui.text("~2000 lines of C99.", text_config);
+        Ui.text("Zero dependencies, including no C standard library", text_config);
     }
 
     {
-        clay.openElement(.{
-            .id = .ID("BringYourOwnRendererOuter"),
+        Ui.openElement(.{
+            .id = .fromSlice("BringYourOwnRendererOuter"),
             .layout = .{
                 .direction = .top_to_bottom,
                 .sizing = .{ .w = width_sizing },
@@ -453,86 +448,86 @@ fn featureBlocks(width_sizing: clay.SizingAxis, outer_padding: u16) void {
                 .child_gap = 8,
             },
         });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
-        clay.text(
+        Ui.text(
             "Renderer agnostic.",
             .{ .font_size = 24, .font_id = FONT_ID_BODY, .color = COLOR_ORANGE },
         );
-        clay.text("Layout with clay, then render with Raylib, WebGL Canvas or even as HTML.", text_config);
-        clay.text("Flexible output for easy compositing in your custom engine or environment.", text_config);
+        Ui.text("Layout with clay, then render with Raylib, WebGL Canvas or even as HTML.", text_config);
+        Ui.text("Flexible output for easy compositing in your custom engine or environment.", text_config);
     }
 }
 
 fn featureBlocksDesktop() void {
-    clay.openElement(.{
-        .id = .ID("FeatureBlocksOuter"),
+    Ui.openElement(.{
+        .id = .fromSlice("FeatureBlocksOuter"),
         .layout = .{
             .sizing = .{ .w = .grow },
             .child_alignment = .{ .y = .center },
         },
         .border = .{ .width = .{ .between_children = 2 }, .color = COLOR_RED },
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
     featureBlocks(.percent(0.5), 50);
 }
 
 fn featureBlocksMobile() void {
-    clay.openElement(.{
-        .id = .ID("FeatureBlocksOuter"),
+    Ui.openElement(.{
+        .id = .fromSlice("FeatureBlocksOuter"),
         .layout = .{
             .sizing = .{ .w = .grow },
             .direction = .top_to_bottom,
         },
         .border = .{ .width = .{ .between_children = 2 }, .color = COLOR_RED },
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
     featureBlocks(.grow, 16);
 }
 
-fn declarativeSyntaxPage(title_text_config: clay.TextElementConfig, width_sizing: clay.SizingAxis) void {
+fn declarativeSyntaxPage(title_text_config: Ui.TextElementConfig, width_sizing: Ui.SizingAxis) void {
     {
-        clay.openElement(.{ .id = .ID("SyntaxPageLeftText"), .layout = .{
+        Ui.openElement(.{ .id = .fromSlice("SyntaxPageLeftText"), .layout = .{
             .sizing = .{ .w = width_sizing },
             .direction = .top_to_bottom,
             .child_gap = 8,
         } });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
-        clay.text("Declarative Syntax", title_text_config);
-        clay.elem(.{ .layout = .{ .sizing = .{ .w = .growMinMax(.{ .max = 16 }) } } });
+        Ui.text("Declarative Syntax", title_text_config);
+        Ui.elem(.{ .layout = .{ .sizing = .{ .w = .growMinMax(.{ .max = 16 }) } } });
 
-        const text_conf = clay.TextElementConfig{
+        const text_conf = Ui.TextElementConfig{
             .font_size = 28,
             .font_id = FONT_ID_BODY,
             .color = COLOR_RED,
         };
-        clay.text("Flexible and readable declarative syntax with nested UI element hierarchies.", text_conf);
-        clay.text("Mix elements with standard C code like loops, conditionals and functions.", text_conf);
-        clay.text("Create your own library of re-usable components from UI primitives like text, images and rectangles.", text_conf);
+        Ui.text("Flexible and readable declarative syntax with nested UI element hierarchies.", text_conf);
+        Ui.text("Mix elements with standard C code like loops, conditionals and functions.", text_conf);
+        Ui.text("Create your own library of re-usable components from UI primitives like text, images and rectangles.", text_conf);
     }
 
     {
-        clay.openElement(.{ .id = .ID("SyntaxPageRightImageOuter"), .layout = .{
+        Ui.openElement(.{ .id = .fromSlice("SyntaxPageRightImageOuter"), .layout = .{
             .sizing = .{ .w = width_sizing },
             .child_alignment = .{ .x = .center },
         } });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
-        clay.elem(.{
-            .id = .ID("SyntaxPageRightImage"),
+        Ui.elem(.{
+            .id = .fromSlice("SyntaxPageRightImage"),
             .layout = .{ .sizing = .{ .w = .growMinMax(.{ .max = 568 }) } },
-            .aspect_ratio = .{ .aspect_ratio = 1194 / 1136 },
-            .image = ClayBackend.image(syntax_image_id),
+            .aspect_ratio = 1194 / 1136,
+            .image = syntax_image_id,
         });
     }
 }
 
 fn declarativeSyntaxPageDesktop() void {
-    clay.openElement(.{
-        .id = .ID("SyntaxPageDesktop"),
+    Ui.openElement(.{
+        .id = .fromSlice("SyntaxPageDesktop"),
         .layout = .{
             .sizing = .{
                 .w = .grow,
@@ -542,11 +537,11 @@ fn declarativeSyntaxPageDesktop() void {
             .padding = .{ .left = 50, .right = 50 },
         },
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
     {
-        clay.openElement(.{
-            .id = .ID("SyntaxPage"),
+        Ui.openElement(.{
+            .id = .fromSlice("SyntaxPage"),
             .layout = .{
                 .sizing = .{ .w = .grow, .h = .grow },
                 .child_alignment = .{ .y = .center },
@@ -558,7 +553,7 @@ fn declarativeSyntaxPageDesktop() void {
                 .color = COLOR_RED,
             },
         });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
         declarativeSyntaxPage(
             .{ .font_size = 52, .font_id = FONT_ID_TITLE, .color = COLOR_RED },
@@ -568,8 +563,8 @@ fn declarativeSyntaxPageDesktop() void {
 }
 
 fn declarativeSyntaxPageMobile() void {
-    clay.openElement(.{
-        .id = .ID("SyntaxPageMobile"),
+    Ui.openElement(.{
+        .id = .fromSlice("SyntaxPageMobile"),
         .layout = .{
             .direction = .top_to_bottom,
             .sizing = .{
@@ -581,85 +576,76 @@ fn declarativeSyntaxPageMobile() void {
             .child_gap = 16,
         },
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
     declarativeSyntaxPage(.{ .font_size = 48, .font_id = FONT_ID_TITLE, .color = COLOR_RED }, .grow);
 }
 
-fn colorLerp(a: clay.Color, b: clay.Color, amount: f32) clay.Color {
-    return clay.Color{
-        a[0] + (b[0] - a[0]) * amount,
-        a[1] + (b[1] - a[1]) * amount,
-        a[2] + (b[2] - a[2]) * amount,
-        a[3] + (b[3] - a[3]) * amount,
-    };
-}
-
 const LOREM_IPSUM_TEXT = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.";
 
-fn highPerformancePage(lerp_value: f32, title_text_tonfig: clay.TextElementConfig, width_sizing: clay.SizingAxis) void {
+fn highPerformancePage(lerp_value: f32, title_text_tonfig: Ui.TextElementConfig, width_sizing: Ui.SizingAxis) void {
     {
-        clay.openElement(.{
-            .id = .ID("PerformanceLeftText"),
+        Ui.openElement(.{
+            .id = .fromSlice("PerformanceLeftText"),
             .layout = .{
                 .sizing = .{ .w = width_sizing },
                 .direction = .top_to_bottom,
                 .child_gap = 8,
             },
         });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
-        clay.text("High Performance", title_text_tonfig);
-        clay.elem(.{ .layout = .{
+        Ui.text("High Performance", title_text_tonfig);
+        Ui.elem(.{ .layout = .{
             .sizing = .{ .w = .growMinMax(.{ .max = 16 }) },
         } });
-        clay.text(
+        Ui.text(
             "Fast enough to recompute your entire UI every frame.",
             .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT },
         );
-        clay.text(
+        Ui.text(
             "Small memory footprint (3.5mb default) with static allocation & reuse. No malloc / free.",
             .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT },
         );
-        clay.text(
+        Ui.text(
             "Simplify animations and reactive UI design by avoiding the standard performance hacks.",
             .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT },
         );
     }
 
     {
-        clay.openElement(.{
-            .id = .ID("PerformanceRightImageOuter"),
+        Ui.openElement(.{
+            .id = .fromSlice("PerformanceRightImageOuter"),
             .layout = .{
                 .sizing = .{ .w = width_sizing },
                 .child_alignment = .{ .x = .center },
             },
         });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
         {
-            clay.openElement(.{
-                .id = .ID("PerformanceRightBorder"),
+            Ui.openElement(.{
+                .id = .fromSlice("PerformanceRightBorder"),
                 .layout = .{
                     .sizing = .{ .w = .grow, .h = .fixed(400) },
                 },
                 .border = .{ .width = .all(2), .color = COLOR_LIGHT },
             });
-            defer clay.closeElement();
+            defer Ui.closeElement();
 
             {
-                clay.openElement(.{
-                    .id = .ID("AnimationDemoContainerLeft"),
+                Ui.openElement(.{
+                    .id = .fromSlice("AnimationDemoContainerLeft"),
                     .layout = .{
                         .sizing = .{ .w = .percent(0.35 + 0.3 * lerp_value), .h = .grow },
                         .child_alignment = .{ .y = .center },
                         .padding = .all(16),
                     },
-                    .background_color = colorLerp(COLOR_RED, COLOR_ORANGE, lerp_value),
+                    .background_color = COLOR_RED.lerp(COLOR_ORANGE, lerp_value),
                 });
-                defer clay.closeElement();
+                defer Ui.closeElement();
 
-                clay.text(LOREM_IPSUM_TEXT, .{
+                Ui.text(LOREM_IPSUM_TEXT, .{
                     .font_size = 16,
                     .font_id = FONT_ID_BODY,
                     .color = COLOR_LIGHT,
@@ -667,18 +653,18 @@ fn highPerformancePage(lerp_value: f32, title_text_tonfig: clay.TextElementConfi
             }
 
             {
-                clay.openElement(.{
-                    .id = .ID("AnimationDemoContainerRight"),
+                Ui.openElement(.{
+                    .id = .fromSlice("AnimationDemoContainerRight"),
                     .layout = .{
                         .sizing = .{ .w = .grow, .h = .grow },
                         .child_alignment = .{ .y = .center },
                         .padding = .all(16),
                     },
-                    .background_color = colorLerp(COLOR_ORANGE, COLOR_RED, lerp_value),
+                    .background_color = COLOR_ORANGE.lerp(COLOR_RED, lerp_value),
                 });
-                defer clay.closeElement();
+                defer Ui.closeElement();
 
-                clay.text(LOREM_IPSUM_TEXT, .{
+                Ui.text(LOREM_IPSUM_TEXT, .{
                     .font_size = 16,
                     .font_id = FONT_ID_BODY,
                     .color = COLOR_LIGHT,
@@ -689,8 +675,8 @@ fn highPerformancePage(lerp_value: f32, title_text_tonfig: clay.TextElementConfi
 }
 
 fn highPerformancePageDesktop(lerp_value: f32) void {
-    clay.openElement(.{
-        .id = .ID("PerformanceDesktop"),
+    Ui.openElement(.{
+        .id = .fromSlice("PerformanceDesktop"),
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }) },
             .child_alignment = .{ .y = .center },
@@ -699,7 +685,7 @@ fn highPerformancePageDesktop(lerp_value: f32) void {
         },
         .background_color = COLOR_RED,
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
     highPerformancePage(
         lerp_value,
@@ -709,8 +695,8 @@ fn highPerformancePageDesktop(lerp_value: f32) void {
 }
 
 fn highPerformancePageMobile(lerp_value: f32) void {
-    clay.openElement(.{
-        .id = .ID("PerformanceMobile"),
+    Ui.openElement(.{
+        .id = .fromSlice("PerformanceMobile"),
         .layout = .{
             .direction = .top_to_bottom,
             .sizing = .{
@@ -723,7 +709,7 @@ fn highPerformancePageMobile(lerp_value: f32) void {
         },
         .background_color = COLOR_RED,
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
     highPerformancePage(
         lerp_value,
@@ -733,25 +719,25 @@ fn highPerformancePageMobile(lerp_value: f32) void {
 }
 
 fn rendererButtonActive(text: []const u8) void {
-    clay.openElement(.{
+    Ui.openElement(.{
         .layout = .{ .sizing = .{ .w = .fixed(300) }, .padding = .all(16) },
         .background_color = COLOR_RED,
         .corner_radius = .all(10),
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
-    clay.text(text, .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT });
+    Ui.text(text, .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT });
 }
 
 fn rendererButtonInactive(index: u32, text: []const u8) void {
-    clay.openElement(.{
-        .border = .outside(.{ 2, COLOR_RED }, 10),
+    Ui.openElement(.{
+        .border = .all(.{ 2, COLOR_RED }, 10),
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
     {
-        clay.openElement(.{
-            .id = .ID("RendererButtonInactiveInner", index),
+        Ui.openElement(.{
+            .id = .fromSlice("RendererButtonInactiveInner", index),
             .layout = .{
                 .sizing = .{ .w = .fixed(300) },
                 .padding = .all(16),
@@ -759,50 +745,50 @@ fn rendererButtonInactive(index: u32, text: []const u8) void {
             .background_color = COLOR_LIGHT,
             .corner_radius = .all(10),
         });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
-        clay.text(text, .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED });
+        Ui.text(text, .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED });
     }
 }
 
-fn rendererPage(title_text_config: clay.TextElementConfig, _: clay.SizingAxis) void {
-    clay.openElement(.{ .id = .ID("RendererLeftText"), .layout = .{ .direction = .top_to_bottom, .child_gap = 8 } });
-    defer clay.closeElement();
+fn rendererPage(title_text_config: Ui.TextElementConfig, _: Ui.SizingAxis) void {
+    Ui.openElement(.{ .id = .fromSlice("RendererLeftText"), .layout = .{ .direction = .top_to_bottom, .child_gap = 8 } });
+    defer Ui.closeElement();
 
-    clay.text("Renderer & Platform Agnostic", title_text_config);
-    clay.elem(.{
+    Ui.text("Renderer & Platform Agnostic", title_text_config);
+    Ui.elem(.{
         .layout = .{
             .sizing = .{ .w = .growMinMax(.{ .max = 16 }) },
         },
     });
-    clay.text(
+    Ui.text(
         "Clay outputs a sorted array of primitive render commands, such as RECTANGLE, TEXT or IMAGE.",
         .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED },
     );
-    clay.text(
+    Ui.text(
         "Write your own renderer in a few hundred lines of code, or use the provided examples for Raylib, WebGL canvas and more.",
         .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED },
     );
-    clay.text(
+    Ui.text(
         "There's even an HTML renderer - you're looking at it right now!",
         .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED },
     );
 }
 
 fn rendererPageDesktop() void {
-    clay.openElement(.{
-        .id = .ID("RendererPageDesktop"),
+    Ui.openElement(.{
+        .id = .fromSlice("RendererPageDesktop"),
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }) },
             .child_alignment = .{ .y = .center },
             .padding = .{ .left = 50, .right = 50 },
         },
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
     {
-        clay.openElement(.{
-            .id = .ID("RendererPage"),
+        Ui.openElement(.{
+            .id = .fromSlice("RendererPage"),
             .layout = .{
                 .sizing = .grow,
                 .child_alignment = .{ .y = .center },
@@ -811,7 +797,7 @@ fn rendererPageDesktop() void {
             },
             .border = .{ .width = .{ .left = 2, .right = 2 }, .color = COLOR_RED },
         });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
         rendererPage(
             .{ .font_size = 52, .font_id = FONT_ID_TITLE, .color = COLOR_RED },
@@ -821,8 +807,8 @@ fn rendererPageDesktop() void {
 }
 
 fn rendererPageMobile() void {
-    clay.openElement(.{
-        .id = .ID("RendererMobile"),
+    Ui.openElement(.{
+        .id = .fromSlice("RendererMobile"),
         .layout = .{
             .direction = .top_to_bottom,
             .sizing = .{
@@ -835,7 +821,7 @@ fn rendererPageMobile() void {
         },
         .background_color = COLOR_LIGHT,
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
     rendererPage(
         .{ .font_size = 52, .font_id = FONT_ID_TITLE, .color = COLOR_RED },
@@ -844,16 +830,16 @@ fn rendererPageMobile() void {
 }
 
 fn createLayout(lerp_value: f32) void {
-    clay.openElement(.{
-        .id = .ID("OuterContainer"),
+    Ui.openElement(.{
+        .id = .fromSlice("OuterContainer"),
         .layout = .{ .sizing = .grow, .direction = .top_to_bottom },
         .background_color = COLOR_LIGHT,
     });
-    defer clay.closeElement();
+    defer Ui.closeElement();
 
     {
-        clay.openElement(.{
-            .id = .ID("Header"),
+        Ui.openElement(.{
+            .id = .fromSlice("Header"),
             .layout = .{
                 .sizing = .{ .h = .fixed(50), .w = .grow },
                 .child_alignment = .{ .y = .center },
@@ -861,63 +847,64 @@ fn createLayout(lerp_value: f32) void {
                 .child_gap = 24,
             },
         });
-        defer clay.closeElement();
+        defer Ui.closeElement();
 
-        clay.text("Clay", .{ .font_id = FONT_ID_BODY, .font_size = 24, .color = .{ 61, 26, 5, 255 } });
-        clay.elem(.{ .layout = .{ .sizing = .{ .w = .grow } } });
+        Ui.text("Clay", .{ .font_id = FONT_ID_BODY, .font_size = 24, .color = .init(61, 26, 5, 255) });
+        Ui.elem(.{ .layout = .{ .sizing = .{ .w = .grow } } });
 
         if (!mobile_screen) {
             {
-                clay.openElement(.{
-                    .id = .ID("LinkExamplesInner"),
-                    .background_color = .{ 0, 0, 0, 0 },
+                Ui.openElement(.{
+                    .id = .fromSlice("LinkExamplesInner"),
+                    .background_color = .{},
                 });
-                defer clay.closeElement();
+                defer Ui.closeElement();
 
-                clay.text("Examples", .{
+                Ui.text("Examples", .{
                     .font_id = FONT_ID_BODY,
                     .font_size = 24,
-                    .color = .{ 61, 26, 5, 255 },
+                    .color = .init(61, 26, 5, 255),
                 });
             }
 
             {
-                clay.openElement(.{
-                    .id = .ID("LinkDocsOuter"),
-                    .background_color = .{ 0, 0, 0, 0 },
+                Ui.openElement(.{
+                    .id = .fromSlice("LinkDocsOuter"),
+                    .background_color = .{},
                 });
-                defer clay.closeElement();
+                defer Ui.closeElement();
 
-                clay.text("Docs", .{
+                Ui.text("Docs", .{
                     .font_id = FONT_ID_BODY,
                     .font_size = 24,
-                    .color = .{ 61, 26, 5, 255 },
+                    .color = .init(61, 26, 5, 255),
                 });
             }
         }
 
         {
-            clay.openElement(.{
+            Ui.beginElement();
+            Ui.configureElement(.{
                 .layout = .{
                     .padding = .{ .left = 32, .right = 32, .top = 6, .bottom = 6 },
                 },
                 .border = .{ .width = .all(2), .color = COLOR_RED },
                 .corner_radius = .all(10),
-                .background_color = if (clay.hovered()) COLOR_LIGHT_HOVER else COLOR_LIGHT,
+                .background_color = if (Ui.hovered()) COLOR_LIGHT_HOVER else COLOR_LIGHT,
             });
-            defer clay.closeElement();
+            defer Ui.closeElement();
 
-            clay.text("Github", .{
+            Ui.text("Github", .{
                 .font_id = FONT_ID_BODY,
                 .font_size = 24,
-                .color = .{ 61, 26, 5, 255 },
+                .color = .init(61, 26, 5, 255),
             });
         }
     }
 
     for (COLORS_TOP_BORDER, 0..) |color, i| {
-        clay.elem(.{
-            .id = .IDI("TopBorder", @intCast(i)),
+        Ui.elem(.{
+            .id = .indexed("TopBorder", @intCast(i)),
             .layout = .{
                 .sizing = .{ .h = .fixed(4), .w = .grow },
             },
@@ -925,15 +912,15 @@ fn createLayout(lerp_value: f32) void {
         });
     }
 
-    { // The broken-out pattern is required here so that clay.getScrollOffset() works correctly.
-        clay.beginElement();
-        defer clay.closeElement();
+    { // The broken-out pattern is required here so that Ui.scrollOffset() works correctly.
+        Ui.beginElement();
+        defer Ui.closeElement();
 
-        clay.configureElement(.{
+        Ui.configureElement(.{
             .id = .fromSrc(@src()),
             .clip = .{
                 .vertical = true,
-                .child_offset = clay.getScrollOffset(),
+                .child_offset = Ui.scrollOffset(),
             },
             .layout = .{
                 .sizing = .grow,
@@ -1008,14 +995,6 @@ pub fn main() !void {
             createOrResizeMsaaTexture(d);
         }
     }.handle_glfw_framebuffer_size);
-
-    _ = glfw.setScrollCallback(window, &struct {
-        fn handle_scroll(_: *glfw.Window, xoffset: f64, yoffset: f64) callconv(.c) void {
-            // Invert y-axis to match common UI scrolling behavior
-            mouse_scroll_delta.x += @as(f32, @floatCast(xoffset)) * 6.0;
-            mouse_scroll_delta.y += @as(f32, @floatCast(yoffset)) * 6.0;
-        }
-    }.handle_scroll);
 
     // --- WGPU Surface, Adapter, Device Setup ---
     if (comptime builtin.os.tag != .windows) {
@@ -1102,8 +1081,11 @@ pub fn main() !void {
     demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format, provider_ctx, MSAA_SAMPLE_COUNT);
     defer demo.renderer.deinit();
 
+    var inputs = InputState{};
+    inputs.listenAllGlfw(window);
+
     // Init Ui
-    var ui = try Ui.init(gpa, demo.renderer, &asset_cache);
+    var ui = try Ui.init(gpa, demo.renderer, &asset_cache, &inputs);
     defer ui.deinit();
 
     // --- Load Assets ---
@@ -1147,7 +1129,7 @@ pub fn main() !void {
         // --- Handle Input ---
         if (glfw.getKey(window, .d) == .press) {
             debug_mode_enabled = !debug_mode_enabled;
-            clay.setDebugModeEnabled(debug_mode_enabled);
+            // FIXME: Ui.setDebugModeEnabled(debug_mode_enabled);
         }
 
         if (glfw.getKey(window, .a) == .press and glfw.getKey(window, .left_alt).isDown()) {
@@ -1159,21 +1141,15 @@ pub fn main() !void {
         glfw.getFramebufferSize(window, &window_width, &window_height);
         mobile_screen = window_width < 750;
 
-        var cursor_x: f64 = 0;
-        var cursor_y: f64 = 0;
-        glfw.getCursorPos(window, &cursor_x, &cursor_y);
+        inputs.collectAllGlfw(window);
 
         // Generate the UI layout and cache rendering commands
         {
             ui.beginLayout(
                 .{ .x = @floatFromInt(window_width), .y = @floatFromInt(window_height) },
-                glfw.getMouseButton(window, .left).isDown(),
-                .{ .x = @floatCast(cursor_x), .y = @floatCast(cursor_y) },
-                .{ .x = mouse_scroll_delta.x, .y = mouse_scroll_delta.y },
                 delta_time_f32,
             );
             defer ui.endLayout();
-            defer mouse_scroll_delta = Batch2D.Vec2{};
 
             createLayout(if (animation_lerp_value < 0) animation_lerp_value + 1 else 1 - animation_lerp_value);
         }

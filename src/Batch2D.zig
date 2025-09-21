@@ -41,6 +41,19 @@ pub const Color = struct {
     pub fn withAlpha(self: Color, new_alpha: f32) Color {
         return Color{ .r = self.r, .g = self.g, .b = self.b, .a = new_alpha };
     }
+
+    pub fn init(r: f32, g: f32, b: f32, a: f32) Color {
+        return Color{ .r = r, .g = g, .b = b, .a = a };
+    }
+
+    pub fn lerp(a: Color, b: Color, amount: f32) Color {
+        return Color{
+            .r = a.r + (b.r - a.r) * amount,
+            .g = a.g + (b.g - a.g) * amount,
+            .b = a.b + (b.b - a.b) * amount,
+            .a = a.a + (b.a - a.a) * amount,
+        };
+    }
 };
 
 // --- Internal Structs ---

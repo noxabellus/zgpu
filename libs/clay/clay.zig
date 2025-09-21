@@ -38,7 +38,7 @@ pub const cdefs = struct {
     pub extern fn Clay_CreateArenaWithCapacityAndMemory(capacity: usize, memory: ?*anyopaque) Arena;
     pub extern fn Clay_SetPointerState(position: Vector2, pointerDown: bool) void;
     pub extern fn Clay_Initialize(arena: Arena, layoutDimensions: Dimensions, errorHandler: ErrorHandler) *Context;
-    pub extern fn Clay_GetCurrentContext() *Context;
+    pub extern fn Clay_GetCurrentContext() ?*Context;
     pub extern fn Clay_SetCurrentContext(context: ?*Context) void;
     pub extern fn Clay_UpdateScrollContainers(enableDragScrolling: bool, scrollDelta: Vector2, deltaTime: f32) void;
     pub extern fn Clay_GetScrollOffset() Vector2;
@@ -80,11 +80,11 @@ pub const EnumBackingType = u8;
 pub const String = extern struct {
     /// Set this boolean to true if the `chars: [*]const u8` data underlying this string will live for the entire lifetime of the program.
     /// This will automatically be set for strings created with CLAY_STRING, as the macro requires a string literal.
-    is_statically_allocated: bool,
+    is_statically_allocated: bool = false,
     /// Length of the string in bytes
-    length: i32,
+    length: i32 = 0,
     /// Pointer to the character data
-    chars: [*]const u8,
+    chars: [*]const u8 = &.{},
 
     /// Gets a slice from this Clay_String
     pub fn toSlice(self: String) []const u8 {
@@ -320,27 +320,27 @@ pub const FloatingAttachPointType = enum(EnumBackingType) {
 
 pub const FloatingAttachPoints = extern struct {
     /// Controls the origin point on the floating element that attaches to its parent
-    element: FloatingAttachPointType,
+    element: FloatingAttachPointType = .left_top,
     /// Controls the origin point on the parent element that the floating element attaches to
-    parent: FloatingAttachPointType,
+    parent: FloatingAttachPointType = .left_top,
 };
 
 pub const FloatingAttachToElement = enum(EnumBackingType) {
     /// (default) Disables floating for this element
-    to_none = 0,
+    none = 0,
     /// Attaches to parent, positioned based on attachPoints and offset
-    to_parent = 1,
+    parent = 1,
     /// Attaches to element with specific ID (specified with parentId field)
-    to_element_with_id = 2,
+    element_with_id = 2,
     /// Attaches to the root of the layout (similar to absolute positioning)
-    to_root = 3,
+    root = 3,
 };
 
 pub const FloatingClipToElement = enum(EnumBackingType) {
     /// (default) - The floating element does not inherit clipping.
-    to_none = 0,
+    none = 0,
     /// The floating element is clipped to the same clipping rectangle as the element it's attached to.
-    to_attached_parent = 1,
+    attached_parent = 1,
 };
 
 /// Controls how pointer events are handled by floating elements
@@ -365,9 +365,9 @@ pub const FloatingElementConfig = extern struct {
     /// Controls whether pointer events are captured or pass through to elements underneath
     pointer_capture_mode: PointerCaptureMode = .capture,
     /// Controls which element this floating element is attached to
-    attach_to: FloatingAttachToElement = .to_none,
+    attach_to: FloatingAttachToElement = .none,
     /// Controls whether or not a floating element is clipped to the same clipping rectangle as the element it's attached to.
-    clip_to: FloatingClipToElement = .to_none,
+    clip_to: FloatingClipToElement = .none,
 };
 
 pub const RenderCommandType = enum(EnumBackingType) {
@@ -461,22 +461,22 @@ pub const CornerRadius = extern struct {
 /// Identifies a UI element for interaction and lookups
 pub const ElementId = extern struct {
     /// The resulting hash generated from the other fields
-    id: u32,
+    id: u32 = 0,
     /// Numerical offset applied after computing the hash
-    offset: u32,
+    offset: u32 = 0,
     /// Base hash value to start from (e.g., parent element ID for local IDs)
-    base_id: u32,
+    base_id: u32 = 0,
     /// The string ID to hash
-    string_id: String,
+    string_id: String = .{},
 
     /// Creates a global element ID from a string
-    pub fn ID(string: []const u8) ElementId {
+    pub fn fromSlice(string: []const u8) ElementId {
         return cdefs.Clay__HashString(.fromRuntimeSlice(string), 0, 0); // TODO move hashing to zig side for performance
     }
 
     /// Creates a global element ID with an index component for use in loops
     /// Equivalent to `ID("prefix0")`, `ID("prefix1")`, etc. without string allocations
-    pub fn IDI(string: []const u8, index: u32) ElementId {
+    pub fn indexed(string: []const u8, index: u32) ElementId {
         return cdefs.Clay__HashString(.fromRuntimeSlice(string), index, 0);
     }
 
@@ -488,7 +488,7 @@ pub const ElementId = extern struct {
 
     /// Creates a local element ID from a string with index
     /// Local IDs are scoped to the current parent element
-    pub fn localIDI(string: []const u8, index: u32) ElementId {
+    pub fn indexedLocal(string: []const u8, index: u32) ElementId {
         return cdefs.Clay__HashString(.fromRuntimeSlice(string), index, cdefs.Clay__GetParentElementId());
     }
 
@@ -500,7 +500,7 @@ pub const ElementId = extern struct {
 
     /// Creates a global element ID from a source location (@src()) with an index
     /// Useful for auto-generating unique IDs based on code location in loops
-    pub fn fromSrcI(comptime src: std.builtin.SourceLocation, index: u32) ElementId {
+    pub fn indexedFromSrc(comptime src: std.builtin.SourceLocation, index: u32) ElementId {
         return cdefs.Clay__HashString(.fromSlice(src.module ++ ":" ++ src.file ++ ":" ++ std.fmt.comptimePrint("{}", .{src.column})), index, 0);
     }
 };
@@ -591,7 +591,7 @@ pub const BorderWidth = extern struct {
     between_children: u16 = 0,
 
     /// Creates borders on all outer edges (not between children)
-    pub fn outside(width: u16) BorderWidth {
+    pub fn all(width: u16) BorderWidth {
         return .{
             .left = width,
             .right = width,
@@ -602,7 +602,7 @@ pub const BorderWidth = extern struct {
     }
 
     /// Creates borders on all edges, including between children
-    pub fn all(width: u16) BorderWidth {
+    pub fn between(width: u16) BorderWidth {
         return .{
             .left = width,
             .right = width,

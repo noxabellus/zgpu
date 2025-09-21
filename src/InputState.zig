@@ -177,6 +177,10 @@ pub const Action = enum(u2) {
     pressed,
     held,
 
+    pub fn isDown(self: Action) bool {
+        return self == .pressed or self == .held;
+    }
+
     pub fn fromBooleans(is_down: bool, was_down: bool) Action {
         if (is_down) {
             if (was_down) {
@@ -293,15 +297,19 @@ modifiers: Modifiers = .{},
 mouse_position: Vec2 = .{},
 
 scroll_delta: Vec2 = .{},
+scroll_multiplier: f32 = 6.0, // Scroll delta from glfw tends to be small, this multiplier can be adjusted as needed but 6 is a good default
 
 chars: []Char = &.{}, // slice into chars_storage
 _chars_storage: [CHAR_ARRAY_SIZE]Char = undefined, // Input character accumulation buffer
 
 /// Gets the current scroll delta for the frame, and resets it to zero.
 pub fn consumeScrollDelta(self: *InputState) Vec2 {
-    const delta = self.scroll_delta;
-    self.scroll_delta = Vec2{};
-    return delta;
+    defer self.scroll_delta = Vec2{};
+
+    return .{
+        .x = self.scroll_delta.x * self.scroll_multiplier,
+        .y = self.scroll_delta.y * self.scroll_multiplier,
+    };
 }
 
 /// Gets the current character input events for the frame, and resets the buffer.
@@ -423,10 +431,10 @@ pub fn setMouseButtons(self: *InputState, active_buttons: []const MouseButton) v
 
     self.mouse_buttons = [1]bool{false} ** MOUSE_ARRAY_SIZE;
 
-    if (self.have_mouse_focus) {
-        for (active_buttons) |button_state| {
-            self.mouse_buttons[@intFromEnum(button_state)] = true;
-        }
+    // unlike with keys, we always want to collect mouse button states, even if the window doesn't have mouse focus
+    // this allows us to continue drag interactions etc, even if the mouse has moved outside the window
+    for (active_buttons) |button_state| {
+        self.mouse_buttons[@intFromEnum(button_state)] = true;
     }
 }
 
@@ -493,12 +501,10 @@ pub fn collectMouseStateGlfw(self: *InputState, window: *glfw.Window) void {
 pub fn collectButtonsGlfw(self: *InputState, window: *glfw.Window) void {
     self.mouse_buttons_last = self.mouse_buttons;
 
-    if (self.have_mouse_focus) {
-        for (&self.mouse_buttons, 0..) |*button_state, code| {
-            button_state.* = glfw.getMouseButton(window, @enumFromInt(code)).isDown();
-        }
-    } else {
-        self.mouse_buttons = [1]bool{false} ** MOUSE_ARRAY_SIZE;
+    // unlike with keys, we always want to collect mouse button states, even if the window doesn't have mouse focus
+    // this allows us to continue drag interactions etc, even if the mouse has moved outside the window
+    for (&self.mouse_buttons, 0..) |*button_state, code| {
+        button_state.* = glfw.getMouseButton(window, @enumFromInt(code)).isDown();
     }
 }
 
