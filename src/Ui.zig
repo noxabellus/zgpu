@@ -88,17 +88,19 @@ pub fn deinit(self: *Ui) void {
 }
 
 /// Call this at any time in the update stage to begin declaring the ui layout. Caller must ensure `Ui.endLayout` is called before the next `Ui.beginLayout` and/or `Ui.render`.
-/// Note: it is acceptable to run the layout code multiple times per frame if needed, but any queued render commands and events will be discarded when calling this function.
+/// Note: it is acceptable to run the layout code multiple times per frame, but all state will be discarded when calling this function.
 pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
     self.render_commands = null; // Discard any existing render commands
     self.events.clearRetainingCapacity(); // Discard any existing events
     self.navigable_elements.clearRetainingCapacity(); // Discard any existing navigable element index bindings
+    self.last_state = self.state; // Save the last frame's state for event generation
+    self.state = .{}; // Reset current state; will be populated during layout
 
     clay.setCurrentContext(self.clay_context);
 
     clay.setLayoutDimensions(vec2ToDims(dimensions));
 
-    // Though we do inform Clay of current mouse position, it is only used in debug mode or for drag scrolling.
+    // Though we do inform Clay of current mouse button state, it is only used in debug mode or for drag scrolling.
     clay.setPointerState(vec2ToClay(self.inputs.getMousePosition()), self.inputs.getMouseButton(.left).isDown());
 
     const delta = self.inputs.consumeScrollDelta();
@@ -156,13 +158,9 @@ pub fn beginElement(self: *Ui) void {
 pub fn configureElement(self: *Ui, declaration: ElementDeclaration) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    // Add navigable elements to the map in the order they are declared
-    if (declaration.state.flags.focus) {
-        const index = self.navigable_elements.count();
-        try self.navigable_elements.put(self.allocator, index, declaration.id);
-    }
-
     clay.configureElement(declaration.toClay());
+
+    try self.handleStateSetup(declaration);
 }
 
 /// Create a new element with the given declaration.
@@ -172,13 +170,9 @@ pub fn configureElement(self: *Ui, declaration: ElementDeclaration) !void {
 pub fn openElement(self: *Ui, declaration: ElementDeclaration) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    // Add navigable elements to the map in the order they are declared
-    if (declaration.state.flags.focus) {
-        const index = self.navigable_elements.count();
-        try self.navigable_elements.put(self.allocator, index, declaration.id);
-    }
-
     clay.openElement(declaration.toClay());
+
+    try self.handleStateSetup(declaration);
 }
 
 /// Close the current element opened with `Ui.beginElement` or `Ui.openElement`.
@@ -194,13 +188,10 @@ pub fn closeElement(self: *Ui) void {
 pub fn elem(self: *Ui, declaration: ElementDeclaration) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    // Add navigable elements to the map in the order they are declared
-    if (declaration.state.flags.focus) {
-        const index = self.navigable_elements.count();
-        try self.navigable_elements.put(self.allocator, index, declaration.id);
-    }
+    clay.openElement(declaration.toClay());
+    defer clay.closeElement();
 
-    clay.elem(declaration.toClay());
+    try self.handleStateSetup(declaration);
 }
 
 /// Create a new text element with the given string and configuration.
@@ -229,8 +220,7 @@ pub fn scrollOffset(self: *Ui) Vec2 {
 // --- Structures ---
 
 pub const Event = struct {
-    element_id: u32,
-    type: clay.RenderCommandType,
+    element_id: ElementId,
     bounding_box: BoundingBox,
     user_data: ?*anyopaque,
     data: Data,
@@ -249,22 +239,33 @@ pub const State = struct {
 
     drag_location: ?Vec2 = null,
 
-    pub fn hoveredId(self: State) ?u32 {
+    pub fn hoveredId(self: State) ?ElementId {
         return (self.hovered orelse return null).id;
     }
 
-    pub fn activeId(self: State) ?u32 {
+    pub fn activeId(self: State) ?ElementId {
         return (self.active_id orelse return null).id;
     }
 
-    pub fn focusedId(self: State) ?u32 {
+    pub fn focusedId(self: State) ?ElementId {
         return (self.focused_id orelse return null).id;
+    }
+
+    pub fn hoveredIdValue(self: State) ?u32 {
+        return (self.hovered orelse return null).id.id;
+    }
+
+    pub fn activeIdValue(self: State) ?u32 {
+        return (self.active_id orelse return null).id.id;
+    }
+
+    pub fn focusedIdValue(self: State) ?u32 {
+        return (self.focused_id orelse return null).id.id;
     }
 };
 
 pub const StateElement = struct {
-    id: u32,
-    type: clay.RenderCommandType,
+    id: ElementId,
     bounding_box: BoundingBox,
     state: ElementState,
 };
@@ -608,6 +609,29 @@ fn clayColorToBatchColor(c: clay.Color) Batch2D.Color {
 
 // --- Backend implementation --- //
 
+fn handleStateSetup(self: *Ui, declaration: ElementDeclaration) !void {
+    // Add navigable elements to the map in the order they are declared
+    if (declaration.state.flags.focus) {
+        const index = self.navigable_elements.count();
+        try self.navigable_elements.put(self.allocator, index, declaration.id);
+    }
+
+    // Add mouse listeners for hoverable, clickable, scrollable elements
+    if (declaration.state.usesMouse()) {
+        if (clay.hovered()) {
+            const hovered_data = clay.getElementData(declaration.id);
+
+            std.debug.assert(hovered_data.found);
+
+            self.state.hovered = .{
+                .id = declaration.id,
+                .bounding_box = hovered_data.bounding_box,
+                .state = declaration.state,
+            };
+        }
+    }
+}
+
 /// The error reporting function that Clay calls when it encounters an error.
 /// This function is registered in `init`.
 fn reportClayError(data: clay.ErrorData) callconv(.c) void {
@@ -648,15 +672,6 @@ fn measureTextCallback(
 fn generateEvents(self: *Ui) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    const render_commands = self.render_commands orelse {
-        log.debug("Ui.endLayout call generated no render commands", .{});
-        return;
-    };
-
-    // reset state
-    self.last_state = self.state;
-    self.state = .{};
-
     // const left_button_state = self.inputs.getMouseButton(.left); // Action: { none, released, pressed, held; isDown() shortcut method also available }
     // const right_button_state = self.inputs.getMouseButton(.right);
 
@@ -668,6 +683,8 @@ fn generateEvents(self: *Ui) !void {
     // const arrow_down = self.inputs.getKey(.down);
 
     // const modifiers = self.inputs.getModifiers(); // bool set
+
+    // const have_mouse = self.inputs.getMouseFocus().isFocused();
 
     // log.info("Generating events for {d} render commands", .{render_commands.len});
     // log.info(
@@ -693,74 +710,13 @@ fn generateEvents(self: *Ui) !void {
     // });
 
     const mouse_pos = self.inputs.getMousePosition();
-    const have_mouse = self.inputs.getMouseFocus().isFocused();
-
-    if (have_mouse) {
-        for (0..render_commands.len) |j| {
-            const i = render_commands.len - 1 - j; // Process in reverse order for correct z-index handling
-            const cmd = render_commands[i];
-            const bb = cmd.bounding_box;
-            const element_state = ElementState.fromClay(cmd.user_data);
-
-            // I have discovered some behaviors with the element id passing that I
-            // think are probably unsound in general. An issue has been filed, but
-            // we will have to work around these for now.
-            //
-            // Features I've noted include:
-            // * An element that produces multiple RenderCommands usually only has
-            //   one of those commands given the element's id
-            // * There is an exception to the above in the particular case of clip
-            //   & custom components on an element; in this case only you will get
-            //   two commands with the element id. However, background color (for
-            //   example) and custom together do not share this property
-            // * An element that only produces a border RenderCommand will not have
-            //   that border given the element's id, meaning the element does not
-            //   get named at all in the render chain
-            // * An element with a background color and an image will only have the
-            //   element id on the image command
-            // * If you try to use GetElementData on one of these secondary ids, it will fail
-            // * No apparent way to get the true element id from these secondary ids
-            //
-            // Note that in all of these cases I was testing with an element that
-            // has the same layout and that produces verified visual output; the
-            // problem seems to be confined strictly to the identification.
-
-            switch (cmd.command_type) {
-                // I believe that if we limit our event generation to only these,
-                // we can avoid most of the problems noted above; except for the unresolved items listed below this case.
-                // image + rectangle : we will just take the top most, that being the image, and it will have the element id
-                // custom + rectangle : we will just take the top most, that being the custom, and it will have the element id
-                .custom, .image, .rectangle => {
-                    if (boxContains(bb, mouse_pos)) {
-                        self.state.hovered = .{
-                            .id = cmd.id,
-                            .type = cmd.command_type,
-                            .bounding_box = bb,
-                            .state = element_state,
-                        };
-
-                        // only one element can be hovered, and we are processing in z order;
-                        // this is the top most element and it is hovered, so stop processing here
-                        break;
-                    }
-                },
-
-                // unresolved:
-                // * clip rects' scissor_start bounding box is unreliable for hit testing
-                // * border-only elements cannot be identified at all
-
-                else => continue, // cannot reliably produce event data
-            }
-        }
-    }
 
     if (self.last_state.hovered) |last_hovered| {
         // We only need to generate events if the element is hoverable
         if (last_hovered.state.flags.hover) {
-            if (last_hovered.id != self.state.hoveredId()) { // mouse moved out of previously-hovered element
+            if (last_hovered.id.id != self.state.hoveredIdValue()) { // mouse moved out of previously-hovered element
                 try self.events.append(self.allocator, .{
                     .element_id = last_hovered.id,
-                    .type = last_hovered.type,
                     .bounding_box = last_hovered.bounding_box,
                     .user_data = last_hovered.state.getUserData(),
                     .data = .{ .hover_end = .{ .mouse_position = mouse_pos } },
@@ -768,7 +724,6 @@ fn generateEvents(self: *Ui) !void {
             } else { // mouse remains over previously-hovered element
                 try self.events.append(self.allocator, .{
                     .element_id = last_hovered.id,
-                    .type = last_hovered.type,
                     .bounding_box = last_hovered.bounding_box,
                     .user_data = last_hovered.state.getUserData(),
                     .data = .{ .hovering = .{ .mouse_position = mouse_pos } },
@@ -777,18 +732,17 @@ fn generateEvents(self: *Ui) !void {
         }
     }
 
-    if (self.state.hovered) |new_hovered| new_hover: { // new hover
-        // already handled in existing_hover block
-        if (new_hovered.id == self.last_state.hoveredId()) break :new_hover;
-
-        if (new_hovered.state.flags.hover) {
-            try self.events.append(self.allocator, .{
-                .element_id = new_hovered.id,
-                .type = new_hovered.type,
-                .bounding_box = new_hovered.bounding_box,
-                .user_data = new_hovered.state.getUserData(),
-                .data = .{ .hover_begin = .{ .mouse_position = mouse_pos } },
-            });
+    // already handled in existing_hover block
+    if (self.state.hoveredIdValue() != self.last_state.hoveredIdValue()) {
+        if (self.state.hovered) |new_hovered| { // new hover
+            if (new_hovered.state.flags.hover) {
+                try self.events.append(self.allocator, .{
+                    .element_id = new_hovered.id,
+                    .bounding_box = new_hovered.bounding_box,
+                    .user_data = new_hovered.state.getUserData(),
+                    .data = .{ .hover_begin = .{ .mouse_position = mouse_pos } },
+                });
+            }
         }
     }
 }

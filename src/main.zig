@@ -875,6 +875,13 @@ fn createLayout(ui: *Ui, lerp_value: f32) !void {
             try ui.configureElement(.{
                 .id = .fromRawId(title_element_id),
                 .state = .custom(.hoverable, &title_hover_state),
+                .background_color = COLOR_TEAL,
+                .image = zig_logo_image_id,
+                .clip = .{
+                    .horizontal = true,
+                    .vertical = true,
+                    .child_offset = ui.scrollOffset(),
+                },
                 .layout = .{
                     .sizing = .{ .w = .fixed(32), .h = .fixed(32) },
                 },
@@ -1202,41 +1209,28 @@ pub fn main() !void {
 
             const events = try ui.endLayout();
 
-            // sanity test?
-            var count: usize = 0;
-            for (ui.render_commands.?) |cmd| {
-                if (cmd.id == title_element_id) {
-                    count += 1;
-                    log.info("Found title element in render commands, type={s}", .{@tagName(cmd.command_type)});
-                }
-            }
-
-            if (count != 1) {
-                log.err("Expected 1 title element, found {d}", .{count});
-            }
-
             for (events) |event| {
                 switch (event.data) {
                     .hover_begin => |hover_begin_data| {
-                        log.info("hover_begin id={x} type={s} loc={f}", .{ event.element_id, @tagName(event.type), hover_begin_data.mouse_position });
+                        log.info("hover_begin id={any} loc={f}", .{ event.element_id, hover_begin_data.mouse_position });
 
-                        if (event.element_id == title_element_id) {
+                        if (event.element_id.id == title_element_id) {
                             title_hover_state = true;
                         } else {
-                            log.info("Expected {x} got {x}", .{ title_element_id, event.element_id });
+                            log.info("Expected {x} got {x}", .{ title_element_id, event.element_id.id });
                         }
                     },
                     .hover_end => |hover_end_data| {
-                        log.info("hover_end id={x} type={s} loc={f}", .{ event.element_id, @tagName(event.type), hover_end_data.mouse_position });
+                        log.info("hover_end id={any} loc={f}", .{ event.element_id, hover_end_data.mouse_position });
 
-                        if (event.element_id == title_element_id) {
+                        if (event.element_id.id == title_element_id) {
                             title_hover_state = false;
                         } else {
-                            log.info("Expected {x} got {x}", .{ title_element_id, event.element_id });
+                            log.info("Expected {x} got {x}", .{ title_element_id, event.element_id.id });
                         }
                     },
                     .hovering => |_| {
-                        // log.info("hovering id={x} type={s} loc={f}", .{ event.element_id, @tagName(event.type), hovering_data.mouse_position });
+                        // log.info("hovering id={any} loc={f}", .{ event.element_id, hovering_data.mouse_position });
                     },
                 }
             }
