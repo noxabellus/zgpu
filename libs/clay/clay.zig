@@ -469,6 +469,11 @@ pub const ElementId = extern struct {
     /// The string ID to hash
     string_id: String = .{},
 
+    /// Creates an ElementId with no metadata from the given raw ID.
+    pub fn fromRawId(id: u32) ElementId {
+        return .{ .id = id, .offset = 0, .base_id = 0, .string_id = .{} };
+    }
+
     /// Creates a global element ID from a string
     pub fn fromSlice(string: []const u8) ElementId {
         return cdefs.Clay__HashString(.fromRuntimeSlice(string), 0, 0); // TODO move hashing to zig side for performance
