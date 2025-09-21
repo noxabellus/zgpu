@@ -81,21 +81,27 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
 
     clay.setCurrentContext(self.clay_context);
 
+    clay.setLayoutDimensions(vec2ToDims(dimensions));
+
+    // Note: we don't tell clay about mouse button state, as its only purpose is for drag scrolling.
     if (self.inputs.getMousePosition()) |pos| {
-        const state = self.inputs.getMouseButton(.left);
-        clay.setPointerState(vec2ToClay(pos), state.isDown());
+        clay.setPointerState(vec2ToClay(pos), false);
     } else {
         clay.setPointerState(.{ .x = -1, .y = -1 }, false);
     }
 
     const delta = self.inputs.consumeScrollDelta();
-    clay.updateScrollContainers(false, vec2ToClay(delta), delta_ms);
-
-    clay.setLayoutDimensions(vec2ToDims(dimensions));
+    clay.updateScrollContainers(
+        false, // never use drag scrolling
+        vec2ToClay(delta),
+        delta_ms,
+    );
 
     clay.beginLayout();
 }
 
+/// End the current layout declaration and finalize the render commands and events.
+/// Must be called after `Ui.beginLayout` and before `Ui.render`.
 pub fn endLayout(self: *Ui) void {
     std.debug.assert(self.clay_context == clay.getCurrentContext());
 
@@ -105,55 +111,67 @@ pub fn endLayout(self: *Ui) void {
     clay.setCurrentContext(null);
 }
 
-/// Must call this between `Batch2D.beginFrame()` and `Batch2D.endFrame()`.
+/// After calling `Ui.beginLayout` and `Ui.endLayout`, this function issues the generated draw calls to Batch2D to render the UI.
+/// User should call this between `Batch2D.beginFrame()` and `Batch2D.endFrame()`.
 pub fn render(self: *Ui) !void {
     clay.setCurrentContext(self.clay_context);
     defer clay.setCurrentContext(null);
 
-    if (self.render_commands) |commands| {
-        try self.draw(commands);
-    } else {
-        log.warn("Ui.render called without any render commands (did you forget to call Ui.beginLayout/Ui.endLayout?)", .{});
-    }
+    try self.draw();
 }
 
 // --- Element Interface ---
 
+/// Create a new, unconfigured element. Must be followed by calls to `Ui.configureElement` and `Ui.closeElement`.
 pub fn beginElement() void {
     std.debug.assert(clay.getCurrentContext() != null);
     clay.beginElement();
 }
 
+/// Configure the current element opened with `Ui.beginElement`.
 pub fn configureElement(declaration: ElementDeclaration) void {
     std.debug.assert(clay.getCurrentContext() != null);
     clay.configureElement(declaration.toClay());
 }
 
+/// Create a new element with the given declaration. Must be followed by a call to `Ui.closeElement`.
+/// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside this declaration; use `Ui.beginElement` and `Ui.configureElement` instead.
 pub fn openElement(declaration: ElementDeclaration) void {
     std.debug.assert(clay.getCurrentContext() != null);
     clay.openElement(declaration.toClay());
 }
 
+/// Close the current element opened with `Ui.beginElement` or `Ui.openElement`.
+/// * Note that if you opened with `Ui.openElement`, you should also call `Ui.configureElement` before this function.
 pub fn closeElement() void {
     std.debug.assert(clay.getCurrentContext() != null);
     clay.closeElement();
 }
 
+/// Create a new element with the given declaration, and immediately close it.
+/// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside this declaration; use `Ui.beginElement`, `Ui.configureElement` and `Ui.closeElement` instead.
 pub fn elem(declaration: ElementDeclaration) void {
     std.debug.assert(clay.getCurrentContext() != null);
     clay.elem(declaration.toClay());
 }
 
+/// Create a new text element with the given string and configuration.
+/// This element type cannot have children, so there is no need to call `Ui.closeElement`.
 pub fn text(str: []const u8, config: TextElementConfig) void {
     std.debug.assert(clay.getCurrentContext() != null);
     clay.text(str, config.toClay());
 }
 
+/// Determine if the currently-open element is hovered by the mouse.
+/// This is for styling logic, not event handling; use the generated event stream for that.
 pub fn hovered() bool {
     std.debug.assert(clay.getCurrentContext() != null);
     return clay.hovered();
 }
 
+/// Get the current scroll offset of the currently-open scroll container element.
+/// If the current element is not a scroll container, returns {0,0}.
+/// This is for styling logic, not event handling; use the generated event stream for that.
 pub fn scrollOffset() Vec2 {
     std.debug.assert(clay.getCurrentContext() != null);
     return vec2FromClay(clay.getScrollOffset());
@@ -161,8 +179,6 @@ pub fn scrollOffset() Vec2 {
 
 // --- Translated Clay UI structures ---
 
-pub const BoundingBox = clay.BoundingBox;
-pub const String = clay.String;
 pub const ElementId = clay.ElementId;
 pub const SizingMinMax = clay.SizingMinMax;
 pub const SizingConstraint = clay.SizingConstraint;
@@ -185,6 +201,10 @@ pub const LayoutAlignmentY = clay.LayoutAlignmentY;
 pub const ChildAlignment = clay.ChildAlignment;
 pub const BorderWidth = clay.BorderWidth;
 pub const LayoutConfig = clay.LayoutConfig;
+
+pub const AspectRatioElementConfig = f32;
+pub const ImageElementConfig = ?AssetCache.ImageId;
+pub const CustomElementConfig = ?*anyopaque;
 
 pub const TextElementConfig = struct {
     /// The RGBA color of the font to render, conventionally specified as 0-255.
@@ -265,11 +285,6 @@ pub const BorderElementConfig = struct {
     }
 };
 
-pub const AspectRatioElementConfig = f32;
-pub const ImageElementConfig = ?AssetCache.ImageId;
-pub const CustomElementConfig = ?*anyopaque;
-
-/// Controls the axes on which an element can scroll
 pub const ClipElementConfig = struct {
     /// Whether to enable horizontal scrolling
     horizontal: bool = false,
@@ -353,14 +368,6 @@ fn vec2ToDims(vec: Batch2D.Vec2) clay.Dimensions {
     return .{ .w = vec.x, .h = vec.y };
 }
 
-fn reportClayError(data: clay.ErrorData) callconv(.c) void {
-    std.log.scoped(.clay).err("{s} - {s}", .{ @tagName(data.error_type), data.error_text.toSlice() });
-}
-
-fn colorFromClay(color: clay.Color) Batch2D.Color {
-    return Batch2D.Color{ .r = color[0], .g = color[1], .b = color[2], .a = color[3] };
-}
-
 fn colorToClay(color: Batch2D.Color) clay.Color {
     return clay.Color{ color.r, color.g, color.b, color.a };
 }
@@ -414,7 +421,10 @@ fn clayColorToBatchColor(c: clay.Color) Batch2D.Color {
     };
 }
 
-// --- Render backend implementation --- //
+// --- Backend implementation --- //
+fn reportClayError(data: clay.ErrorData) callconv(.c) void {
+    std.log.scoped(.clay).err("{s} - {s}", .{ @tagName(data.error_type), data.error_text.toSlice() });
+}
 
 /// The callback function that Clay uses to measure text.
 /// This function is registered in `init`.
@@ -446,9 +456,13 @@ fn measureTextCallback(
     }
 }
 
-/// Processes an array of RenderCommands from Clay and issues draw calls to Batch2D.
-/// This should be called every frame after `clay.endLayout()`.
-fn draw(self: *Ui, render_commands: []const clay.RenderCommand) !void {
+/// Processes the current array of RenderCommands from Clay and issues draw calls to Batch2D.
+fn draw(self: *Ui) !void {
+    const render_commands = self.render_commands orelse {
+        log.warn("Ui.render called without any render commands (did you forget to call Ui.beginLayout/Ui.endLayout?)", .{});
+        return;
+    };
+
     for (render_commands) |cmd| {
         const bb = cmd.bounding_box;
         const pos = Batch2D.Vec2{ .x = bb.x, .y = bb.y };
