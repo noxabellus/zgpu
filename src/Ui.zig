@@ -33,12 +33,14 @@ clay_memory: []const u8,
 render_commands: ?[]clay.RenderCommand = null,
 events: std.ArrayList(Event) = .empty,
 
-custom_element_interaction: ?*const fn (*Ui, ?*anyopaque, clay.RenderCommand) anyerror!void = null,
 custom_element_renderer: ?*const fn (*Ui, ?*anyopaque, clay.RenderCommand) anyerror!void = null,
 user_data: ?*anyopaque = null,
 
 state: State = .{},
 last_state: State = .{},
+
+// Map from navigation index to element ID for quick lookup during keyboard navigation
+navigable_elements: std.AutoHashMapUnmanaged(u32, ElementId) = .empty,
 
 pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, inputs: *InputState) !*Ui {
     const self = try allocator.create(Ui);
@@ -90,17 +92,14 @@ pub fn deinit(self: *Ui) void {
 pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
     self.render_commands = null; // Discard any existing render commands
     self.events.clearRetainingCapacity(); // Discard any existing events
+    self.navigable_elements.clearRetainingCapacity(); // Discard any existing navigable element index bindings
 
     clay.setCurrentContext(self.clay_context);
 
     clay.setLayoutDimensions(vec2ToDims(dimensions));
 
-    // Note: we don't tell clay about mouse button state, as its only purpose is for drag scrolling.
-    if (self.inputs.getMousePosition()) |pos| {
-        clay.setPointerState(vec2ToClay(pos), false);
-    } else {
-        clay.setPointerState(.{ .x = -1, .y = -1 }, false);
-    }
+    // Though we do inform Clay of current mouse position, it is only used in debug mode or for drag scrolling.
+    clay.setPointerState(vec2ToClay(self.inputs.getMousePosition()), self.inputs.getMouseButton(.left).isDown());
 
     const delta = self.inputs.consumeScrollDelta();
     clay.updateScrollContainers(
@@ -114,15 +113,16 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
 
 /// End the current layout declaration and finalize the render commands and events.
 /// Must be called after `Ui.beginLayout` and before `Ui.render`.
-pub fn endLayout(self: *Ui) void {
+pub fn endLayout(self: *Ui) ![]const Event {
     std.debug.assert(self.clay_context == clay.getCurrentContext());
+    defer clay.setCurrentContext(null);
 
     const render_commands = clay.endLayout();
     self.render_commands = render_commands;
 
     try self.generateEvents();
 
-    clay.setCurrentContext(null);
+    return self.events.items;
 }
 
 /// After calling `Ui.beginLayout` and `Ui.endLayout`, this function issues the generated draw calls to Batch2D to render the UI.
@@ -134,20 +134,34 @@ pub fn render(self: *Ui) !void {
     try self.draw();
 }
 
+pub fn setDebugMode(self: *Ui, enabled: bool) void {
+    clay.setCurrentContext(self.clay_context);
+    defer clay.setCurrentContext(null);
+
+    clay.setDebugModeEnabled(enabled);
+}
+
 // --- Element Interface ---
 
 /// Create a new, unconfigured element.
 /// * Must be followed by calls to `Ui.configureElement` and `Ui.closeElement`.
 /// * See also `Ui.openElement`, `Ui.elem`.
-pub fn beginElement() void {
-    std.debug.assert(clay.getCurrentContext() != null);
+pub fn beginElement(self: *Ui) void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
     clay.beginElement();
 }
 
 /// Configure the current element opened with `Ui.beginElement`.
 /// * See also `Ui.openElement`, `Ui.elem`.
-pub fn configureElement(declaration: ElementDeclaration) void {
-    std.debug.assert(clay.getCurrentContext() != null);
+pub fn configureElement(self: *Ui, declaration: ElementDeclaration) !void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+
+    // Add navigable elements to the map in the order they are declared
+    if (declaration.state.flags.focus) {
+        const index = self.navigable_elements.count();
+        try self.navigable_elements.put(self.allocator, index, declaration.id);
+    }
+
     clay.configureElement(declaration.toClay());
 }
 
@@ -155,65 +169,180 @@ pub fn configureElement(declaration: ElementDeclaration) void {
 /// * Must be followed by a call to `Ui.closeElement`.
 /// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside the passed declaration; use `Ui.beginElement` and `Ui.configureElement` instead.
 /// * See also `Ui.elem`.
-pub fn openElement(declaration: ElementDeclaration) void {
-    std.debug.assert(clay.getCurrentContext() != null);
+pub fn openElement(self: *Ui, declaration: ElementDeclaration) !void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+
+    // Add navigable elements to the map in the order they are declared
+    if (declaration.state.flags.focus) {
+        const index = self.navigable_elements.count();
+        try self.navigable_elements.put(self.allocator, index, declaration.id);
+    }
+
     clay.openElement(declaration.toClay());
 }
 
 /// Close the current element opened with `Ui.beginElement` or `Ui.openElement`.
 /// * Note that if you opened with `Ui.openElement`, you should also call `Ui.configureElement` before this function.
 /// * See also `Ui.elem`.
-pub fn closeElement() void {
-    std.debug.assert(clay.getCurrentContext() != null);
+pub fn closeElement(self: *Ui) void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
     clay.closeElement();
 }
 
 /// Create a new element with the given declaration, and immediately close it.
 /// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside this declaration; use `Ui.beginElement`, `Ui.configureElement` and `Ui.closeElement` instead.
-pub fn elem(declaration: ElementDeclaration) void {
-    std.debug.assert(clay.getCurrentContext() != null);
+pub fn elem(self: *Ui, declaration: ElementDeclaration) !void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+
+    // Add navigable elements to the map in the order they are declared
+    if (declaration.state.flags.focus) {
+        const index = self.navigable_elements.count();
+        try self.navigable_elements.put(self.allocator, index, declaration.id);
+    }
+
     clay.elem(declaration.toClay());
 }
 
 /// Create a new text element with the given string and configuration.
 /// * This element type cannot have children, so there is no need to call `Ui.closeElement`.
 /// * This is not intended to work with `Ui.hovered` or `Ui.scrollOffset`; text elements should remain "dumb".
-pub fn text(str: []const u8, config: TextElementConfig) void {
-    std.debug.assert(clay.getCurrentContext() != null);
+pub fn text(self: *Ui, str: []const u8, config: TextElementConfig) !void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
     clay.text(str, config.toClay());
 }
 
 /// Determine if the currently-open element is hovered by the mouse.
 /// * This is for styling logic, not event handling; use the generated event stream for that.
-pub fn hovered() bool {
-    std.debug.assert(clay.getCurrentContext() != null);
+pub fn hovered(self: *Ui) bool {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
     return clay.hovered();
 }
 
 /// Get the current scroll offset of the currently-open scroll container element.
 /// * If the current element is not a scroll container, returns {0,0}.
 /// * This is for styling logic, not event handling; use the generated event stream for that.
-pub fn scrollOffset() Vec2 {
-    std.debug.assert(clay.getCurrentContext() != null);
+pub fn scrollOffset(self: *Ui) Vec2 {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
     return vec2FromClay(clay.getScrollOffset());
 }
 
 // --- Structures ---
 
 pub const Event = struct {
-    element_id: ElementId,
+    element_id: u32,
+    type: clay.RenderCommandType,
     bounding_box: BoundingBox,
+    user_data: ?*anyopaque,
     data: Data,
 
-    pub const Data = union(enum) {};
+    pub const Data = union(enum) {
+        hover_begin: struct { mouse_position: Vec2 },
+        hovering: struct { mouse_position: Vec2 },
+        hover_end: struct { mouse_position: Vec2 },
+    };
 };
 
 pub const State = struct {
-    hovered_id: ?ElementId = null,
-    active_id: ?ElementId = null,
-    focused_id: ?ElementId = null,
+    hovered: ?StateElement = null,
+    active_id: ?StateElement = null,
+    focused_id: ?StateElement = null,
 
     drag_location: ?Vec2 = null,
+
+    pub fn hoveredId(self: State) ?u32 {
+        return (self.hovered orelse return null).id;
+    }
+
+    pub fn activeId(self: State) ?u32 {
+        return (self.active_id orelse return null).id;
+    }
+
+    pub fn focusedId(self: State) ?u32 {
+        return (self.focused_id orelse return null).id;
+    }
+};
+
+pub const StateElement = struct {
+    id: u32,
+    type: clay.RenderCommandType,
+    bounding_box: BoundingBox,
+    state: ElementState,
+};
+
+pub const ElementState = packed struct(usize) {
+    flags: Flags,
+    user_data: u48 = 0,
+
+    pub const Flags = packed struct(u16) {
+        hover: bool = false,
+        scroll: bool = false,
+        click: bool = false,
+        focus: bool = false,
+
+        _reserved: u12 = 0,
+
+        pub const none = Flags{};
+        pub const hoverable = Flags{ .hover = true };
+        pub const scrollable = Flags{ .scroll = true };
+        pub const clickable = Flags{ .click = true };
+        pub const focusable = Flags{ .focus = true };
+
+        pub fn merge(a: Flags, b: Flags) Flags {
+            return Flags{
+                .hover = a.hover or b.hover,
+                .scroll = a.scroll or b.scroll,
+                .click = a.click or b.click,
+                .focus = a.focus or b.focus,
+            };
+        }
+
+        pub fn takesInput(self: Flags) bool {
+            return self.hover or self.scroll or self.click or self.focus;
+        }
+
+        pub fn usesMouse(self: Flags) bool {
+            return self.hover or self.scroll or self.click;
+        }
+    };
+
+    pub const none = ElementState{ .flags = .none };
+    pub const hoverable = ElementState{ .flags = .hoverable };
+    pub const scrollable = ElementState{ .flags = .scrollable };
+    pub const clickable = ElementState{ .flags = .clickable };
+    pub const focusable = ElementState{ .flags = .focusable };
+
+    pub fn custom(flags: Flags, user_data: ?*anyopaque) ElementState {
+        return ElementState{
+            .flags = flags,
+            .user_data = @intCast(@intFromPtr(user_data)),
+        };
+    }
+
+    fn fromClay(data: ?*anyopaque) ElementState {
+        if (data) |ptr| {
+            return @bitCast(@as(usize, @intFromPtr(ptr)));
+        } else {
+            return .none;
+        }
+    }
+
+    fn toClay(self: ElementState) ?*anyopaque {
+        // This converts directly to the nullable pointer so there's no risk from the runtime safety check here.
+        return @ptrFromInt(@as(usize, @bitCast(self)));
+    }
+
+    pub fn takesInput(self: ElementState) bool {
+        return self.flags.takesInput();
+    }
+
+    pub fn usesMouse(self: ElementState) bool {
+        return self.flags.usesMouse();
+    }
+
+    pub fn getUserData(self: ElementState) ?*anyopaque {
+        // This converts directly to the nullable pointer so there's no risk from the runtime safety check here.
+        return @ptrFromInt(self.user_data);
+    }
 };
 
 pub const ElementId = clay.ElementId;
@@ -368,7 +497,7 @@ pub const ElementDeclaration = struct {
     /// Controls settings related to element borders, and will generate BORDER render command
     border: BorderElementConfig = .{},
     /// A pointer that will be transparently passed through to resulting render command
-    user_data: ?*anyopaque = null,
+    state: ElementState = .none,
 
     fn toClay(self: ElementDeclaration) clay.ElementDeclaration {
         return clay.ElementDeclaration{
@@ -382,7 +511,7 @@ pub const ElementDeclaration = struct {
             .custom = .{ .custom_data = self.custom },
             .clip = self.clip.toClay(),
             .border = self.border.toClay(),
-            .user_data = self.user_data,
+            .user_data = self.state.toClay(),
         };
     }
 };
@@ -434,6 +563,25 @@ fn linearToSrgb(c: f32) f32 {
 
 fn decodeImageId(id: usize) AssetCache.ImageId {
     return @intCast(id - 1);
+}
+
+fn boxContains(box: BoundingBox, point: Vec2) bool {
+    return point.x >= box.x and point.x < box.x + box.width and point.y >= box.y and point.y < box.y + box.height;
+}
+
+fn boxesIntersect(a: BoundingBox, b: BoundingBox) bool {
+    return a.x < b.x + b.width and a.x + a.width > b.x and a.y < b.y + b.height and a.y + a.height > b.y;
+}
+
+fn boxContainsBox(outer: BoundingBox, inner: BoundingBox) bool {
+    return inner.x >= outer.x and inner.x + inner.width <= outer.x + outer.width and inner.y >= outer.y and inner.y + inner.height <= outer.y + outer.height;
+}
+
+fn clampToBox(box: BoundingBox, point: Vec2) Vec2 {
+    return .{
+        .x = std.math.clamp(f32, point.x, box.x, box.x + box.width),
+        .y = std.math.clamp(f32, point.y, box.y, box.y + box.height),
+    };
 }
 
 /// Converts a Clay color ([4]f32, 0-255) to a Batch2D color (struct, 0.0-1.0).
@@ -498,13 +646,150 @@ fn measureTextCallback(
 
 /// Processes the current array of RenderCommands from Clay and generates any corresponding interaction events.
 fn generateEvents(self: *Ui) !void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+
     const render_commands = self.render_commands orelse {
         log.debug("Ui.endLayout call generated no render commands", .{});
         return;
     };
 
-    for (render_commands) |cmd| {
-        _ = cmd;
+    // reset state
+    self.last_state = self.state;
+    self.state = .{};
+
+    // const left_button_state = self.inputs.getMouseButton(.left); // Action: { none, released, pressed, held; isDown() shortcut method also available }
+    // const right_button_state = self.inputs.getMouseButton(.right);
+
+    // const have_keyboard = self.inputs.getKeyboardFocus().isFocused();
+
+    // const arrow_left = self.inputs.getKey(.left); // Action
+    // const arrow_right = self.inputs.getKey(.right);
+    // const arrow_up = self.inputs.getKey(.up);
+    // const arrow_down = self.inputs.getKey(.down);
+
+    // const modifiers = self.inputs.getModifiers(); // bool set
+
+    // log.info("Generating events for {d} render commands", .{render_commands.len});
+    // log.info(
+    //     \\
+    //     \\  mouse  | L: {s} R: {s} Captured: {any} Position: {f}
+    //     \\  arrows | Captured: {any} L: {s} R: {s} U: {s} D: {s}
+    //     \\  mods   | Shift: {any} Ctrl: {any} Alt: {any}
+    // , .{
+    //     @tagName(left_button_state),
+    //     @tagName(right_button_state),
+    //     have_mouse,
+    //     mouse_pos,
+
+    //     have_keyboard,
+    //     @tagName(arrow_left),
+    //     @tagName(arrow_right),
+    //     @tagName(arrow_up),
+    //     @tagName(arrow_down),
+
+    //     modifiers.shift,
+    //     modifiers.control,
+    //     modifiers.alt,
+    // });
+
+    const mouse_pos = self.inputs.getMousePosition();
+    const have_mouse = self.inputs.getMouseFocus().isFocused();
+
+    if (have_mouse) {
+        for (0..render_commands.len) |j| {
+            const i = render_commands.len - 1 - j; // Process in reverse order for correct z-index handling
+            const cmd = render_commands[i];
+            const bb = cmd.bounding_box;
+            const element_state = ElementState.fromClay(cmd.user_data);
+
+            // I have discovered some behaviors with the element id passing that I
+            // think are probably unsound in general. An issue has been filed, but
+            // we will have to work around these for now.
+            //
+            // Features I've noted include:
+            // * An element that produces multiple RenderCommands usually only has
+            //   one of those commands given the element's id
+            // * There is an exception to the above in the particular case of clip
+            //   & custom components on an element; in this case only you will get
+            //   two commands with the element id. However, background color (for
+            //   example) and custom together do not share this property
+            // * An element that only produces a border RenderCommand will not have
+            //   that border given the element's id, meaning the element does not
+            //   get named at all in the render chain
+            // * An element with a background color and an image will only have the
+            //   element id on the image command
+            // * If you try to use GetElementData on one of these secondary ids, it will fail
+            // * No apparent way to get the true element id from these secondary ids
+            //
+            // Note that in all of these cases I was testing with an element that
+            // has the same layout and that produces verified visual output; the
+            // problem seems to be confined strictly to the identification.
+
+            switch (cmd.command_type) {
+                // I believe that if we limit our event generation to only these,
+                // we can avoid most of the problems noted above; except for the unresolved items listed below this case.
+                // image + rectangle : we will just take the top most, that being the image, and it will have the element id
+                // custom + rectangle : we will just take the top most, that being the custom, and it will have the element id
+                .custom, .image, .rectangle => {
+                    if (boxContains(bb, mouse_pos)) {
+                        self.state.hovered = .{
+                            .id = cmd.id,
+                            .type = cmd.command_type,
+                            .bounding_box = bb,
+                            .state = element_state,
+                        };
+
+                        // only one element can be hovered, and we are processing in z order;
+                        // this is the top most element and it is hovered, so stop processing here
+                        break;
+                    }
+                },
+
+                // unresolved:
+                // * clip rects' scissor_start bounding box is unreliable for hit testing
+                // * border-only elements cannot be identified at all
+
+                else => continue, // cannot reliably produce event data
+            }
+        }
+    }
+
+    if (self.last_state.hovered) |last_hovered| {
+        // We only need to generate events if the element is hoverable
+        if (last_hovered.state.flags.hover) {
+            if (last_hovered.id != self.state.hoveredId()) { // mouse moved out of previously-hovered element
+                try self.events.append(self.allocator, .{
+                    .element_id = last_hovered.id,
+                    .type = last_hovered.type,
+                    .bounding_box = last_hovered.bounding_box,
+                    .user_data = last_hovered.state.getUserData(),
+                    .data = .{ .hover_end = .{ .mouse_position = mouse_pos } },
+                });
+            } else { // mouse remains over previously-hovered element
+                try self.events.append(self.allocator, .{
+                    .element_id = last_hovered.id,
+                    .type = last_hovered.type,
+                    .bounding_box = last_hovered.bounding_box,
+                    .user_data = last_hovered.state.getUserData(),
+                    .data = .{ .hovering = .{ .mouse_position = mouse_pos } },
+                });
+            }
+        }
+    }
+
+    if (self.state.hovered) |new_hovered| new_hover: { // new hover
+        // already handled in existing_hover block
+        if (new_hovered.id == self.last_state.hoveredId()) break :new_hover;
+
+        if (new_hovered.state.flags.hover) {
+            try self.events.append(self.allocator, .{
+                .element_id = new_hovered.id,
+                .type = new_hovered.type,
+                .bounding_box = new_hovered.bounding_box,
+                .user_data = new_hovered.state.getUserData(),
+                .data = .{ .hover_begin = .{ .mouse_position = mouse_pos } },
+            });
+        }
     }
 }
 
