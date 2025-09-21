@@ -204,6 +204,10 @@ pub const Focus = enum(u2) {
     gained,
     lost,
 
+    pub fn isFocused(self: Focus) bool {
+        return self == .retained or self == .gained;
+    }
+
     pub fn fromBooleans(has_focus: bool, had_focus: bool) Focus {
         if (has_focus) {
             if (had_focus) {
@@ -330,13 +334,10 @@ pub fn getMouseFocus(self: *const InputState) Focus {
 }
 
 /// Returns the current mouse position relative to the top-left corner of the window.
-/// If the mouse is not over the window, returns null.
-pub fn getMousePosition(self: *const InputState) ?Vec2 {
-    if (self.have_mouse_focus) {
-        return self.mouse_position;
-    } else {
-        return null;
-    }
+/// Note that this always returns a value, but the coordinates provided may not be within the window bounds.
+/// Use `InputState.getMouseFocus` to determine if the mouse is over the window.
+pub fn getMousePosition(self: *const InputState) Vec2 {
+    return self.mouse_position;
 }
 
 /// Returns the current state of the specified mouse button.
@@ -411,17 +412,19 @@ pub fn setKeyboardFocus(self: *InputState, has_focus: bool) void {
     self.have_keyboard_focus = has_focus;
 }
 
-/// Manually set the mouse position for the window, if mouse focus is desired.
+/// Manually set the state of mouse focus (whether the mouse is over the window).
 /// See also `InputState.collectAllGlfw`.
-pub fn setMousePosition(self: *InputState, position: ?Vec2) void {
+pub fn setMouseFocus(self: *InputState, has_focus: bool) void {
     self.mouse_focus_last = self.have_mouse_focus;
-    if (position) |pos| {
-        self.have_mouse_focus = true;
-        self.mouse_position = pos;
-    } else {
-        self.have_mouse_focus = false;
-        self.mouse_position = .{ .x = -1, .y = -1 };
-    }
+    self.have_mouse_focus = has_focus;
+}
+
+/// Manually set the mouse position for the window.
+/// See also `InputState.collectAllGlfw`.
+pub fn setMousePosition(self: *InputState, position: Vec2) void {
+    // we always want the mouse position, even if the window doesn't have mouse focus
+    // this allows us to continue drag interactions etc, even if the mouse has moved outside the window
+    self.mouse_position = position;
 }
 
 /// Manually set the state of all mouse buttons.
@@ -514,7 +517,7 @@ pub fn collectKeysGlfw(self: *InputState, window: *glfw.Window) void {
     self.keys_last = self.keys;
 
     if (self.have_keyboard_focus) {
-        for (&self.keys, MIN_KEY_CODE..) |*key_state, code| {
+        for (&self.keys, 0..) |*key_state, code| {
             if (Key.validateKeyCode(code)) {
                 key_state.* = glfw.getKey(window, @enumFromInt(code)).isDown();
             }
