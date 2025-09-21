@@ -29,6 +29,9 @@ inputs: *InputState,
 clay_memory: []const u8,
 render_commands: ?[]clay.RenderCommand = null,
 
+custom_element_renderer: ?*const fn (*Ui, ?*anyopaque, clay.RenderCommand) anyerror!void = null,
+user_data: ?*anyopaque = null,
+
 pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, inputs: *InputState) !*Ui {
     const self = try allocator.create(Ui);
     errdefer allocator.destroy(self);
@@ -122,20 +125,25 @@ pub fn render(self: *Ui) !void {
 
 // --- Element Interface ---
 
-/// Create a new, unconfigured element. Must be followed by calls to `Ui.configureElement` and `Ui.closeElement`.
+/// Create a new, unconfigured element.
+/// * Must be followed by calls to `Ui.configureElement` and `Ui.closeElement`.
+/// * See also `Ui.openElement`, `Ui.elem`.
 pub fn beginElement() void {
     std.debug.assert(clay.getCurrentContext() != null);
     clay.beginElement();
 }
 
 /// Configure the current element opened with `Ui.beginElement`.
+/// * See also `Ui.openElement`, `Ui.elem`.
 pub fn configureElement(declaration: ElementDeclaration) void {
     std.debug.assert(clay.getCurrentContext() != null);
     clay.configureElement(declaration.toClay());
 }
 
-/// Create a new element with the given declaration. Must be followed by a call to `Ui.closeElement`.
-/// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside this declaration; use `Ui.beginElement` and `Ui.configureElement` instead.
+/// Create a new element with the given declaration.
+/// * Must be followed by a call to `Ui.closeElement`.
+/// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside the passed declaration; use `Ui.beginElement` and `Ui.configureElement` instead.
+/// * See also `Ui.elem`.
 pub fn openElement(declaration: ElementDeclaration) void {
     std.debug.assert(clay.getCurrentContext() != null);
     clay.openElement(declaration.toClay());
@@ -143,6 +151,7 @@ pub fn openElement(declaration: ElementDeclaration) void {
 
 /// Close the current element opened with `Ui.beginElement` or `Ui.openElement`.
 /// * Note that if you opened with `Ui.openElement`, you should also call `Ui.configureElement` before this function.
+/// * See also `Ui.elem`.
 pub fn closeElement() void {
     std.debug.assert(clay.getCurrentContext() != null);
     clay.closeElement();
@@ -156,22 +165,23 @@ pub fn elem(declaration: ElementDeclaration) void {
 }
 
 /// Create a new text element with the given string and configuration.
-/// This element type cannot have children, so there is no need to call `Ui.closeElement`.
+/// * This element type cannot have children, so there is no need to call `Ui.closeElement`.
+/// * This is not intended to work with `Ui.hovered` or `Ui.scrollOffset`; text elements should remain "dumb".
 pub fn text(str: []const u8, config: TextElementConfig) void {
     std.debug.assert(clay.getCurrentContext() != null);
     clay.text(str, config.toClay());
 }
 
 /// Determine if the currently-open element is hovered by the mouse.
-/// This is for styling logic, not event handling; use the generated event stream for that.
+/// * This is for styling logic, not event handling; use the generated event stream for that.
 pub fn hovered() bool {
     std.debug.assert(clay.getCurrentContext() != null);
     return clay.hovered();
 }
 
 /// Get the current scroll offset of the currently-open scroll container element.
-/// If the current element is not a scroll container, returns {0,0}.
-/// This is for styling logic, not event handling; use the generated event stream for that.
+/// * If the current element is not a scroll container, returns {0,0}.
+/// * This is for styling logic, not event handling; use the generated event stream for that.
 pub fn scrollOffset() Vec2 {
     std.debug.assert(clay.getCurrentContext() != null);
     return vec2FromClay(clay.getScrollOffset());
@@ -209,13 +219,12 @@ pub const CustomElementConfig = ?*anyopaque;
 pub const TextElementConfig = struct {
     /// The RGBA color of the font to render, conventionally specified as 0-255.
     color: Color = .{ .r = 0, .g = 0, .b = 0, .a = 255 },
-    /// An integer transparently passed to Clay_MeasureText to identify the font to use.
-    /// The debug view will pass fontId = 0 for its internal text.
-    font_id: AssetCache.FontId = 0,
-    /// Controls the size of the font. Handled by the function provided to Clay_MeasureText.
-    font_size: u16 = 20,
-    /// Controls extra horizontal spacing between characters. Handled by the function provided to Clay_MeasureText.
-    letter_spacing: u16 = 0,
+    /// Identifies the font to use.
+    font_id: AssetCache.FontId = 0, // The debug view will pass fontId = 0 for its internal text.
+    /// Controls the size of the font.
+    font_size: u16 = 20, // Handled by the function provided to Clay_MeasureText.
+    /// Controls extra horizontal spacing between characters.
+    letter_spacing: u16 = 0, // TODO: Not yet handled by the function provided to Clay_MeasureText.
     /// Additional vertical space between wrapped lines of text
     line_height: u16 = 0,
     /// Controls how text "wraps", that is how it is broken into multiple lines when there is insufficient horizontal space.
@@ -290,7 +299,7 @@ pub const ClipElementConfig = struct {
     horizontal: bool = false,
     /// Whether to enable vertical scrolling
     vertical: bool = false,
-    // Offsets the x,y positions of all child elements. Used primarily for scrolling containers.
+    // Offsets the x,y positions of all child elements.
     child_offset: Vec2 = .{ .x = 0, .y = 0 },
 
     fn toClay(self: ClipElementConfig) clay.ClipElementConfig {
@@ -324,7 +333,7 @@ pub const ElementDeclaration = struct {
     /// Controls whether and how an element "floats", which means it layers over the top of other elements in z order, and doesn't affect the position and size of siblings or parent elements.
     /// Note: in order to activate floating, `.floating.attachTo` must be set to something other than the default value.
     floating: FloatingElementConfig = .{},
-    /// Used to create CUSTOM render commands, usually to render element types not supported by Clay.
+    /// Used to create CUSTOM render commands, usually to render element types not supported by default.
     custom: CustomElementConfig = null,
     /// Controls whether an element should clip its contents and allow scrolling rather than expanding to contain them.
     clip: ClipElementConfig = .{},
@@ -551,10 +560,10 @@ fn draw(self: *Ui) !void {
             },
             .scissor_start => try self.renderer.scissorStart(pos, size),
             .scissor_end => try self.renderer.scissorEnd(),
-            .custom => {
-                // This is where a user of the library would add their own logic
-                // to handle custom render commands by inspecting cmd.user_data or
-                // cmd.render_data.custom.
+            .custom => if (self.custom_element_renderer) |func| {
+                try func(self, self.user_data, cmd);
+            } else {
+                log.err("Encountered CUSTOM render command but no custom renderer is set up; element will be discarded.", .{});
             },
         }
     }
