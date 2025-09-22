@@ -399,23 +399,47 @@ pub fn main() !void {
                         log.info("activate_end id={any} end_element={any}", .{ event.element_id, activate_end_data.end_element });
                     },
                     .text => |text_data| {
-                        log.info("text id={any} cmds={any}", .{ event.element_id, text_data.chars });
-
+                        log.info("text id={any} cmds={any}", .{ event.element_id, text_data });
                         if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
-                            var input = std.ArrayList(u8).empty;
+                            switch (text_data) {
+                                .command => |cmd| switch (cmd) {
+                                    .backspace => if (caret_index > 0) {
+                                        // Find the start of the previous UTF-8 codepoint
+                                        var delete_start = caret_index - 1;
+                                        while (delete_start > 0 and (test_text.items[delete_start] & 0b1100_0000) == 0b1000_0000) : (delete_start -= 1) {}
+                                        const delete_len = caret_index - delete_start;
 
-                            for (text_data.chars) |char_cmd| {
-                                _ = char_cmd.modifiers; // currently ignoring these, could be used for various IME states etc
+                                        log.info("  -> backspace at {d}, deleting {d} bytes", .{ caret_index, delete_len });
 
-                                const width = try std.unicode.utf8CodepointSequenceLength(char_cmd.codepoint);
-                                const buf = try input.addManyAsSlice(arena, width);
-                                _ = try std.unicode.utf8Encode(char_cmd.codepoint, buf);
+                                        for (delete_start..caret_index) |i| {
+                                            _ = test_text.orderedRemove(i);
+                                        }
+                                        caret_index = delete_start;
+                                    },
+                                    .newline => {
+                                        const newline = "\n";
+                                        log.info("  -> newline at {d}", .{caret_index});
+                                        try test_text.insertSlice(gpa, caret_index, newline);
+                                        caret_index += newline.len;
+                                    },
+                                },
+                                .chars => |chars| if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
+                                    var input = std.ArrayList(u8).empty;
 
-                                log.info("  -> char input: '{s}'", .{buf});
+                                    for (chars) |char_cmd| {
+                                        _ = char_cmd.modifiers; // currently ignoring these, could be used for various IME states etc
 
-                                // Insert at caret position
-                                try test_text.insertSlice(gpa, caret_index, buf);
-                                caret_index += width;
+                                        const width = try std.unicode.utf8CodepointSequenceLength(char_cmd.codepoint);
+                                        const buf = try input.addManyAsSlice(arena, width);
+                                        _ = try std.unicode.utf8Encode(char_cmd.codepoint, buf);
+
+                                        log.info("  -> char input: '{s}'", .{buf});
+
+                                        // Insert at caret position
+                                        try test_text.insertSlice(gpa, caret_index, buf);
+                                        caret_index += width;
+                                    }
+                                },
                             }
                         }
                     },

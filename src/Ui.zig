@@ -25,7 +25,7 @@ pub const default_bindings = .{
     .primary_mouse = BindingState.InputBinding{ .mouse = .{ .bind_point = .button_1 } },
     .focus_next = BindingState.InputBinding{ .key = .{ .bind_point = .tab } },
     .focus_prev = BindingState.InputBinding{ .key = .{ .bind_point = .tab, .modifiers = .shiftMod } },
-    .activate_focused = BindingState.InputBinding{ .key = .{ .bind_point = .space } },
+    .activate_focused = BindingState.InputBinding{ .key = .{ .bind_point = .enter } },
 };
 
 allocator: std.mem.Allocator,
@@ -56,6 +56,24 @@ navigable_elements: std.AutoHashMapUnmanaged(u32, struct { id: ElementId, state:
 reverse_navigable_elements: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 // Stack of currently open element's user-provided stable IDs
 open_ids: std.ArrayList(ElementId) = .empty,
+
+text_repeat: struct {
+    timer: std.time.Timer = undefined,
+    initial_delay: u64 = 350 * std.time.ns_per_ms,
+    nth_delay: u64 = 50 * std.time.ns_per_ms,
+    state: enum {
+        none,
+        first,
+        nth,
+        fn advance(self: *@This()) void {
+            self.* = switch (self.*) {
+                .none => .first,
+                .first => .nth,
+                else => self.*,
+            };
+        }
+    } = .none,
+} = .{},
 
 pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, bindings: *BindingState) !*Ui {
     const self = try allocator.create(Ui);
@@ -93,6 +111,8 @@ pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *Asse
         .clay_context = clay_context,
         .clay_memory = clay_memory,
     };
+
+    self.text_repeat.timer = try .start();
 
     // Ensure required ui input bindings are registered
     if (!bindings.hasBinding(.primary_mouse)) try bindings.bind(.primary_mouse, default_bindings.primary_mouse);
@@ -331,7 +351,10 @@ pub const Event = struct {
         mouse_up: struct { mouse_position: Vec2, end_element: ?ElementId },
         clicked: struct { mouse_position: Vec2 },
 
-        text: struct { chars: []const BindingState.Char },
+        text: union(enum) {
+            chars: []const BindingState.Char,
+            command: enum { backspace, newline },
+        },
 
         wheel: struct { delta: Vec2 },
 
@@ -874,9 +897,10 @@ fn generateEvents(self: *Ui) !void {
     // --- Handle Text Input Events ---
     // This is processed before activation to give it priority.
     var processed_text_input = false;
-    if (self.char_input.len > 0) {
-        if (self.state.focused_id) |focused_elem| {
-            if (focused_elem.state.event_flags.text) {
+    if (self.state.focused_id) |focused_elem| {
+        if (focused_elem.state.event_flags.text) {
+            // Handle character input
+            if (self.char_input.len > 0) {
                 try self.events.append(self.allocator, .{
                     .element_id = focused_elem.id,
                     .bounding_box = focused_elem.bounding_box,
@@ -884,6 +908,47 @@ fn generateEvents(self: *Ui) !void {
                     .data = .{ .text = .{ .chars = self.char_input } },
                 });
                 processed_text_input = true;
+            }
+
+            // Handle special command keys by accessing the raw input state.
+            const backspace_down = self.bindings.input_state.getKey(.backspace).isDown();
+            const enter_down = self.bindings.input_state.getKey(.enter).isDown();
+
+            if (backspace_down or enter_down) special_text: {
+                switch (self.text_repeat.state) {
+                    .none => {},
+                    .first => if (self.text_repeat.timer.read() < self.text_repeat.initial_delay) {
+                        break :special_text;
+                    },
+                    .nth => if (self.text_repeat.timer.read() < self.text_repeat.nth_delay) {
+                        break :special_text;
+                    },
+                }
+
+                self.text_repeat.state.advance();
+
+                defer self.text_repeat.timer.reset();
+
+                if (backspace_down) {
+                    try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .text = .{ .command = .backspace } },
+                    });
+                    processed_text_input = true;
+                } else {
+                    try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .text = .{ .command = .newline } },
+                    });
+                    processed_text_input = true;
+                }
+            } else {
+                // Neither key is down, so reset the repeat state.
+                self.text_repeat.state = .none;
             }
         }
     }
