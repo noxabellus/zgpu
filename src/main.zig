@@ -872,23 +872,19 @@ fn createLayout(ui: *Ui, lerp_value: f32) !void {
         defer ui.closeElement();
 
         {
-            ui.beginElement();
-            try ui.configureElement(.{
-                .id = .fromSlice("Stuff"),
-            });
+            try ui.openElement(.{ .id = .fromSlice("Stuff") });
             defer ui.closeElement();
 
             for (0..5) |i| {
                 const id = Ui.ElementId.indexed("Focusable", @intCast(i));
 
-                ui.beginElement();
+                try ui.beginElement(id);
                 defer ui.closeElement();
 
                 try ui.configureElement(.{
-                    .id = id,
                     .image = if (i % 2 == 0) wgpu_logo_image_id else zig_logo_image_id,
                     .layout = .{ .sizing = .{ .w = .fixed(32), .h = .fixed(32) } },
-                    .background_color = if (ui.hovered()) COLOR_WHITE else if (focused_element_id == id.id) COLOR_ORANGE else COLOR_BLUE_DARK,
+                    .background_color = if (ui.hovered()) COLOR_WHITE else if (ui.focused()) COLOR_ORANGE else COLOR_BLUE_DARK,
                     .state = .flags(.{ .focus = true }),
                 });
             }
@@ -899,7 +895,7 @@ fn createLayout(ui: *Ui, lerp_value: f32) !void {
             .{
                 .font_id = FONT_ID_BODY,
                 .font_size = 24,
-                .color = if (focused_element_id != null) COLOR_ORANGE else COLOR_BLUE_DARK,
+                .color = if (ui.focusedId() != null) COLOR_ORANGE else COLOR_BLUE_DARK,
             },
         );
 
@@ -936,7 +932,9 @@ fn createLayout(ui: *Ui, lerp_value: f32) !void {
         }
 
         {
-            ui.beginElement();
+            try ui.beginElement(.fromSlice("LinkGithubOuter"));
+            defer ui.closeElement();
+
             try ui.configureElement(.{
                 .layout = .{
                     .padding = .{ .left = 32, .right = 32, .top = 6, .bottom = 6 },
@@ -945,7 +943,6 @@ fn createLayout(ui: *Ui, lerp_value: f32) !void {
                 .corner_radius = .all(10),
                 .background_color = if (ui.hovered()) COLOR_LIGHT_HOVER else COLOR_LIGHT,
             });
-            defer ui.closeElement();
 
             try ui.text("Github", .{
                 .font_id = FONT_ID_BODY,
@@ -965,12 +962,11 @@ fn createLayout(ui: *Ui, lerp_value: f32) !void {
         });
     }
 
-    { // The broken-out pattern is required here so that ui.scrollOffset() works correctly.
-        ui.beginElement();
+    {
+        try ui.beginElement(.fromSrc(@src()));
         defer ui.closeElement();
 
         try ui.configureElement(.{
-            .id = .fromSrc(@src()),
             .clip = .{
                 .vertical = true,
                 .child_offset = ui.scrollOffset(),

@@ -46,6 +46,8 @@ hovered_element_stack: std.ArrayList(StateElement) = .empty,
 navigable_elements: std.AutoHashMapUnmanaged(u32, struct { id: ElementId, state: ElementState }) = .empty,
 // Map from ElementId.id to navigation index for reverse lookup during event generation
 reverse_navigable_elements: std.AutoHashMapUnmanaged(u32, u32) = .empty,
+// Stack of currently open element's user-provided stable IDs
+open_ids: std.ArrayList(ElementId) = .empty,
 
 pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, inputs: *InputState) !*Ui {
     const self = try allocator.create(Ui);
@@ -88,9 +90,11 @@ pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *Asse
 }
 
 pub fn deinit(self: *Ui) void {
+    self.events.deinit(self.allocator);
     self.hovered_element_stack.deinit(self.allocator);
     self.navigable_elements.deinit(self.allocator);
     self.reverse_navigable_elements.deinit(self.allocator);
+    self.open_ids.deinit(self.allocator);
 
     self.allocator.free(self.clay_memory);
     self.allocator.destroy(self);
@@ -100,12 +104,19 @@ pub fn deinit(self: *Ui) void {
 /// Note: it is acceptable to run the layout code multiple times per frame, but all state will be discarded when calling this function.
 pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
     self.render_commands = null;
+
     self.events.clearRetainingCapacity();
     self.hovered_element_stack.clearRetainingCapacity();
     self.navigable_elements.clearRetainingCapacity();
     self.reverse_navigable_elements.clearRetainingCapacity();
+    self.open_ids.clearRetainingCapacity();
+
     self.last_state = self.state; // Save the last frame's state for event generation
     self.state = .{}; // Reset current state; will be populated during layout and event generation
+    // The active and focused elements persist unless an event changes them.
+    self.state.active_id = self.last_state.active_id;
+    self.state.focused_id = self.last_state.focused_id;
+
     self.scroll_delta = self.inputs.consumeScrollDelta();
 
     clay.setCurrentContext(self.clay_context);
@@ -159,30 +170,35 @@ pub fn setDebugMode(self: *Ui, enabled: bool) void {
 /// Create a new, unconfigured element.
 /// * Must be followed by calls to `Ui.configureElement` and `Ui.closeElement`.
 /// * See also `Ui.openElement`, `Ui.elem`.
-pub fn beginElement(self: *Ui) void {
+pub fn beginElement(self: *Ui, id: ElementId) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
+
+    try self.open_ids.append(self.allocator, id);
+
     clay.beginElement();
 }
 
 /// Configure the current element opened with `Ui.beginElement`.
 /// * See also `Ui.openElement`, `Ui.elem`.
-pub fn configureElement(self: *Ui, declaration: ElementDeclaration) !void {
+pub fn configureElement(self: *Ui, declaration: HeadlessElementDeclaration) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    clay.configureElement(declaration.toClay());
+    const id = self.open_ids.items[self.open_ids.items.len - 1];
+    const full = declaration.toFull(id);
+    clay.configureElement(full.toClay());
 
-    try self.handleStateSetup(declaration);
+    try self.handleStateSetup(full);
 }
 
 /// Create a new element with the given declaration.
 /// * Must be followed by a call to `Ui.closeElement`.
 /// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside the passed declaration; use `Ui.beginElement` and `Ui.configureElement` instead.
 /// * See also `Ui.elem`.
-pub fn openElement(self: *Ui, declaration: ElementDeclaration) !void {
+pub fn openElement(self: *Ui, declaration: ElementDeclarationWithId) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    clay.openElement(declaration.toClay());
-
+    try self.beginElement(declaration.id);
+    try self.configureElement(declaration.toHeadless());
     try self.handleStateSetup(declaration);
 }
 
@@ -191,25 +207,29 @@ pub fn openElement(self: *Ui, declaration: ElementDeclaration) !void {
 /// * See also `Ui.elem`.
 pub fn closeElement(self: *Ui) void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
+
+    _ = self.open_ids.pop().?;
+
     clay.closeElement();
 }
 
 /// Create a new element with the given declaration, and immediately close it.
 /// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside this declaration; use `Ui.beginElement`, `Ui.configureElement` and `Ui.closeElement` instead.
-pub fn elem(self: *Ui, declaration: ElementDeclaration) !void {
+pub fn elem(self: *Ui, declaration: ElementDeclarationWithId) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    clay.openElement(declaration.toClay());
-    defer clay.closeElement();
-
-    try self.handleStateSetup(declaration);
+    try self.openElement(declaration);
+    self.closeElement();
 }
 
 /// Create a new text element with the given string and configuration.
 /// * This element type cannot have children, so there is no need to call `Ui.closeElement`.
 /// * This is not intended to work with `Ui.hovered` or `Ui.scrollOffset`; text elements should remain "dumb".
+/// * This cannot be a top-level element.
 pub fn text(self: *Ui, str: []const u8, config: TextElementConfig) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
     clay.text(str, config.toClay());
 }
 
@@ -217,6 +237,8 @@ pub fn text(self: *Ui, str: []const u8, config: TextElementConfig) !void {
 /// * This is for styling logic, not event handling; use the generated event stream for that.
 pub fn hovered(self: *Ui) bool {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
     return clay.hovered();
 }
 
@@ -225,7 +247,53 @@ pub fn hovered(self: *Ui) bool {
 /// * This is for styling logic, not event handling; use the generated event stream for that.
 pub fn scrollOffset(self: *Ui) Vec2 {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
     return vec2FromClay(clay.getScrollOffset());
+}
+
+/// Determine if the currently open element is focused for keyboard input.
+/// * This is for styling logic, not event handling; use the generated event stream for that.
+pub fn focused(self: *Ui) bool {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
+    const focused_id = self.state.focusedIdValue() orelse return false;
+    const current_id = self.open_ids.items[self.open_ids.items.len - 1].id;
+
+    return focused_id == current_id;
+}
+
+/// Determine if the currently open element is the active element, meaning it is currently being clicked or interacted with.
+/// * This is for styling logic, not event handling; use the generated event stream for that.
+pub fn active(self: *Ui) bool {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
+    const active_id = self.state.activeIdValue() orelse return false;
+    const current_id = self.open_ids.items[self.open_ids.items.len - 1].id;
+
+    return active_id == current_id;
+}
+
+/// Get the currently active element's ID, or null if there is no active element.
+pub fn activeId(self: *Ui) ?ElementId {
+    return self.state.activeId();
+}
+
+/// Get the active element ID from the last frame, or null if there was no active element.
+pub fn lastActiveId(self: *Ui) ?ElementId {
+    return self.last_state.activeId();
+}
+
+/// Get the currently focused element's ID, or null if there is no focused element.
+pub fn focusedId(self: *Ui) ?ElementId {
+    return self.state.focusedId();
+}
+
+/// Get the focused element ID from the last frame, or null if there was no focused element.
+pub fn lastFocusedId(self: *Ui) ?ElementId {
+    return self.last_state.focusedId();
 }
 
 // --- Structures ---
@@ -491,12 +559,49 @@ pub const ClipElementConfig = struct {
     }
 };
 
-pub const ElementDeclaration = struct {
-    /// Element IDs have two main use cases.
-    ///
-    /// Firstly, tagging an element with an ID allows you to query information about the element later, such as its mouseover state or dimensions.
-    ///
-    /// Secondly, IDs are visually useful when attempting to read and modify UI code, as well as when using the built-in debug tools.
+pub const HeadlessElementDeclaration = struct {
+    /// Controls various settings that affect the size and position of an element, as well as the sizes and positions of any child elements.
+    layout: LayoutConfig = .{},
+    /// Controls the background color of the resulting element.
+    /// By convention specified as 0-255, but interpretation is up to the renderer.
+    /// If no other config is specified, `.background_color` will generate a `RECTANGLE` render command, otherwise it will be passed as a property to `IMAGE` or `CUSTOM` render commands.
+    background_color: Color = .{},
+    /// Controls the "radius", or corner rounding of elements, including rectangles, borders and images.
+    corner_radius: CornerRadius = .{},
+    // Controls settings related to aspect ratio scaling.
+    aspect_ratio: AspectRatioElementConfig = 0,
+    /// Controls settings related to image elements.
+    image: ImageElementConfig = null,
+    /// Controls whether and how an element "floats", which means it layers over the top of other elements in z order, and doesn't affect the position and size of siblings or parent elements.
+    /// Note: in order to activate floating, `.floating.attachTo` must be set to something other than the default value.
+    floating: FloatingElementConfig = .{},
+    /// Used to create CUSTOM render commands, usually to render element types not supported by default.
+    custom: CustomElementConfig = null,
+    /// Controls whether an element should clip its contents and allow scrolling rather than expanding to contain them.
+    clip: ClipElementConfig = .{},
+    /// Controls settings related to element borders, and will generate BORDER render command
+    border: BorderElementConfig = .{},
+    /// A pointer that will be transparently passed through to resulting render command
+    state: ElementState = .none,
+
+    fn toFull(self: HeadlessElementDeclaration, id: ElementId) ElementDeclarationWithId {
+        return ElementDeclarationWithId{
+            .id = id,
+            .layout = self.layout,
+            .background_color = self.background_color,
+            .corner_radius = self.corner_radius,
+            .aspect_ratio = self.aspect_ratio,
+            .image = self.image,
+            .floating = self.floating,
+            .custom = self.custom,
+            .clip = self.clip,
+            .border = self.border,
+            .state = self.state,
+        };
+    }
+};
+
+pub const ElementDeclarationWithId = struct {
     id: ElementId = .{},
     /// Controls various settings that affect the size and position of an element, as well as the sizes and positions of any child elements.
     layout: LayoutConfig = .{},
@@ -522,7 +627,22 @@ pub const ElementDeclaration = struct {
     /// A pointer that will be transparently passed through to resulting render command
     state: ElementState = .none,
 
-    fn toClay(self: ElementDeclaration) clay.ElementDeclaration {
+    fn toHeadless(self: ElementDeclarationWithId) HeadlessElementDeclaration {
+        return HeadlessElementDeclaration{
+            .layout = self.layout,
+            .background_color = self.background_color,
+            .corner_radius = self.corner_radius,
+            .aspect_ratio = self.aspect_ratio,
+            .image = self.image,
+            .floating = self.floating,
+            .custom = self.custom,
+            .clip = self.clip,
+            .border = self.border,
+            .state = self.state,
+        };
+    }
+
+    fn toClay(self: ElementDeclarationWithId) clay.ElementDeclaration {
         return clay.ElementDeclaration{
             .id = self.id,
             .layout = self.layout,
@@ -631,7 +751,7 @@ fn clayColorToBatchColor(c: clay.Color) Batch2D.Color {
 
 // --- Backend implementation --- //
 
-fn handleStateSetup(self: *Ui, declaration: ElementDeclaration) !void {
+fn handleStateSetup(self: *Ui, declaration: ElementDeclarationWithId) !void {
     // Add navigable elements to the map in the order they are declared
     if (declaration.state.event_flags.focus) {
         const index = self.navigable_elements.count();
@@ -694,11 +814,6 @@ fn generateEvents(self: *Ui) !void {
 
     const mouse_pos = self.inputs.getMousePosition();
     const left_button = self.inputs.getMouseButton(.left);
-
-    // --- Preserve state from last frame ---
-    // The active and focused elements persist unless an event changes them.
-    self.state.active_id = self.last_state.active_id;
-    self.state.focused_id = self.last_state.focused_id;
 
     // The top-most element in the stack is the one we consider "hovered" for this frame.
     if (self.hovered_element_stack.items.len > 0) {
