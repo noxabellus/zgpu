@@ -38,6 +38,7 @@ user_data: ?*anyopaque = null,
 
 state: State = .{},
 last_state: State = .{},
+scroll_delta: Vec2 = .{},
 
 // Map from navigation index to element ID for quick lookup during keyboard navigation
 navigable_elements: std.AutoHashMapUnmanaged(u32, struct { id: ElementId, state: ElementState }) = .empty,
@@ -101,6 +102,7 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
     self.reverse_navigable_elements.clearRetainingCapacity();
     self.last_state = self.state; // Save the last frame's state for event generation
     self.state = .{}; // Reset current state; will be populated during layout and event generation
+    self.scroll_delta = self.inputs.consumeScrollDelta();
 
     clay.setCurrentContext(self.clay_context);
 
@@ -109,10 +111,9 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
     // Although we inform Clay of current mouse button state, it is only used in debug mode or for drag scrolling.
     clay.setPointerState(vec2ToClay(self.inputs.getMousePosition()), self.inputs.getMouseButton(.left).isDown());
 
-    const delta = self.inputs.consumeScrollDelta();
     clay.updateScrollContainers(
         false, // never use drag scrolling
-        vec2ToClay(delta),
+        vec2ToClay(self.scroll_delta),
         delta_ms,
     );
 
@@ -242,6 +243,8 @@ pub const Event = struct {
 
         focus_gained: void,
         focus_lost: void,
+
+        scroll: struct { delta: Vec2 },
     };
 };
 
@@ -695,6 +698,12 @@ fn generateEvents(self: *Ui) !void {
     self.state.active_id = self.last_state.active_id; // TODO: should this move to beginLayout?
     self.state.focused_id = self.last_state.focused_id;
 
+    // TODO: In order to properly handle mouse events,
+    // we need a *stack* of hovered elements. These can be accumulated during layout;
+    // since elements are nested, the last one will be the top-most in z. We can then
+    // traverse backwards through the stack to find the first element accepting
+    // the event type.
+
     // --- Handle Hover Events ---
     // This logic compares the hovered element from the last frame to the current one.
     if (self.last_state.hovered) |last_hovered| {
@@ -761,6 +770,7 @@ fn generateEvents(self: *Ui) !void {
             self.state.focused_id = null;
         }
     }
+
     if (left_button.isUp()) {
         // If an element was active...
         if (self.last_state.active_id) |last_active| {
@@ -835,6 +845,21 @@ fn generateEvents(self: *Ui) !void {
                 .user_data = new_focused.state.getUserData(),
                 .data = .focus_gained,
             });
+        }
+    }
+
+    // --- Handle Scroll Events ---
+    if (self.scroll_delta.x != 0 or self.scroll_delta.y != 0) {
+        // A scroll event is dispatched to the currently hovered element, if it is scrollable.
+        if (self.state.hovered) |hovered_state| {
+            if (hovered_state.state.event_flags.scroll) {
+                try self.events.append(self.allocator, .{
+                    .element_id = hovered_state.id,
+                    .bounding_box = hovered_state.bounding_box,
+                    .user_data = hovered_state.state.getUserData(),
+                    .data = .{ .scroll = .{ .delta = self.scroll_delta } },
+                });
+            }
         }
     }
 }

@@ -867,6 +867,7 @@ fn createLayout(ui: *Ui, lerp_value: f32) !void {
                 .padding = .{ .left = 32, .right = 32 },
                 .child_gap = 24,
             },
+            .state = .scrollable,
         });
         defer ui.closeElement();
 
@@ -1236,6 +1237,9 @@ pub fn main() !void {
                         log.info("focus_lost id={any}", .{event.element_id});
 
                         focused_element_id = null;
+                    },
+                    .scroll => |scroll_data| {
+                        log.info("scroll id={any} delta={f}", .{ event.element_id, scroll_data.delta });
                     },
                 }
             }
