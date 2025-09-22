@@ -885,7 +885,7 @@ fn createLayout(ui: *Ui, lerp_value: f32) !void {
                     .image = if (i % 2 == 0) wgpu_logo_image_id else zig_logo_image_id,
                     .layout = .{ .sizing = .{ .w = .fixed(32), .h = .fixed(32) } },
                     .background_color = if (ui.hovered()) COLOR_WHITE else if (ui.focused()) COLOR_ORANGE else COLOR_BLUE_DARK,
-                    .state = .flags(.{ .focus = true }),
+                    .state = .all,
                 });
             }
         }
@@ -1219,7 +1219,7 @@ pub fn main() !void {
                         log.info("mouse_down id={any} loc={f}", .{ event.element_id, mouse_down_data.mouse_position });
                     },
                     .mouse_up => |mouse_up_data| {
-                        log.info("mouse_up id={any} loc={f}", .{ event.element_id, mouse_up_data.mouse_position });
+                        log.info("mouse_up id={any} loc={f} end_id={any}", .{ event.element_id, mouse_up_data.mouse_position, mouse_up_data.end_element });
                     },
                     .clicked => |clicked_data| {
                         log.info("clicked id={any} loc={f}", .{ event.element_id, clicked_data.mouse_position });
@@ -1232,10 +1232,22 @@ pub fn main() !void {
 
                         focused_element_id = event.element_id.id;
                     },
+                    .focusing => {
+                        // log.info("focusing id={any}", .{event.element_id});
+                    },
                     .focus_lost => {
                         log.info("focus_lost id={any}", .{event.element_id});
 
                         focused_element_id = null;
+                    },
+                    .activate_begin => {
+                        log.info("activate_begin id={any}", .{event.element_id});
+                    },
+                    .activating => {
+                        // log.info("activating id={any}", .{event.element_id});
+                    },
+                    .activate_end => |activate_end_data| {
+                        log.info("activate_end id={any} end_element={any}", .{ event.element_id, activate_end_data.end_element });
                     },
                 }
             }

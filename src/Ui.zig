@@ -319,7 +319,12 @@ pub const Event = struct {
         wheel: struct { delta: Vec2 },
 
         focus_gained: void,
+        focusing: void,
         focus_lost: void,
+
+        activate_begin: void,
+        activating: void,
+        activate_end: struct { end_element: ?ElementId },
     };
 };
 
@@ -368,14 +373,23 @@ pub const ElementState = packed struct(usize) {
         wheel: bool = false,
         click: bool = false,
         focus: bool = false,
+        activate: bool = false,
 
-        _reserved: u12 = 0,
+        _reserved: u11 = 0,
 
         pub const none = Flags{};
         pub const hoverable = Flags{ .hover = true };
         pub const scrollable = Flags{ .wheel = true };
         pub const clickable = Flags{ .click = true };
         pub const focusable = Flags{ .focus = true };
+        pub const activatable = Flags{ .activate = true };
+        pub const all = Flags{
+            .hover = true,
+            .wheel = true,
+            .click = true,
+            .focus = true,
+            .activate = true,
+        };
 
         pub fn merge(a: Flags, b: Flags) Flags {
             return Flags{
@@ -383,11 +397,12 @@ pub const ElementState = packed struct(usize) {
                 .wheel = a.wheel or b.wheel,
                 .click = a.click or b.click,
                 .focus = a.focus or b.focus,
+                .activate = a.activate or b.activate,
             };
         }
 
         pub fn takesInput(self: Flags) bool {
-            return self.hover or self.wheel or self.click or self.focus;
+            return self.hover or self.wheel or self.click or self.focus or self.activate;
         }
 
         pub fn usesMouse(self: Flags) bool {
@@ -400,6 +415,8 @@ pub const ElementState = packed struct(usize) {
     pub const scrollable = ElementState{ .event_flags = .scrollable };
     pub const clickable = ElementState{ .event_flags = .clickable };
     pub const focusable = ElementState{ .event_flags = .focusable };
+    pub const activatable = ElementState{ .event_flags = .activatable };
+    pub const all = ElementState{ .event_flags = .all };
 
     pub fn flags(f: Flags) ElementState {
         return ElementState{ .event_flags = f };
@@ -817,6 +834,7 @@ fn generateEvents(self: *Ui) !void {
 
     const mouse_pos = self.inputs.getMousePosition();
     const left_button = self.inputs.getMouseButton(.left);
+    const enter_key = self.inputs.getKey(.enter);
 
     // The top-most element in the stack is the one we consider "hovered" for this frame.
     if (self.hovered_element_stack.items.len > 0) {
@@ -858,61 +876,67 @@ fn generateEvents(self: *Ui) !void {
         }
     }
 
-    // --- Handle Active (Click) Events ---
+    // --- Handle Active State and Focus-on-click ---
+    // Determine the current active element based on continuous input state. Mouse input takes precedence.
+    var is_mouse_activating = false;
     if (left_button.isDown()) {
-        var clear_focus = true;
         var found_click_target = false;
 
         // Iterate through the hovered stack from top to bottom to find the correct event target.
         for (self.hovered_element_stack.items, 0..) |_, i| {
             const hovered_state = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1 - i];
 
-            // The first clickable element we find becomes active.
-            if (!found_click_target and hovered_state.state.event_flags.click) {
+            // The first clickable or activatable element we find becomes active.
+            if (!found_click_target and (hovered_state.state.event_flags.click or hovered_state.state.event_flags.activate)) {
                 self.state.active_id = hovered_state;
+                is_mouse_activating = true;
                 found_click_target = true;
-
-                if (self.state.activeIdValue() != self.last_state.activeIdValue()) {
-                    // we only generate mouse down events when the active element changes
-                    try self.events.append(self.allocator, .{
-                        .element_id = hovered_state.id,
-                        .bounding_box = hovered_state.bounding_box,
-                        .user_data = hovered_state.state.getUserData(),
-                        .data = .{ .mouse_down = .{ .mouse_position = mouse_pos } },
-                    });
-                }
+                break;
             }
+        }
+    }
 
-            // The first focusable element we find gains focus when clicked.
-            if (clear_focus and hovered_state.state.event_flags.focus) {
+    // If mouse isn't activating, check keyboard.
+    if (!is_mouse_activating) {
+        if (enter_key.isDown() and self.state.focused_id != null) {
+            if (self.state.focused_id.?.state.event_flags.activate) {
+                self.state.active_id = self.state.focused_id.?;
+            } else {
+                self.state.active_id = null;
+            }
+        } else {
+            self.state.active_id = null;
+        }
+    }
+
+    // Handle focus changes on mouse press
+    if (left_button == .pressed) {
+        var clear_focus = true;
+        for (self.hovered_element_stack.items, 0..) |_, i| {
+            const hovered_state = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1 - i];
+            if (hovered_state.state.event_flags.focus) {
                 self.state.focused_id = hovered_state;
                 clear_focus = false;
+                break;
             }
-
-            // If we've found targets for both actions, we can stop searching.
-            if (found_click_target and !clear_focus) break;
         }
-
         if (clear_focus) {
             self.state.focused_id = null;
         }
     }
 
-    if (left_button.isUp()) {
-        // If an element was active...
-        if (self.last_state.active_id) |last_active| {
-            if (last_active.state.event_flags.click) {
-                // ...and the mouse is released, it is no longer active.
-                try self.events.append(self.allocator, .{
-                    .element_id = last_active.id,
-                    .bounding_box = last_active.bounding_box,
-                    .user_data = last_active.state.getUserData(),
-                    .data = .{ .mouse_up = .{ .mouse_position = mouse_pos, .end_element = self.state.hoveredId() } },
-                });
-            }
+    // --- Generate Mouse Release Events ---
+    if (left_button == .released and self.last_state.active_id != null) {
+        const last_active = self.last_state.active_id.?;
+        if (last_active.state.event_flags.click) {
+            try self.events.append(self.allocator, .{
+                .element_id = last_active.id,
+                .bounding_box = last_active.bounding_box,
+                .user_data = last_active.state.getUserData(),
+                .data = .{ .mouse_up = .{ .mouse_position = mouse_pos, .end_element = self.state.hoveredId() } },
+            });
 
             if (last_active.id.id == self.state.hoveredIdValue()) {
-                // ...and the mouse is released over that same element, it's a click.
                 try self.events.append(self.allocator, .{
                     .element_id = last_active.id,
                     .bounding_box = last_active.bounding_box,
@@ -920,9 +944,47 @@ fn generateEvents(self: *Ui) !void {
                     .data = .{ .clicked = .{ .mouse_position = mouse_pos } },
                 });
             }
+        }
+    }
 
-            // The element is no longer active after the mouse is released.
-            self.state.active_id = null;
+    // --- Generate Activation and Mouse Down Events from State Changes ---
+    if (self.state.activeIdValue() != self.last_state.activeIdValue()) {
+        if (self.last_state.active_id) |last_active| {
+            if (last_active.state.event_flags.activate) {
+                try self.events.append(self.allocator, .{
+                    .element_id = last_active.id,
+                    .bounding_box = last_active.bounding_box,
+                    .user_data = last_active.state.getUserData(),
+                    .data = .{ .activate_end = .{ .end_element = self.state.hoveredId() } },
+                });
+            }
+        }
+        if (self.state.active_id) |new_active| {
+            if (is_mouse_activating and new_active.state.event_flags.click) {
+                try self.events.append(self.allocator, .{
+                    .element_id = new_active.id,
+                    .bounding_box = new_active.bounding_box,
+                    .user_data = new_active.state.getUserData(),
+                    .data = .{ .mouse_down = .{ .mouse_position = mouse_pos } },
+                });
+            }
+            if (new_active.state.event_flags.activate) {
+                try self.events.append(self.allocator, .{
+                    .element_id = new_active.id,
+                    .bounding_box = new_active.bounding_box,
+                    .user_data = new_active.state.getUserData(),
+                    .data = .activate_begin,
+                });
+            }
+        }
+    } else if (self.state.active_id) |active_elem| {
+        if (active_elem.state.event_flags.activate) {
+            try self.events.append(self.allocator, .{
+                .element_id = active_elem.id,
+                .bounding_box = active_elem.bounding_box,
+                .user_data = active_elem.state.getUserData(),
+                .data = .activating,
+            });
         }
     }
 
@@ -953,9 +1015,7 @@ fn generateEvents(self: *Ui) !void {
     }
 
     // --- Generate Focus Change Events ---
-    // After all potential focus changes, compare with the last frame to generate events.
     if (self.state.focusedIdValue() != self.last_state.focusedIdValue()) {
-        // If there was a previously focused element, it has now lost focus.
         if (self.last_state.focused_id) |last_focused| {
             try self.events.append(self.allocator, .{
                 .element_id = last_focused.id,
@@ -964,7 +1024,6 @@ fn generateEvents(self: *Ui) !void {
                 .data = .focus_lost,
             });
         }
-        // If there's a new focused element, it has now gained focus.
         if (self.state.focused_id) |new_focused| {
             try self.events.append(self.allocator, .{
                 .element_id = new_focused.id,
@@ -973,6 +1032,15 @@ fn generateEvents(self: *Ui) !void {
                 .data = .focus_gained,
             });
         }
+    }
+
+    if (self.state.focused_id) |focused_elem| {
+        try self.events.append(self.allocator, .{
+            .element_id = focused_elem.id,
+            .bounding_box = focused_elem.bounding_box,
+            .user_data = focused_elem.state.getUserData(),
+            .data = .focusing,
+        });
     }
 
     // --- Handle Wheel Events ---
