@@ -93,13 +93,17 @@ const border_data = Ui.BorderData{
     .color = COLOR_RED,
 };
 
-const test_text = "This is some test text darling!\nThis is some test text darling!\nThis is some test text darling!\n";
+const test_text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla feugiat convallis viverra.\nNulla luctus odio arcu. Cras pellentesque vitae lorem vel egestas.\n";
 var caret_index: u32 = 32;
 
 fn createLayout(ui: *Ui) !void {
     try ui.openElement(.{
         .id = .fromSlice("OuterContainer"),
-        .layout = .{ .sizing = .grow, .direction = .top_to_bottom },
+        .layout = .{
+            .sizing = .grow,
+            .direction = .top_to_bottom,
+            .child_alignment = .center,
+        },
         .background_color = COLOR_LIGHT,
     });
     defer ui.closeElement();
@@ -388,7 +392,7 @@ pub fn main() !void {
 
                             clay.setCurrentContext(ui.clay_context);
                             defer clay.setCurrentContext(null);
-                            
+
                             const offset = clay.getCharacterIndexAtOffset(id, location);
 
                             log.info("  -> offset result: index={d} found={any}", .{ offset.index, offset.found });
