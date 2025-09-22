@@ -7,6 +7,7 @@ const builtin = @import("builtin");
 const wgpu = @import("wgpu");
 const stbi = @import("stbi");
 const glfw = @import("glfw");
+const clay = @import("clay");
 
 pub const debug = @import("debug.zig");
 pub const Batch2D = @import("Batch2D.zig");
@@ -92,765 +93,10 @@ const border_data = Ui.BorderData{
     .color = COLOR_RED,
 };
 
-fn landingPageBlob(ui: *Ui, index: u32, font_size: u16, font_id: AssetCache.FontId, color: Ui.Color, image_size: f32, width: f32, text: []const u8, image: AssetCache.ImageId) !void {
-    try ui.openElement(.{
-        .id = .indexed("HeroBlob", index),
-        .layout = .{
-            .sizing = .{ .w = .growMinMax(.{ .max = width }) },
-            .padding = .all(16),
-            .child_gap = 16,
-            .child_alignment = .{ .y = .center },
-        },
-        .border = .{ .width = .all(2), .color = color },
-        .corner_radius = .all(10),
-    });
-    defer ui.closeElement();
+const test_text = "This is some test text darling!\nThis is some test text darling!\nThis is some test text darling!\n";
+var caret_index: u32 = 32;
 
-    try ui.elem(.{
-        .id = .indexed("CheckImage", index),
-        .layout = .{ .sizing = .{ .w = .fixed(image_size) } },
-        .aspect_ratio = 1,
-        .image = image,
-    });
-
-    try ui.text(text, .{ .font_size = font_size, .font_id = font_id, .color = color });
-}
-
-fn recreatedBlob(ui: *Ui) !void {
-    const font_size = 30;
-    const font_id = FONT_ID_BODY;
-    const image_size = 64;
-    const width = 510;
-    const text = "The official Clay website recreated with zgpu";
-
-    try ui.openElement(.{
-        .id = .fromSlice("RecreatedBlob"),
-        .layout = .{
-            .sizing = .{ .w = .growMinMax(.{ .max = width }) },
-            .padding = .all(16),
-            .child_gap = 16,
-            .child_alignment = .{ .y = .center },
-        },
-        .border = .{ .width = .all(2), .color = COLOR_BLOB_BORDER_5 },
-        .corner_radius = .all(10),
-    });
-    defer ui.closeElement();
-
-    try ui.elem(.{
-        .id = .fromSlice("ZigLogo"),
-        .layout = .{ .sizing = .{ .w = .fixed(image_size) } },
-        .aspect_ratio = 1,
-        .image = zig_logo_image_id,
-    });
-
-    try ui.text(text, .{
-        .font_size = font_size,
-        .font_id = font_id,
-        .color = COLOR_BLOB_BORDER_5,
-        .alignment = .center,
-    });
-
-    try ui.elem(.{
-        .id = .fromSlice("WGPULogo"),
-        .layout = .{ .sizing = .{ .w = .fixed(image_size) } },
-        .aspect_ratio = 1,
-        .image = wgpu_logo_image_id,
-    });
-}
-
-fn landingPageDesktop(ui: *Ui) !void {
-    try ui.openElement(.{
-        .id = .fromSlice("LandingPage1Desktop"),
-        .layout = .{
-            .sizing = .{
-                .w = .grow,
-                .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 70) }),
-            },
-            .child_alignment = .{ .y = .center },
-            .padding = .{ .left = 50, .right = 50 },
-        },
-    });
-    defer ui.closeElement();
-
-    {
-        try ui.openElement(.{
-            .id = .fromSlice("LandingPage1"),
-            .layout = .{
-                .sizing = .{ .w = .grow, .h = .grow },
-                .direction = .top_to_bottom,
-                .child_alignment = .{ .x = .center },
-                .padding = .all(32),
-                .child_gap = 32,
-            },
-            .border = .{ .width = .{ .left = 2, .right = 2 }, .color = COLOR_RED },
-        });
-        defer ui.closeElement();
-
-        try recreatedBlob(ui);
-
-        {
-            try ui.openElement(.{ .id = .fromSlice("ClayPresentation"), .layout = .{
-                .sizing = .grow,
-                .child_alignment = .{ .y = .center },
-                .child_gap = 16,
-            } });
-            defer ui.closeElement();
-
-            {
-                try ui.openElement(.{
-                    .id = .fromSlice("LeftText"),
-                    .layout = .{
-                        .sizing = .{ .w = .percent(0.55) },
-                        .direction = .top_to_bottom,
-                        .child_gap = 8,
-                    },
-                });
-                defer ui.closeElement();
-
-                try ui.text(
-                    "Clay is a flex-box style UI auto layout library in C, with declarative syntax and microsecond performance.",
-                    .{ .font_size = 56, .font_id = FONT_ID_TITLE, .color = COLOR_RED },
-                );
-                try ui.elem(.{
-                    .layout = .{
-                        .sizing = .{ .w = .grow, .h = .fixed(32) },
-                    },
-                });
-                try ui.text(
-                    "Clay is laying out this window right now!",
-                    .{ .font_size = 36, .font_id = FONT_ID_BODY, .color = COLOR_ORANGE },
-                );
-            }
-
-            {
-                try ui.openElement(.{
-                    .id = .fromSlice("HeroImageOuter"),
-                    .layout = .{
-                        .sizing = .{ .w = .percent(0.45) },
-                        .direction = .top_to_bottom,
-                        .child_alignment = .{ .x = .center },
-                        .child_gap = 16,
-                    },
-                });
-                defer ui.closeElement();
-
-                try landingPageBlob(
-                    ui,
-                    1,
-                    30,
-                    FONT_ID_BODY,
-                    COLOR_BLOB_BORDER_5,
-                    32,
-                    480,
-                    "High performance",
-                    check_image5_id,
-                );
-
-                try landingPageBlob(
-                    ui,
-                    2,
-                    30,
-                    FONT_ID_BODY,
-                    COLOR_BLOB_BORDER_4,
-                    32,
-                    480,
-                    "Flexbox-style responsive layout",
-                    check_image4_id,
-                );
-
-                try landingPageBlob(
-                    ui,
-                    3,
-                    30,
-                    FONT_ID_BODY,
-                    COLOR_BLOB_BORDER_3,
-                    32,
-                    480,
-                    "Declarative syntax",
-                    check_image3_id,
-                );
-
-                try landingPageBlob(
-                    ui,
-                    4,
-                    30,
-                    FONT_ID_BODY,
-                    COLOR_BLOB_BORDER_2,
-                    32,
-                    480,
-                    "Single .h file for C/C++",
-                    check_image2_id,
-                );
-
-                try landingPageBlob(
-                    ui,
-                    5,
-                    30,
-                    FONT_ID_BODY,
-                    COLOR_BLOB_BORDER_1,
-                    32,
-                    480,
-                    "Compile to 15kb .wasm",
-                    check_image1_id,
-                );
-            }
-        }
-    }
-}
-
-fn landingPageMobile(ui: *Ui) !void {
-    try ui.openElement(.{
-        .id = .fromSlice("LandingPage1Mobile"),
-        .layout = .{
-            .sizing = .{
-                .w = .grow,
-                .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 70) }),
-            },
-            .direction = .top_to_bottom,
-            .child_alignment = .center,
-            .padding = .{ .left = 16, .right = 16, .top = 32, .bottom = 32 },
-            .child_gap = 16,
-        },
-    });
-    defer ui.closeElement();
-
-    try recreatedBlob(ui);
-
-    {
-        try ui.openElement(.{
-            .id = .fromSlice("LeftText"),
-            .layout = .{
-                .sizing = .{ .w = .grow },
-                .direction = .top_to_bottom,
-                .child_gap = 8,
-            },
-        });
-        defer ui.closeElement();
-
-        try ui.text(
-            "Clay is a flex-box style UI auto layout library in C, with declarative syntax and microsecond performance.",
-            .{ .font_size = 56, .font_id = FONT_ID_TITLE, .color = COLOR_RED },
-        );
-        try ui.elem(.{ .layout = .{
-            .sizing = .{
-                .w = .grow,
-                .h = .fixed(32),
-            },
-        } });
-        try ui.text(
-            "Clay is laying out this window right now!",
-            .{ .font_size = 36, .font_id = FONT_ID_BODY, .color = COLOR_ORANGE },
-        );
-    }
-
-    {
-        try ui.openElement(.{ .id = .fromSlice("HeroImageOuter"), .layout = .{
-            .sizing = .{ .w = .grow },
-            .direction = .top_to_bottom,
-            .child_alignment = .{ .x = .center },
-            .child_gap = 16,
-        } });
-        defer ui.closeElement();
-
-        try landingPageBlob(
-            ui,
-            1,
-            30,
-            FONT_ID_BODY,
-            COLOR_BLOB_BORDER_5,
-            32,
-            480,
-            "High performance",
-            check_image5_id,
-        );
-
-        try landingPageBlob(
-            ui,
-            2,
-            30,
-            FONT_ID_BODY,
-            COLOR_BLOB_BORDER_4,
-            32,
-            480,
-            "Flexbox-style responsive layout",
-            check_image4_id,
-        );
-
-        try landingPageBlob(
-            ui,
-            3,
-            30,
-            FONT_ID_BODY,
-            COLOR_BLOB_BORDER_3,
-            32,
-            480,
-            "Declarative syntax",
-            check_image3_id,
-        );
-
-        try landingPageBlob(
-            ui,
-            4,
-            30,
-            FONT_ID_BODY,
-            COLOR_BLOB_BORDER_2,
-            32,
-            480,
-            "Single .h file for C/C++",
-            check_image2_id,
-        );
-
-        try landingPageBlob(
-            ui,
-            5,
-            30,
-            FONT_ID_BODY,
-            COLOR_BLOB_BORDER_1,
-            32,
-            480,
-            "Compile to 15kb .wasm",
-            check_image1_id,
-        );
-    }
-}
-
-fn featureBlocks(ui: *Ui, width_sizing: Ui.SizingAxis, outer_padding: u16) !void {
-    const text_config = Ui.TextElementConfig{ .font_size = 24, .font_id = FONT_ID_BODY, .color = COLOR_RED };
-
-    {
-        try ui.openElement(.{
-            .id = .fromSlice("HFileBoxOuter"),
-            .layout = .{
-                .direction = .top_to_bottom,
-                .sizing = .{ .w = width_sizing },
-                .child_alignment = .{ .y = .center },
-                .padding = .{ .left = outer_padding, .right = outer_padding, .top = 32, .bottom = 32 },
-                .child_gap = 8,
-            },
-        });
-        defer ui.closeElement();
-
-        {
-            try ui.openElement(.{
-                .id = .fromSlice("HFileIncludeOuter"),
-                .layout = .{ .padding = .{ .left = 8, .right = 8, .top = 4, .bottom = 4 } },
-                .background_color = COLOR_RED,
-                .corner_radius = .all(8),
-            });
-            defer ui.closeElement();
-
-            try ui.text(
-                "#include ui.h",
-                .{ .font_size = 24, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT },
-            );
-        }
-
-        try ui.text("~2000 lines of C99.", text_config);
-        try ui.text("Zero dependencies, including no C standard library", text_config);
-    }
-
-    {
-        try ui.openElement(.{
-            .id = .fromSlice("BringYourOwnRendererOuter"),
-            .layout = .{
-                .direction = .top_to_bottom,
-                .sizing = .{ .w = width_sizing },
-                .child_alignment = .{ .y = .center },
-                .padding = .{ .left = outer_padding, .right = outer_padding, .top = 32, .bottom = 32 },
-                .child_gap = 8,
-            },
-        });
-        defer ui.closeElement();
-
-        try ui.text(
-            "Renderer agnostic.",
-            .{ .font_size = 24, .font_id = FONT_ID_BODY, .color = COLOR_ORANGE },
-        );
-        try ui.text("Layout with clay, then render with Raylib, WebGL Canvas or even as HTML.", text_config);
-        try ui.text("Flexible output for easy compositing in your custom engine or environment.", text_config);
-    }
-}
-
-fn featureBlocksDesktop(ui: *Ui) !void {
-    try ui.openElement(.{
-        .id = .fromSlice("FeatureBlocksOuter"),
-        .layout = .{
-            .sizing = .{ .w = .grow },
-            .child_alignment = .{ .y = .center },
-        },
-        .border = .{ .width = .{ .between_children = 2 }, .color = COLOR_RED },
-    });
-    defer ui.closeElement();
-
-    try featureBlocks(ui, .percent(0.5), 50);
-}
-
-fn featureBlocksMobile(ui: *Ui) !void {
-    try ui.openElement(.{
-        .id = .fromSlice("FeatureBlocksOuter"),
-        .layout = .{
-            .sizing = .{ .w = .grow },
-            .direction = .top_to_bottom,
-        },
-        .border = .{ .width = .{ .between_children = 2 }, .color = COLOR_RED },
-    });
-    defer ui.closeElement();
-
-    try featureBlocks(ui, .grow, 16);
-}
-
-fn declarativeSyntaxPage(ui: *Ui, title_text_config: Ui.TextElementConfig, width_sizing: Ui.SizingAxis) !void {
-    {
-        try ui.openElement(.{ .id = .fromSlice("SyntaxPageLeftText"), .layout = .{
-            .sizing = .{ .w = width_sizing },
-            .direction = .top_to_bottom,
-            .child_gap = 8,
-        } });
-        defer ui.closeElement();
-
-        try ui.text("Declarative Syntax", title_text_config);
-        try ui.elem(.{ .layout = .{ .sizing = .{ .w = .growMinMax(.{ .max = 16 }) } } });
-
-        const text_conf = Ui.TextElementConfig{
-            .font_size = 28,
-            .font_id = FONT_ID_BODY,
-            .color = COLOR_RED,
-        };
-        try ui.text("Flexible and readable declarative syntax with nested UI element hierarchies.", text_conf);
-        try ui.text("Mix elements with standard C code like loops, conditionals and functions.", text_conf);
-        try ui.text("Create your own library of re-usable components from UI primitives like text, images and rectangles.", text_conf);
-    }
-
-    {
-        try ui.openElement(.{ .id = .fromSlice("SyntaxPageRightImageOuter"), .layout = .{
-            .sizing = .{ .w = width_sizing },
-            .child_alignment = .{ .x = .center },
-        } });
-        defer ui.closeElement();
-
-        try ui.elem(.{
-            .id = .fromSlice("SyntaxPageRightImage"),
-            .layout = .{ .sizing = .{ .w = .growMinMax(.{ .max = 568 }) } },
-            .aspect_ratio = 1194 / 1136,
-            .image = syntax_image_id,
-        });
-    }
-}
-
-fn declarativeSyntaxPageDesktop(ui: *Ui) !void {
-    try ui.openElement(.{
-        .id = .fromSlice("SyntaxPageDesktop"),
-        .layout = .{
-            .sizing = .{
-                .w = .grow,
-                .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }),
-            },
-            .child_alignment = .{ .y = .center },
-            .padding = .{ .left = 50, .right = 50 },
-        },
-    });
-    defer ui.closeElement();
-
-    {
-        try ui.openElement(.{
-            .id = .fromSlice("SyntaxPage"),
-            .layout = .{
-                .sizing = .{ .w = .grow, .h = .grow },
-                .child_alignment = .{ .y = .center },
-                .padding = .all(32),
-                .child_gap = 32,
-            },
-            .border = .{
-                .width = .{ .left = 2, .right = 2 },
-                .color = COLOR_RED,
-            },
-        });
-        defer ui.closeElement();
-
-        try declarativeSyntaxPage(
-            ui,
-            .{ .font_size = 52, .font_id = FONT_ID_TITLE, .color = COLOR_RED },
-            .percent(0.5),
-        );
-    }
-}
-
-fn declarativeSyntaxPageMobile(ui: *Ui) !void {
-    try ui.openElement(.{
-        .id = .fromSlice("SyntaxPageMobile"),
-        .layout = .{
-            .direction = .top_to_bottom,
-            .sizing = .{
-                .w = .grow,
-                .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }),
-            },
-            .child_alignment = .center,
-            .padding = .{ .left = 16, .right = 16, .top = 32, .bottom = 32 },
-            .child_gap = 16,
-        },
-    });
-    defer ui.closeElement();
-
-    try declarativeSyntaxPage(
-        ui,
-        .{ .font_size = 48, .font_id = FONT_ID_TITLE, .color = COLOR_RED },
-        .grow,
-    );
-}
-
-const LOREM_IPSUM_TEXT = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.";
-
-fn highPerformancePage(ui: *Ui, lerp_value: f32, title_text_tonfig: Ui.TextElementConfig, width_sizing: Ui.SizingAxis) !void {
-    {
-        try ui.openElement(.{
-            .id = .fromSlice("PerformanceLeftText"),
-            .layout = .{
-                .sizing = .{ .w = width_sizing },
-                .direction = .top_to_bottom,
-                .child_gap = 8,
-            },
-        });
-        defer ui.closeElement();
-
-        try ui.text("High Performance", title_text_tonfig);
-        try ui.elem(.{ .layout = .{
-            .sizing = .{ .w = .growMinMax(.{ .max = 16 }) },
-        } });
-        try ui.text(
-            "Fast enough to recompute your entire UI every frame.",
-            .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT },
-        );
-        try ui.text(
-            "Small memory footprint (3.5mb default) with static allocation & reuse. No malloc / free.",
-            .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT },
-        );
-        try ui.text(
-            "Simplify animations and reactive UI design by avoiding the standard performance hacks.",
-            .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT },
-        );
-    }
-
-    {
-        try ui.openElement(.{
-            .id = .fromSlice("PerformanceRightImageOuter"),
-            .layout = .{
-                .sizing = .{ .w = width_sizing },
-                .child_alignment = .{ .x = .center },
-            },
-        });
-        defer ui.closeElement();
-
-        {
-            try ui.openElement(.{
-                .id = .fromSlice("PerformanceRightBorder"),
-                .layout = .{
-                    .sizing = .{ .w = .grow, .h = .fixed(400) },
-                },
-                .border = .{ .width = .all(2), .color = COLOR_LIGHT },
-            });
-            defer ui.closeElement();
-
-            {
-                try ui.openElement(.{
-                    .id = .fromSlice("AnimationDemoContainerLeft"),
-                    .layout = .{
-                        .sizing = .{ .w = .percent(0.35 + 0.3 * lerp_value), .h = .grow },
-                        .child_alignment = .{ .y = .center },
-                        .padding = .all(16),
-                    },
-                    .background_color = COLOR_RED.lerp(COLOR_ORANGE, lerp_value),
-                });
-                defer ui.closeElement();
-
-                try ui.text(LOREM_IPSUM_TEXT, .{
-                    .font_size = 16,
-                    .font_id = FONT_ID_BODY,
-                    .color = COLOR_LIGHT,
-                });
-            }
-
-            {
-                try ui.openElement(.{
-                    .id = .fromSlice("AnimationDemoContainerRight"),
-                    .layout = .{
-                        .sizing = .{ .w = .grow, .h = .grow },
-                        .child_alignment = .{ .y = .center },
-                        .padding = .all(16),
-                    },
-                    .background_color = COLOR_ORANGE.lerp(COLOR_RED, lerp_value),
-                });
-                defer ui.closeElement();
-
-                try ui.text(LOREM_IPSUM_TEXT, .{
-                    .font_size = 16,
-                    .font_id = FONT_ID_BODY,
-                    .color = COLOR_LIGHT,
-                });
-            }
-        }
-    }
-}
-
-fn highPerformancePageDesktop(ui: *Ui, lerp_value: f32) !void {
-    try ui.openElement(.{
-        .id = .fromSlice("PerformanceDesktop"),
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }) },
-            .child_alignment = .{ .y = .center },
-            .padding = .{ .left = 82, .right = 82, .top = 32, .bottom = 32 },
-            .child_gap = 64,
-        },
-        .background_color = COLOR_RED,
-    });
-    defer ui.closeElement();
-
-    try highPerformancePage(
-        ui,
-        lerp_value,
-        .{ .font_size = 52, .font_id = FONT_ID_TITLE, .color = COLOR_LIGHT },
-        .percent(0.5),
-    );
-}
-
-fn highPerformancePageMobile(ui: *Ui, lerp_value: f32) !void {
-    try ui.openElement(.{
-        .id = .fromSlice("PerformanceMobile"),
-        .layout = .{
-            .direction = .top_to_bottom,
-            .sizing = .{
-                .w = .grow,
-                .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }),
-            },
-            .child_alignment = .center,
-            .padding = .{ .left = 16, .right = 16, .top = 32, .bottom = 32 },
-            .child_gap = 32,
-        },
-        .background_color = COLOR_RED,
-    });
-    defer ui.closeElement();
-
-    try highPerformancePage(
-        ui,
-        lerp_value,
-        .{ .font_size = 48, .font_id = FONT_ID_TITLE, .color = COLOR_LIGHT },
-        .grow,
-    );
-}
-
-fn rendererButtonActive(ui: *Ui, text: []const u8) !void {
-    try ui.openElement(.{
-        .layout = .{ .sizing = .{ .w = .fixed(300) }, .padding = .all(16) },
-        .background_color = COLOR_RED,
-        .corner_radius = .all(10),
-    });
-    defer ui.closeElement();
-
-    try ui.text(text, .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_LIGHT });
-}
-
-fn rendererButtonInactive(ui: *Ui, index: u32, text: []const u8) !void {
-    try ui.openElement(.{
-        .border = .all(.{ 2, COLOR_RED }, 10),
-    });
-    defer ui.closeElement();
-
-    {
-        try ui.openElement(.{
-            .id = .fromSlice("RendererButtonInactiveInner", index),
-            .layout = .{
-                .sizing = .{ .w = .fixed(300) },
-                .padding = .all(16),
-            },
-            .background_color = COLOR_LIGHT,
-            .corner_radius = .all(10),
-        });
-        defer ui.closeElement();
-
-        try ui.text(text, .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED });
-    }
-}
-
-fn rendererPage(ui: *Ui, title_text_config: Ui.TextElementConfig, _: Ui.SizingAxis) !void {
-    try ui.openElement(.{ .id = .fromSlice("RendererLeftText"), .layout = .{ .direction = .top_to_bottom, .child_gap = 8 } });
-    defer ui.closeElement();
-
-    try ui.text("Renderer & Platform Agnostic", title_text_config);
-    try ui.elem(.{
-        .layout = .{
-            .sizing = .{ .w = .growMinMax(.{ .max = 16 }) },
-        },
-    });
-    try ui.text(
-        "Clay outputs a sorted array of primitive render commands, such as RECTANGLE, TEXT or IMAGE.",
-        .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED },
-    );
-    try ui.text(
-        "Write your own renderer in a few hundred lines of code, or use the provided examples for Raylib, WebGL canvas and more.",
-        .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED },
-    );
-    try ui.text(
-        "There's even an HTML renderer - you're looking at it right now!",
-        .{ .font_size = 28, .font_id = FONT_ID_BODY, .color = COLOR_RED },
-    );
-}
-
-fn rendererPageDesktop(ui: *Ui) !void {
-    try ui.openElement(.{
-        .id = .fromSlice("RendererPageDesktop"),
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }) },
-            .child_alignment = .{ .y = .center },
-            .padding = .{ .left = 50, .right = 50 },
-        },
-    });
-    defer ui.closeElement();
-
-    {
-        try ui.openElement(.{
-            .id = .fromSlice("RendererPage"),
-            .layout = .{
-                .sizing = .grow,
-                .child_alignment = .{ .y = .center },
-                .padding = .all(32),
-                .child_gap = 32,
-            },
-            .border = .{ .width = .{ .left = 2, .right = 2 }, .color = COLOR_RED },
-        });
-        defer ui.closeElement();
-
-        try rendererPage(
-            ui,
-            .{ .font_size = 52, .font_id = FONT_ID_TITLE, .color = COLOR_RED },
-            .percent(0.5),
-        );
-    }
-}
-
-fn rendererPageMobile(ui: *Ui) !void {
-    try ui.openElement(.{
-        .id = .fromSlice("RendererMobile"),
-        .layout = .{
-            .direction = .top_to_bottom,
-            .sizing = .{
-                .w = .grow,
-                .h = .fitMinMax(.{ .min = @floatFromInt(window_height - 50) }),
-            },
-            .child_alignment = .center,
-            .padding = .{ .left = 16, .right = 16, .top = 32, .bottom = 32 },
-            .child_gap = 32,
-        },
-        .background_color = COLOR_LIGHT,
-    });
-    defer ui.closeElement();
-
-    try rendererPage(
-        ui,
-        .{ .font_size = 52, .font_id = FONT_ID_TITLE, .color = COLOR_RED },
-        .grow,
-    );
-}
-
-fn createLayout(ui: *Ui, lerp_value: f32) !void {
+fn createLayout(ui: *Ui) !void {
     try ui.openElement(.{
         .id = .fromSlice("OuterContainer"),
         .layout = .{ .sizing = .grow, .direction = .top_to_bottom },
@@ -859,139 +105,32 @@ fn createLayout(ui: *Ui, lerp_value: f32) !void {
     defer ui.closeElement();
 
     {
-        try ui.openElement(.{
-            .id = .fromSlice("Header"),
-            .layout = .{
-                .sizing = .{ .h = .fixed(50), .w = .grow },
-                .child_alignment = .{ .y = .center },
-                .padding = .{ .left = 32, .right = 32 },
-                .child_gap = 24,
-            },
-            .state = .scrollable,
-        });
-        defer ui.closeElement();
-
-        {
-            try ui.openElement(.{ .id = .fromSlice("Stuff") });
-            defer ui.closeElement();
-
-            for (0..5) |i| {
-                const id = Ui.ElementId.indexed("Focusable", @intCast(i));
-
-                try ui.beginElement(id);
-                defer ui.closeElement();
-
-                try ui.configureElement(.{
-                    .image = if (i % 2 == 0) wgpu_logo_image_id else zig_logo_image_id,
-                    .layout = .{ .sizing = .{ .w = .fixed(32), .h = .fixed(32) } },
-                    .background_color = if (ui.hovered()) COLOR_WHITE else if (ui.focused()) COLOR_ORANGE else COLOR_BLUE_DARK,
-                    .state = .all,
-                });
-            }
-        }
-
-        try ui.text(
-            "Clay",
-            .{
-                .font_id = FONT_ID_BODY,
-                .font_size = 24,
-                .color = if (ui.focusedId() != null) COLOR_ORANGE else COLOR_BLUE_DARK,
-            },
-        );
-
-        try ui.elem(.{ .layout = .{ .sizing = .{ .w = .grow } } });
-
-        if (!mobile_screen) {
-            {
-                try ui.openElement(.{
-                    .id = .fromSlice("LinkExamplesInner"),
-                    .background_color = .{},
-                });
-                defer ui.closeElement();
-
-                try ui.text("Examples", .{
-                    .font_id = FONT_ID_BODY,
-                    .font_size = 24,
-                    .color = .init(61, 26, 5, 255),
-                });
-            }
-
-            {
-                try ui.openElement(.{
-                    .id = .fromSlice("LinkDocsOuter"),
-                    .background_color = .{},
-                });
-                defer ui.closeElement();
-
-                try ui.text("Docs", .{
-                    .font_id = FONT_ID_BODY,
-                    .font_size = 24,
-                    .color = .init(61, 26, 5, 255),
-                });
-            }
-        }
-
-        {
-            try ui.beginElement(.fromSlice("LinkGithubOuter"));
-            defer ui.closeElement();
-
-            try ui.configureElement(.{
-                .layout = .{
-                    .padding = .{ .left = 32, .right = 32, .top = 6, .bottom = 6 },
-                },
-                .border = .{ .width = .all(2), .color = COLOR_RED },
-                .corner_radius = .all(10),
-                .background_color = if (ui.hovered()) COLOR_LIGHT_HOVER else COLOR_LIGHT,
-            });
-
-            try ui.text("Github", .{
-                .font_id = FONT_ID_BODY,
-                .font_size = 24,
-                .color = .init(61, 26, 5, 255),
-            });
-        }
-    }
-
-    for (COLORS_TOP_BORDER, 0..) |color, i| {
-        try ui.elem(.{
-            .id = .indexed("TopBorder", @intCast(i)),
-            .layout = .{
-                .sizing = .{ .h = .fixed(4), .w = .grow },
-            },
-            .background_color = color,
-        });
-    }
-
-    {
-        try ui.beginElement(.fromSrc(@src()));
+        try ui.beginElement(.fromSlice("TextInputTest"));
         defer ui.closeElement();
 
         try ui.configureElement(.{
-            .clip = .{
-                .vertical = true,
-                .child_offset = ui.scrollOffset(),
-            },
             .layout = .{
-                .sizing = .grow,
-                .direction = .top_to_bottom,
+                .sizing = .{ .w = .fixed(300), .h = .fixed(100) },
+                .padding = .all(5),
             },
-            .background_color = COLOR_LIGHT,
-            .border = .{ .width = .{ .between_children = 2 }, .color = COLOR_RED },
+            .background_color = COLOR_WHITE,
+            .border = .{
+                .width = .all(2),
+                .color = COLOR_BROWN,
+            },
+            .corner_radius = .all(5),
+
+            .state = .flags(.{ .wheel = true, .click = true }),
+            .custom = &caret_index, // TODO: in future we will need a more advanced facility for dispatch on kinds of custom elements
         });
 
-        if (!mobile_screen) {
-            try landingPageDesktop(ui);
-            try featureBlocksDesktop(ui);
-            try declarativeSyntaxPageDesktop(ui);
-            try highPerformancePageDesktop(ui, lerp_value);
-            try rendererPageDesktop(ui);
-        } else {
-            try landingPageMobile(ui);
-            try featureBlocksMobile(ui);
-            try declarativeSyntaxPageMobile(ui);
-            try highPerformancePageMobile(ui, lerp_value);
-            try rendererPageMobile(ui);
-        }
+        try ui.text(test_text, .{
+            .alignment = .left,
+            .font_id = FONT_ID_BODY,
+            .font_size = 16,
+            .color = COLOR_BLUE,
+            .line_height = 20,
+        });
     }
 }
 
@@ -1135,6 +274,19 @@ pub fn main() !void {
 
     // Init Ui
     var ui = try Ui.init(gpa, demo.renderer, &asset_cache, &inputs);
+    ui.custom_element_renderer = &struct {
+        pub fn caret_renderer(g: *Ui, _: ?*anyopaque, command: clay.RenderCommand) !void {
+            const caret_width: f32 = 1.5;
+
+            const character_offset = clay.getCharacterOffset(Ui.ElementId{ .id = command.id }, @as(*const u32, @ptrCast(@alignCast(command.render_data.custom.custom_data.?))).*);
+            std.debug.assert(character_offset.found);
+
+            const caret_x = command.bounding_box.x + character_offset.offset.x;
+            const caret_y = command.bounding_box.y + character_offset.offset.y;
+
+            try g.renderer.drawRect(.{ .x = caret_x, .y = caret_y }, .{ .x = caret_width, .y = character_offset.line_height }, .{ .r = 1, .a = 1 });
+        }
+    }.caret_renderer;
     defer ui.deinit();
 
     // --- Load Assets ---
@@ -1199,7 +351,7 @@ pub fn main() !void {
                 delta_time_f32,
             );
 
-            try createLayout(ui, if (animation_lerp_value < 0) animation_lerp_value + 1 else 1 - animation_lerp_value);
+            try createLayout(ui);
 
             const events = try ui.endLayout();
 
@@ -1223,9 +375,43 @@ pub fn main() !void {
                     },
                     .clicked => |clicked_data| {
                         log.info("clicked id={any} loc={f}", .{ event.element_id, clicked_data.mouse_position });
+
+                        const id = Ui.ElementId.fromSlice("TextInputTest");
+
+                        if (event.element_id.id == id.id) {
+                            const location = clay.Vector2{
+                                .x = clicked_data.mouse_position.x - event.bounding_box.x,
+                                .y = clicked_data.mouse_position.y - event.bounding_box.y,
+                            };
+
+                            log.info("  -> clicked local={d:.2}, {d:.2}", .{ location.x, location.y });
+
+                            clay.setCurrentContext(ui.clay_context);
+                            defer clay.setCurrentContext(null);
+                            
+                            const offset = clay.getCharacterIndexAtOffset(id, location);
+
+                            log.info("  -> offset result: index={d} found={any}", .{ offset.index, offset.found });
+
+                            if (offset.found) caret_index = offset.index;
+                        }
                     },
                     .wheel => |wheel_data| {
                         log.info("wheel id={any} delta={f}", .{ event.element_id, wheel_data.delta });
+
+                        if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
+                            if (wheel_data.delta.y < 0) {
+                                if (caret_index > 0) {
+                                    caret_index -= 1;
+                                }
+                            } else if (wheel_data.delta.y > 0) {
+                                if (caret_index < @as(u32, @intCast(test_text.len))) {
+                                    caret_index += 1;
+                                }
+                            }
+
+                            log.info("  -> new caret_index={d}/{d}", .{ caret_index, test_text.len });
+                        }
                     },
                     .focus_gained => {
                         log.info("focus_gained id={any}", .{event.element_id});

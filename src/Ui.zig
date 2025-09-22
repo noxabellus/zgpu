@@ -728,22 +728,29 @@ fn decodeImageId(id: usize) AssetCache.ImageId {
     return @intCast(id - 1);
 }
 
-fn boxContains(box: BoundingBox, point: Vec2) bool {
+pub fn boxContains(box: BoundingBox, point: Vec2) bool {
     return point.x >= box.x and point.x < box.x + box.width and point.y >= box.y and point.y < box.y + box.height;
 }
 
-fn boxesIntersect(a: BoundingBox, b: BoundingBox) bool {
+pub fn boxesIntersect(a: BoundingBox, b: BoundingBox) bool {
     return a.x < b.x + b.width and a.x + a.width > b.x and a.y < b.y + b.height and a.y + a.height > b.y;
 }
 
-fn boxContainsBox(outer: BoundingBox, inner: BoundingBox) bool {
+pub fn boxContainsBox(outer: BoundingBox, inner: BoundingBox) bool {
     return inner.x >= outer.x and inner.x + inner.width <= outer.x + outer.width and inner.y >= outer.y and inner.y + inner.height <= outer.y + outer.height;
 }
 
-fn clampToBox(box: BoundingBox, point: Vec2) Vec2 {
+pub fn clampToBox(box: BoundingBox, point: Vec2) Vec2 {
     return .{
         .x = std.math.clamp(point.x, box.x, box.x + box.width),
         .y = std.math.clamp(point.y, box.y, box.y + box.height),
+    };
+}
+
+pub fn relativizeToBox(box: BoundingBox, point: Vec2) Vec2 {
+    return .{
+        .x = point.x - box.x,
+        .y = point.y - box.y,
     };
 }
 
