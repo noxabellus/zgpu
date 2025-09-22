@@ -181,6 +181,10 @@ pub const Action = enum(u2) {
         return self == .pressed or self == .held;
     }
 
+    pub fn isUp(self: Action) bool {
+        return self == .none or self == .released;
+    }
+
     pub fn fromBooleans(is_down: bool, was_down: bool) Action {
         if (is_down) {
             if (was_down) {
@@ -206,6 +210,10 @@ pub const Focus = enum(u2) {
 
     pub fn isFocused(self: Focus) bool {
         return self == .retained or self == .gained;
+    }
+
+    pub fn isBlurred(self: Focus) bool {
+        return self == .none or self == .lost;
     }
 
     pub fn fromBooleans(has_focus: bool, had_focus: bool) Focus {
