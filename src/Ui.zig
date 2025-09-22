@@ -40,6 +40,8 @@ state: State = .{},
 last_state: State = .{},
 scroll_delta: Vec2 = .{},
 
+// A stack of all elements currently under the mouse, populated during layout. The last element is the top-most.
+hovered_element_stack: std.ArrayList(StateElement) = .empty,
 // Map from navigation index to element ID for quick lookup during keyboard navigation
 navigable_elements: std.AutoHashMapUnmanaged(u32, struct { id: ElementId, state: ElementState }) = .empty,
 // Map from ElementId.id to navigation index for reverse lookup during event generation
@@ -86,6 +88,7 @@ pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *Asse
 }
 
 pub fn deinit(self: *Ui) void {
+    self.hovered_element_stack.deinit(self.allocator);
     self.navigable_elements.deinit(self.allocator);
     self.reverse_navigable_elements.deinit(self.allocator);
 
@@ -98,6 +101,7 @@ pub fn deinit(self: *Ui) void {
 pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
     self.render_commands = null;
     self.events.clearRetainingCapacity();
+    self.hovered_element_stack.clearRetainingCapacity();
     self.navigable_elements.clearRetainingCapacity();
     self.reverse_navigable_elements.clearRetainingCapacity();
     self.last_state = self.state; // Save the last frame's state for event generation
@@ -635,16 +639,15 @@ fn handleStateSetup(self: *Ui, declaration: ElementDeclaration) !void {
         try self.reverse_navigable_elements.put(self.allocator, declaration.id.id, index);
     }
 
-    // Set hovered state if applicable
+    // If the element is hovered, push it to our stack of hovered elements.
     if (clay.hovered()) {
         const hovered_data = clay.getElementData(declaration.id);
-
         if (hovered_data.found) {
-            self.state.hovered = .{
+            try self.hovered_element_stack.append(self.allocator, .{
                 .id = declaration.id,
                 .bounding_box = hovered_data.bounding_box,
                 .state = declaration.state,
-            };
+            });
         }
     }
 }
@@ -685,7 +688,6 @@ fn measureTextCallback(
     }
 }
 
-/// Processes the current array of RenderCommands from Clay and generates any corresponding interaction events.
 /// Processes the current UI state against the last frame's state to generate interaction events.
 fn generateEvents(self: *Ui) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
@@ -695,14 +697,13 @@ fn generateEvents(self: *Ui) !void {
 
     // --- Preserve state from last frame ---
     // The active and focused elements persist unless an event changes them.
-    self.state.active_id = self.last_state.active_id; // TODO: should this move to beginLayout?
+    self.state.active_id = self.last_state.active_id;
     self.state.focused_id = self.last_state.focused_id;
 
-    // TODO: In order to properly handle mouse events,
-    // we need a *stack* of hovered elements. These can be accumulated during layout;
-    // since elements are nested, the last one will be the top-most in z. We can then
-    // traverse backwards through the stack to find the first element accepting
-    // the event type.
+    // The top-most element in the stack is the one we consider "hovered" for this frame.
+    if (self.hovered_element_stack.items.len > 0) {
+        self.state.hovered = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1];
+    }
 
     // --- Handle Hover Events ---
     // This logic compares the hovered element from the last frame to the current one.
@@ -742,11 +743,16 @@ fn generateEvents(self: *Ui) !void {
     // --- Handle Active (Click) Events ---
     if (left_button.isDown()) {
         var clear_focus = true;
+        var found_click_target = false;
 
-        if (self.state.hovered) |hovered_state| {
-            // An element becomes active if it's clickable and the mouse is pressed over it.
-            if (hovered_state.state.event_flags.click) {
+        // Iterate through the hovered stack from top to bottom to find the correct event target.
+        for (self.hovered_element_stack.items, 0..) |_, i| {
+            const hovered_state = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1 - i];
+
+            // The first clickable element we find becomes active.
+            if (!found_click_target and hovered_state.state.event_flags.click) {
                 self.state.active_id = hovered_state;
+                found_click_target = true;
 
                 if (self.state.activeIdValue() != self.last_state.activeIdValue()) {
                     // we only generate mouse down events when the active element changes
@@ -759,11 +765,14 @@ fn generateEvents(self: *Ui) !void {
                 }
             }
 
-            // A focusable element gains focus when clicked.
-            if (hovered_state.state.event_flags.focus) {
+            // The first focusable element we find gains focus when clicked.
+            if (clear_focus and hovered_state.state.event_flags.focus) {
                 self.state.focused_id = hovered_state;
                 clear_focus = false;
             }
+
+            // If we've found targets for both actions, we can stop searching.
+            if (found_click_target and !clear_focus) break;
         }
 
         if (clear_focus) {
@@ -850,8 +859,9 @@ fn generateEvents(self: *Ui) !void {
 
     // --- Handle Scroll Events ---
     if (self.scroll_delta.x != 0 or self.scroll_delta.y != 0) {
-        // A scroll event is dispatched to the currently hovered element, if it is scrollable.
-        if (self.state.hovered) |hovered_state| {
+        // Iterate from the top-most hovered element downwards to find a scroll target.
+        for (self.hovered_element_stack.items, 0..) |_, i| {
+            const hovered_state = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1 - i];
             if (hovered_state.state.event_flags.scroll) {
                 try self.events.append(self.allocator, .{
                     .element_id = hovered_state.id,
@@ -859,6 +869,8 @@ fn generateEvents(self: *Ui) !void {
                     .user_data = hovered_state.state.getUserData(),
                     .data = .{ .scroll = .{ .delta = self.scroll_delta } },
                 });
+                // Once a scrollable container is found, stop propagating the event.
+                break;
             }
         }
     }
