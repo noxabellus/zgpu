@@ -197,8 +197,11 @@ pub fn configureElement(self: *Ui, declaration: HeadlessElementDeclaration) !voi
 pub fn openElement(self: *Ui, declaration: ElementDeclarationWithId) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    try self.beginElement(declaration.id);
-    try self.configureElement(declaration.toHeadless());
+    try self.open_ids.append(self.allocator, declaration.id);
+
+    clay.beginElement();
+    clay.configureElement(declaration.toClay());
+
     try self.handleStateSetup(declaration);
 }
 
