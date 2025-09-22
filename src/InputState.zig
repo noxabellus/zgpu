@@ -234,16 +234,43 @@ pub const Focus = enum(u2) {
 };
 
 pub const Modifiers = packed struct(u6) {
-    control: bool = false,
+    ctrl: bool = false,
     shift: bool = false,
     alt: bool = false,
     super: bool = false,
     caps_lock: bool = false,
     num_lock: bool = false,
 
+    pub const noMod = Modifiers{};
+    pub const ctrlMod = Modifiers{ .ctrl = true };
+    pub const shiftMod = Modifiers{ .shift = true };
+    pub const altMod = Modifiers{ .alt = true };
+    pub const superMod = Modifiers{ .super = true };
+    pub const capsLockMod = Modifiers{ .caps_lock = true };
+    pub const numLockMod = Modifiers{ .num_lock = true };
+    pub const allMods = Modifiers{
+        .ctrl = true,
+        .shift = true,
+        .alt = true,
+        .super = true,
+        .caps_lock = true,
+        .num_lock = true,
+    };
+
+    pub fn merge(self: Modifiers, other: Modifiers) Modifiers {
+        return Modifiers{
+            .ctrl = self.ctrl or other.ctrl,
+            .shift = self.shift or other.shift,
+            .alt = self.alt or other.alt,
+            .super = self.super or other.super,
+            .caps_lock = self.caps_lock or other.caps_lock,
+            .num_lock = self.num_lock or other.num_lock,
+        };
+    }
+
     pub fn fromKeys(keys: []const bool) Modifiers {
         return Modifiers{
-            .control = keys[@intFromEnum(Key.left_control)] or keys[@intFromEnum(Key.right_control)],
+            .ctrl = keys[@intFromEnum(Key.left_control)] or keys[@intFromEnum(Key.right_control)],
             .shift = keys[@intFromEnum(Key.left_shift)] or keys[@intFromEnum(Key.right_shift)],
             .alt = keys[@intFromEnum(Key.left_alt)] or keys[@intFromEnum(Key.right_alt)],
             .super = keys[@intFromEnum(Key.left_super)] or keys[@intFromEnum(Key.right_super)],
@@ -254,7 +281,7 @@ pub const Modifiers = packed struct(u6) {
 
     pub fn fromGlfw(mods: glfw.Modifier) Modifiers {
         return Modifiers{
-            .control = mods.control,
+            .ctrl = mods.control,
             .shift = mods.shift,
             .alt = mods.alt,
             .super = mods.super,

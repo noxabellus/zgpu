@@ -9,7 +9,7 @@ const stbtt = @import("stbtt");
 
 const Batch2D = @import("Batch2D.zig");
 const AssetCache = @import("AssetCache.zig");
-const InputState = @import("InputState.zig");
+const BindingState = @import("BindingState.zig");
 
 const log = std.log.scoped(.ui);
 
@@ -21,11 +21,18 @@ test {
 pub const Vec2 = Batch2D.Vec2;
 pub const Color = Batch2D.Color;
 
+pub const default_bindings = .{
+    .primary_mouse = BindingState.InputBinding{ .mouse = .{ .bind_point = .button_1 } },
+    .focus_next = BindingState.InputBinding{ .key = .{ .bind_point = .tab } },
+    .focus_prev = BindingState.InputBinding{ .key = .{ .bind_point = .tab, .modifiers = .shiftMod } },
+    .activate_focused = BindingState.InputBinding{ .key = .{ .bind_point = .enter } },
+};
+
 allocator: std.mem.Allocator,
 
 renderer: *Batch2D,
 asset_cache: *AssetCache,
-inputs: *InputState,
+bindings: *BindingState,
 
 clay_context: *clay.Context,
 clay_memory: []const u8,
@@ -49,7 +56,7 @@ reverse_navigable_elements: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 // Stack of currently open element's user-provided stable IDs
 open_ids: std.ArrayList(ElementId) = .empty,
 
-pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, inputs: *InputState) !*Ui {
+pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, bindings: *BindingState) !*Ui {
     const self = try allocator.create(Ui);
     errdefer allocator.destroy(self);
 
@@ -81,10 +88,16 @@ pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *Asse
         .allocator = allocator,
         .renderer = renderer,
         .asset_cache = asset_cache,
-        .inputs = inputs,
+        .bindings = bindings,
         .clay_context = clay_context,
         .clay_memory = clay_memory,
     };
+
+    // Ensure required ui input bindings are registered
+    if (!bindings.hasBinding(.primary_mouse)) try bindings.bind(.primary_mouse, default_bindings.primary_mouse);
+    if (!bindings.hasBinding(.focus_next)) try bindings.bind(.focus_next, default_bindings.focus_next);
+    if (!bindings.hasBinding(.focus_prev)) try bindings.bind(.focus_prev, default_bindings.focus_prev);
+    if (!bindings.hasBinding(.activate_focused)) try bindings.bind(.activate_focused, default_bindings.activate_focused);
 
     return self;
 }
@@ -117,14 +130,14 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
     self.state.active_id = self.last_state.active_id;
     self.state.focused_id = self.last_state.focused_id;
 
-    self.wheel_delta = self.inputs.consumeScrollDelta();
+    self.wheel_delta = self.bindings.consumeScrollDelta();
 
     clay.setCurrentContext(self.clay_context);
 
     clay.setLayoutDimensions(vec2ToDims(dimensions));
 
     // Although we inform Clay of current mouse button state, it is only used in debug mode or for drag scrolling.
-    clay.setPointerState(vec2ToClay(self.inputs.getMousePosition()), self.inputs.getMouseButton(.left).isDown());
+    clay.setPointerState(vec2ToClay(self.bindings.getMousePosition()), self.bindings.get(.primary_mouse).isDown());
 
     clay.updateScrollContainers(
         false, // never use drag scrolling
@@ -839,9 +852,11 @@ fn measureTextCallback(
 fn generateEvents(self: *Ui) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    const mouse_pos = self.inputs.getMousePosition();
-    const left_button = self.inputs.getMouseButton(.left);
-    const enter_key = self.inputs.getKey(.enter);
+    const mouse_pos = self.bindings.getMousePosition();
+    const primary_mouse_action = self.bindings.get(.primary_mouse);
+    const activate_action = self.bindings.get(.activate_focused);
+    const focus_next_action = self.bindings.get(.focus_next);
+    const focus_previous_action = self.bindings.get(.focus_previous);
 
     // The top-most element in the stack is the one we consider "hovered" for this frame.
     if (self.hovered_element_stack.items.len > 0) {
@@ -886,7 +901,7 @@ fn generateEvents(self: *Ui) !void {
     // --- Handle Active State and Focus-on-click ---
     // Determine the current active element based on continuous input state. Mouse input takes precedence.
     var is_mouse_activating = false;
-    if (left_button.isDown()) {
+    if (primary_mouse_action.isDown()) {
         var found_click_target = false;
 
         // Iterate through the hovered stack from top to bottom to find the correct event target.
@@ -905,7 +920,7 @@ fn generateEvents(self: *Ui) !void {
 
     // If mouse isn't activating, check keyboard.
     if (!is_mouse_activating) {
-        if (enter_key.isDown() and self.state.focused_id != null) {
+        if (activate_action.isDown() and self.state.focused_id != null) {
             if (self.state.focused_id.?.state.event_flags.activate) {
                 self.state.active_id = self.state.focused_id.?;
             } else {
@@ -917,7 +932,7 @@ fn generateEvents(self: *Ui) !void {
     }
 
     // Handle focus changes on mouse press
-    if (left_button == .pressed) {
+    if (primary_mouse_action == .pressed) {
         var clear_focus = true;
         for (self.hovered_element_stack.items, 0..) |_, i| {
             const hovered_state = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1 - i];
@@ -933,7 +948,7 @@ fn generateEvents(self: *Ui) !void {
     }
 
     // --- Generate Mouse Release Events ---
-    if (left_button == .released and self.last_state.active_id != null) {
+    if (primary_mouse_action == .released and self.last_state.active_id != null) {
         const last_active = self.last_state.active_id.?;
         if (last_active.state.event_flags.click) {
             try self.events.append(self.allocator, .{
@@ -996,28 +1011,43 @@ fn generateEvents(self: *Ui) !void {
     }
 
     // --- Handle Keyboard Focus Events ---
-    if (self.inputs.getKey(.tab) == .released and self.navigable_elements.count() > 0) {
-        var current_index: ?u32 = null;
-        if (self.state.focusedId()) |focused_id| {
-            current_index = self.reverse_navigable_elements.get(focused_id.id);
-        }
+    if (self.navigable_elements.count() > 0) {
+        if (focus_previous_action == .released) {
+            var current_index: ?u32 = null;
+            if (self.state.focusedId()) |focused_id| {
+                current_index = self.reverse_navigable_elements.get(focused_id.id);
+            }
 
-        const count = @as(u32, @intCast(self.navigable_elements.count()));
-        var next_index: u32 = 0;
-        if (self.inputs.getModifiers().shift) { // Shift+Tab: move focus backward.
-            next_index = if (current_index) |idx| (idx + count - 1) % count else count - 1;
-        } else { // Tab: move focus forward.
-            next_index = if (current_index) |idx| (idx + 1) % count else 0;
-        }
+            const count = @as(u32, @intCast(self.navigable_elements.count()));
+            const next_index: u32 = if (current_index) |idx| (idx + count - 1) % count else count - 1;
 
-        const next = self.navigable_elements.get(next_index).?;
-        const element_data = clay.getElementData(next.id);
-        if (element_data.found) {
-            self.state.focused_id = .{
-                .id = next.id,
-                .bounding_box = element_data.bounding_box,
-                .state = next.state,
-            };
+            const next = self.navigable_elements.get(next_index).?;
+            const element_data = clay.getElementData(next.id);
+            if (element_data.found) {
+                self.state.focused_id = .{
+                    .id = next.id,
+                    .bounding_box = element_data.bounding_box,
+                    .state = next.state,
+                };
+            }
+        } else if (focus_next_action == .released) {
+            var current_index: ?u32 = null;
+            if (self.state.focusedId()) |focused_id| {
+                current_index = self.reverse_navigable_elements.get(focused_id.id);
+            }
+
+            const count = @as(u32, @intCast(self.navigable_elements.count()));
+            const next_index: u32 = if (current_index) |idx| (idx + 1) % count else 0;
+
+            const next = self.navigable_elements.get(next_index).?;
+            const element_data = clay.getElementData(next.id);
+            if (element_data.found) {
+                self.state.focused_id = .{
+                    .id = next.id,
+                    .bounding_box = element_data.bounding_box,
+                    .state = next.state,
+                };
+            }
         }
     }
 

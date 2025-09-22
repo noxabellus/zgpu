@@ -13,6 +13,7 @@ pub const debug = @import("debug.zig");
 pub const Batch2D = @import("Batch2D.zig");
 pub const AssetCache = @import("AssetCache.zig");
 pub const InputState = @import("InputState.zig");
+pub const BindingState = @import("BindingState.zig");
 pub const Ui = @import("Ui.zig");
 
 test {
@@ -276,8 +277,11 @@ pub fn main() !void {
     var inputs = InputState{};
     inputs.listenAllGlfw(window);
 
+    var bindings = BindingState.init(gpa, &inputs);
+    defer bindings.deinit();
+    
     // Init Ui
-    var ui = try Ui.init(gpa, demo.renderer, &asset_cache, &inputs);
+    var ui = try Ui.init(gpa, demo.renderer, &asset_cache, &bindings);
     ui.custom_element_renderer = &struct {
         pub fn caret_renderer(g: *Ui, _: ?*anyopaque, command: clay.RenderCommand) !void {
             const caret_width: f32 = 1.5;
@@ -318,6 +322,10 @@ pub fn main() !void {
     main_loop: while (!glfw.windowShouldClose(window)) {
         glfw.pollEvents();
         _ = arena_state.reset(.free_all);
+
+        if (bindings.get(.move_left) == .released) {
+            log.info("move_left action triggered", .{});
+        }
 
         // --- Calculate Delta Time ---
         const current_time = timer.read();
