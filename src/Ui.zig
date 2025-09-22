@@ -40,7 +40,9 @@ state: State = .{},
 last_state: State = .{},
 
 // Map from navigation index to element ID for quick lookup during keyboard navigation
-navigable_elements: std.AutoHashMapUnmanaged(u32, ElementId) = .empty,
+navigable_elements: std.AutoHashMapUnmanaged(u32, struct { id: ElementId, state: ElementState }) = .empty,
+// Map from ElementId.id to navigation index for reverse lookup during event generation
+reverse_navigable_elements: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 
 pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, inputs: *InputState) !*Ui {
     const self = try allocator.create(Ui);
@@ -83,6 +85,9 @@ pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *Asse
 }
 
 pub fn deinit(self: *Ui) void {
+    self.navigable_elements.deinit(self.allocator);
+    self.reverse_navigable_elements.deinit(self.allocator);
+
     self.allocator.free(self.clay_memory);
     self.allocator.destroy(self);
 }
@@ -90,17 +95,18 @@ pub fn deinit(self: *Ui) void {
 /// Call this at any time in the update stage to begin declaring the ui layout. Caller must ensure `Ui.endLayout` is called before the next `Ui.beginLayout` and/or `Ui.render`.
 /// Note: it is acceptable to run the layout code multiple times per frame, but all state will be discarded when calling this function.
 pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
-    self.render_commands = null; // Discard any existing render commands
-    self.events.clearRetainingCapacity(); // Discard any existing events
-    self.navigable_elements.clearRetainingCapacity(); // Discard any existing navigable element index bindings
+    self.render_commands = null;
+    self.events.clearRetainingCapacity();
+    self.navigable_elements.clearRetainingCapacity();
+    self.reverse_navigable_elements.clearRetainingCapacity();
     self.last_state = self.state; // Save the last frame's state for event generation
-    self.state = .{}; // Reset current state; will be populated during layout
+    self.state = .{}; // Reset current state; will be populated during layout and event generation
 
     clay.setCurrentContext(self.clay_context);
 
     clay.setLayoutDimensions(vec2ToDims(dimensions));
 
-    // Though we do inform Clay of current mouse button state, it is only used in debug mode or for drag scrolling.
+    // Although we inform Clay of current mouse button state, it is only used in debug mode or for drag scrolling.
     clay.setPointerState(vec2ToClay(self.inputs.getMousePosition()), self.inputs.getMouseButton(.left).isDown());
 
     const delta = self.inputs.consumeScrollDelta();
@@ -229,6 +235,13 @@ pub const Event = struct {
         hover_begin: struct { mouse_position: Vec2 },
         hovering: struct { mouse_position: Vec2 },
         hover_end: struct { mouse_position: Vec2 },
+
+        mouse_down: struct { mouse_position: Vec2 },
+        mouse_up: struct { mouse_position: Vec2, end_element: ?ElementId },
+        clicked: struct { mouse_position: Vec2 },
+
+        focus_gained: void,
+        focus_lost: void,
     };
 };
 
@@ -236,8 +249,6 @@ pub const State = struct {
     hovered: ?StateElement = null,
     active_id: ?StateElement = null,
     focused_id: ?StateElement = null,
-
-    drag_location: ?Vec2 = null,
 
     pub fn hoveredId(self: State) ?ElementId {
         return (self.hovered orelse return null).id;
@@ -271,7 +282,7 @@ pub const StateElement = struct {
 };
 
 pub const ElementState = packed struct(usize) {
-    flags: Flags,
+    event_flags: Flags,
     user_data: u48 = 0,
 
     pub const Flags = packed struct(u16) {
@@ -306,15 +317,19 @@ pub const ElementState = packed struct(usize) {
         }
     };
 
-    pub const none = ElementState{ .flags = .none };
-    pub const hoverable = ElementState{ .flags = .hoverable };
-    pub const scrollable = ElementState{ .flags = .scrollable };
-    pub const clickable = ElementState{ .flags = .clickable };
-    pub const focusable = ElementState{ .flags = .focusable };
+    pub const none = ElementState{ .event_flags = .none };
+    pub const hoverable = ElementState{ .event_flags = .hoverable };
+    pub const scrollable = ElementState{ .event_flags = .scrollable };
+    pub const clickable = ElementState{ .event_flags = .clickable };
+    pub const focusable = ElementState{ .event_flags = .focusable };
 
-    pub fn custom(flags: Flags, user_data: ?*anyopaque) ElementState {
+    pub fn flags(f: Flags) ElementState {
+        return ElementState{ .event_flags = f };
+    }
+
+    pub fn custom(f: Flags, user_data: ?*anyopaque) ElementState {
         return ElementState{
-            .flags = flags,
+            .event_flags = f,
             .user_data = @intCast(@intFromPtr(user_data)),
         };
     }
@@ -333,11 +348,11 @@ pub const ElementState = packed struct(usize) {
     }
 
     pub fn takesInput(self: ElementState) bool {
-        return self.flags.takesInput();
+        return self.event_flags.takesInput();
     }
 
     pub fn usesMouse(self: ElementState) bool {
-        return self.flags.usesMouse();
+        return self.event_flags.usesMouse();
     }
 
     pub fn getUserData(self: ElementState) ?*anyopaque {
@@ -580,8 +595,8 @@ fn boxContainsBox(outer: BoundingBox, inner: BoundingBox) bool {
 
 fn clampToBox(box: BoundingBox, point: Vec2) Vec2 {
     return .{
-        .x = std.math.clamp(f32, point.x, box.x, box.x + box.width),
-        .y = std.math.clamp(f32, point.y, box.y, box.y + box.height),
+        .x = std.math.clamp(point.x, box.x, box.x + box.width),
+        .y = std.math.clamp(point.y, box.y, box.y + box.height),
     };
 }
 
@@ -611,18 +626,17 @@ fn clayColorToBatchColor(c: clay.Color) Batch2D.Color {
 
 fn handleStateSetup(self: *Ui, declaration: ElementDeclaration) !void {
     // Add navigable elements to the map in the order they are declared
-    if (declaration.state.flags.focus) {
+    if (declaration.state.event_flags.focus) {
         const index = self.navigable_elements.count();
-        try self.navigable_elements.put(self.allocator, index, declaration.id);
+        try self.navigable_elements.put(self.allocator, index, .{ .id = declaration.id, .state = declaration.state });
+        try self.reverse_navigable_elements.put(self.allocator, declaration.id.id, index);
     }
 
-    // Add mouse listeners for hoverable, clickable, scrollable elements
-    if (declaration.state.usesMouse()) {
-        if (clay.hovered()) {
-            const hovered_data = clay.getElementData(declaration.id);
+    // Set hovered state if applicable
+    if (clay.hovered()) {
+        const hovered_data = clay.getElementData(declaration.id);
 
-            std.debug.assert(hovered_data.found);
-
+        if (hovered_data.found) {
             self.state.hovered = .{
                 .id = declaration.id,
                 .bounding_box = hovered_data.bounding_box,
@@ -669,59 +683,30 @@ fn measureTextCallback(
 }
 
 /// Processes the current array of RenderCommands from Clay and generates any corresponding interaction events.
+/// Processes the current UI state against the last frame's state to generate interaction events.
 fn generateEvents(self: *Ui) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    // const left_button_state = self.inputs.getMouseButton(.left); // Action: { none, released, pressed, held; isDown() shortcut method also available }
-    // const right_button_state = self.inputs.getMouseButton(.right);
-
-    // const have_keyboard = self.inputs.getKeyboardFocus().isFocused();
-
-    // const arrow_left = self.inputs.getKey(.left); // Action
-    // const arrow_right = self.inputs.getKey(.right);
-    // const arrow_up = self.inputs.getKey(.up);
-    // const arrow_down = self.inputs.getKey(.down);
-
-    // const modifiers = self.inputs.getModifiers(); // bool set
-
-    // const have_mouse = self.inputs.getMouseFocus().isFocused();
-
-    // log.info("Generating events for {d} render commands", .{render_commands.len});
-    // log.info(
-    //     \\
-    //     \\  mouse  | L: {s} R: {s} Captured: {any} Position: {f}
-    //     \\  arrows | Captured: {any} L: {s} R: {s} U: {s} D: {s}
-    //     \\  mods   | Shift: {any} Ctrl: {any} Alt: {any}
-    // , .{
-    //     @tagName(left_button_state),
-    //     @tagName(right_button_state),
-    //     have_mouse,
-    //     mouse_pos,
-
-    //     have_keyboard,
-    //     @tagName(arrow_left),
-    //     @tagName(arrow_right),
-    //     @tagName(arrow_up),
-    //     @tagName(arrow_down),
-
-    //     modifiers.shift,
-    //     modifiers.control,
-    //     modifiers.alt,
-    // });
-
     const mouse_pos = self.inputs.getMousePosition();
+    const left_button = self.inputs.getMouseButton(.left);
 
+    // --- Preserve state from last frame ---
+    // The active and focused elements persist unless an event changes them.
+    self.state.active_id = self.last_state.active_id; // TODO: should this move to beginLayout?
+    self.state.focused_id = self.last_state.focused_id;
+
+    // --- Handle Hover Events ---
+    // This logic compares the hovered element from the last frame to the current one.
     if (self.last_state.hovered) |last_hovered| {
-        // We only need to generate events if the element is hoverable
-        if (last_hovered.state.flags.hover) {
-            if (last_hovered.id.id != self.state.hoveredIdValue()) { // mouse moved out of previously-hovered element
+        if (last_hovered.state.event_flags.hover) {
+            if (last_hovered.id.id != self.state.hoveredIdValue()) { // Mouse moved out of the previously hovered element.
                 try self.events.append(self.allocator, .{
                     .element_id = last_hovered.id,
                     .bounding_box = last_hovered.bounding_box,
                     .user_data = last_hovered.state.getUserData(),
-                    .data = .{ .hover_end = .{ .mouse_position = mouse_pos } },
+                    .data = .{ .hover_end = .{ .mouse_position = clampToBox(last_hovered.bounding_box, mouse_pos) } },
                 });
-            } else { // mouse remains over previously-hovered element
+            } else { // Mouse remains over the previously hovered element.
                 try self.events.append(self.allocator, .{
                     .element_id = last_hovered.id,
                     .bounding_box = last_hovered.bounding_box,
@@ -732,10 +717,9 @@ fn generateEvents(self: *Ui) !void {
         }
     }
 
-    // already handled in existing_hover block
     if (self.state.hoveredIdValue() != self.last_state.hoveredIdValue()) {
-        if (self.state.hovered) |new_hovered| { // new hover
-            if (new_hovered.state.flags.hover) {
+        if (self.state.hovered) |new_hovered| { // A new element is now hovered.
+            if (new_hovered.state.event_flags.hover) {
                 try self.events.append(self.allocator, .{
                     .element_id = new_hovered.id,
                     .bounding_box = new_hovered.bounding_box,
@@ -743,6 +727,114 @@ fn generateEvents(self: *Ui) !void {
                     .data = .{ .hover_begin = .{ .mouse_position = mouse_pos } },
                 });
             }
+        }
+    }
+
+    // --- Handle Active (Click) Events ---
+    if (left_button.isDown()) {
+        var clear_focus = true;
+
+        if (self.state.hovered) |hovered_state| {
+            // An element becomes active if it's clickable and the mouse is pressed over it.
+            if (hovered_state.state.event_flags.click) {
+                self.state.active_id = hovered_state;
+
+                if (self.state.activeIdValue() != self.last_state.activeIdValue()) {
+                    // we only generate mouse down events when the active element changes
+                    try self.events.append(self.allocator, .{
+                        .element_id = hovered_state.id,
+                        .bounding_box = hovered_state.bounding_box,
+                        .user_data = hovered_state.state.getUserData(),
+                        .data = .{ .mouse_down = .{ .mouse_position = mouse_pos } },
+                    });
+                }
+            }
+
+            // A focusable element gains focus when clicked.
+            if (hovered_state.state.event_flags.focus) {
+                self.state.focused_id = hovered_state;
+                clear_focus = false;
+            }
+        }
+
+        if (clear_focus) {
+            self.state.focused_id = null;
+        }
+    }
+    if (left_button.isUp()) {
+        // If an element was active...
+        if (self.last_state.active_id) |last_active| {
+            if (last_active.state.event_flags.click) {
+                // ...and the mouse is released, it is no longer active.
+                try self.events.append(self.allocator, .{
+                    .element_id = last_active.id,
+                    .bounding_box = last_active.bounding_box,
+                    .user_data = last_active.state.getUserData(),
+                    .data = .{ .mouse_up = .{ .mouse_position = mouse_pos, .end_element = self.state.hoveredId() } },
+                });
+            }
+
+            if (last_active.id.id == self.state.hoveredIdValue()) {
+                // ...and the mouse is released over that same element, it's a click.
+                try self.events.append(self.allocator, .{
+                    .element_id = last_active.id,
+                    .bounding_box = last_active.bounding_box,
+                    .user_data = last_active.state.getUserData(),
+                    .data = .{ .clicked = .{ .mouse_position = mouse_pos } },
+                });
+            }
+
+            // The element is no longer active after the mouse is released.
+            self.state.active_id = null;
+        }
+    }
+
+    // --- Handle Keyboard Focus Events ---
+    if (self.inputs.getKey(.tab) == .released and self.navigable_elements.count() > 0) {
+        var current_index: ?u32 = null;
+        if (self.state.focusedId()) |focused_id| {
+            current_index = self.reverse_navigable_elements.get(focused_id.id);
+        }
+
+        const count = @as(u32, @intCast(self.navigable_elements.count()));
+        var next_index: u32 = 0;
+        if (self.inputs.getModifiers().shift) { // Shift+Tab: move focus backward.
+            next_index = if (current_index) |idx| (idx + count - 1) % count else count - 1;
+        } else { // Tab: move focus forward.
+            next_index = if (current_index) |idx| (idx + 1) % count else 0;
+        }
+
+        const next = self.navigable_elements.get(next_index).?;
+        const element_data = clay.getElementData(next.id);
+        if (element_data.found) {
+            self.state.focused_id = .{
+                .id = next.id,
+                .bounding_box = element_data.bounding_box,
+                .state = next.state,
+            };
+        }
+    }
+
+    // --- Generate Focus Change Events ---
+    // After all potential focus changes, compare with the last frame to generate events.
+    if (self.state.focusedIdValue() != self.last_state.focusedIdValue()) {
+        // If there was a previously focused element, it has now lost focus.
+        if (self.last_state.focused_id) |last_focused| {
+            try self.events.append(self.allocator, .{
+                .element_id = last_focused.id,
+                .bounding_box = last_focused.bounding_box,
+                .user_data = last_focused.state.getUserData(),
+                .data = .focus_lost,
+            });
+        }
+        // If there's a new focused element, it has now gained focus.
+        if (self.state.focused_id) |new_focused| {
+            try self.events.append(self.allocator, .{
+                .element_id = new_focused.id,
+                .bounding_box = new_focused.bounding_box,
+                .user_data = new_focused.state.getUserData(),
+                .data = .focus_gained,
+            });
         }
     }
 }

@@ -8,11 +8,11 @@ const wgpu = @import("wgpu");
 const stbi = @import("stbi");
 const glfw = @import("glfw");
 
-const debug = @import("debug.zig");
-const Batch2D = @import("Batch2D.zig");
-const AssetCache = @import("AssetCache.zig");
-const InputState = @import("InputState.zig");
-const Ui = @import("Ui.zig");
+pub const debug = @import("debug.zig");
+pub const Batch2D = @import("Batch2D.zig");
+pub const AssetCache = @import("AssetCache.zig");
+pub const InputState = @import("InputState.zig");
+pub const Ui = @import("Ui.zig");
 
 test {
     log.debug("semantic analysis for main.zig", .{});
@@ -56,8 +56,7 @@ var FONT_ID_TITLE: AssetCache.FontId = undefined;
 var window_height: i32 = 0;
 var window_width: i32 = 0;
 var mobile_screen: bool = false;
-var title_hover_state: bool = false;
-const title_element_id: u32 = 123456789;
+var focused_element_id: ?u32 = null;
 
 // --- Clay UI Color Constants ---
 const COLOR_LIGHT = Ui.Color.init(244, 235, 230, 255);
@@ -71,6 +70,7 @@ const COLOR_BLUE = Ui.Color.init(111, 173, 162, 255);
 const COLOR_TEAL = Ui.Color.init(111, 173, 162, 255);
 const COLOR_BLUE_DARK = Ui.Color.init(2, 32, 82, 255);
 const COLOR_NONE = Ui.Color.init(0, 0, 0, 255);
+const COLOR_WHITE = Ui.Color.init(255, 255, 255, 255);
 
 // Colors for top stripe
 const COLORS_TOP_BORDER = [_]Ui.Color{
@@ -873,27 +873,24 @@ fn createLayout(ui: *Ui, lerp_value: f32) !void {
         {
             ui.beginElement();
             try ui.configureElement(.{
-                .id = .fromRawId(title_element_id),
-                .state = .custom(.hoverable, &title_hover_state),
-                .background_color = COLOR_TEAL,
-                .image = zig_logo_image_id,
-                .clip = .{
-                    .horizontal = true,
-                    .vertical = true,
-                    .child_offset = ui.scrollOffset(),
-                },
-                .layout = .{
-                    .sizing = .{ .w = .fixed(32), .h = .fixed(32) },
-                },
-                .border = .{ .width = .all(2), .color = if (title_hover_state) COLOR_ORANGE else COLOR_BLUE_DARK },
+                .id = .fromSlice("Stuff"),
             });
             defer ui.closeElement();
 
-            try ui.elem(.{
-                .id = .fromSlice("blah"),
-                .image = wgpu_logo_image_id,
-                .layout = .{ .sizing = .{ .w = .fixed(64), .h = .fixed(64) } },
-            });
+            for (0..5) |i| {
+                const id = Ui.ElementId.indexed("Focusable", @intCast(i));
+
+                ui.beginElement();
+                defer ui.closeElement();
+
+                try ui.configureElement(.{
+                    .id = id,
+                    .image = if (i % 2 == 0) wgpu_logo_image_id else zig_logo_image_id,
+                    .layout = .{ .sizing = .{ .w = .fixed(32), .h = .fixed(32) } },
+                    .background_color = if (ui.hovered()) COLOR_WHITE else if (focused_element_id == id.id) COLOR_ORANGE else COLOR_BLUE_DARK,
+                    .state = .flags(.{ .focus = true }),
+                });
+            }
         }
 
         try ui.text(
@@ -901,7 +898,7 @@ fn createLayout(ui: *Ui, lerp_value: f32) !void {
             .{
                 .font_id = FONT_ID_BODY,
                 .font_size = 24,
-                .color = if (title_hover_state) COLOR_ORANGE else COLOR_BLUE_DARK,
+                .color = if (focused_element_id != null) COLOR_ORANGE else COLOR_BLUE_DARK,
             },
         );
 
@@ -1213,24 +1210,32 @@ pub fn main() !void {
                 switch (event.data) {
                     .hover_begin => |hover_begin_data| {
                         log.info("hover_begin id={any} loc={f}", .{ event.element_id, hover_begin_data.mouse_position });
-
-                        if (event.element_id.id == title_element_id) {
-                            title_hover_state = true;
-                        } else {
-                            log.info("Expected {x} got {x}", .{ title_element_id, event.element_id.id });
-                        }
                     },
                     .hover_end => |hover_end_data| {
                         log.info("hover_end id={any} loc={f}", .{ event.element_id, hover_end_data.mouse_position });
-
-                        if (event.element_id.id == title_element_id) {
-                            title_hover_state = false;
-                        } else {
-                            log.info("Expected {x} got {x}", .{ title_element_id, event.element_id.id });
-                        }
                     },
-                    .hovering => |_| {
+                    .hovering => |hovering_data| {
+                        _ = hovering_data; // too noisey rn
                         // log.info("hovering id={any} loc={f}", .{ event.element_id, hovering_data.mouse_position });
+                    },
+                    .mouse_down => |mouse_down_data| {
+                        log.info("mouse_down id={any} loc={f}", .{ event.element_id, mouse_down_data.mouse_position });
+                    },
+                    .mouse_up => |mouse_up_data| {
+                        log.info("mouse_up id={any} loc={f}", .{ event.element_id, mouse_up_data.mouse_position });
+                    },
+                    .clicked => |clicked_data| {
+                        log.info("clicked id={any} loc={f}", .{ event.element_id, clicked_data.mouse_position });
+                    },
+                    .focus_gained => {
+                        log.info("focus_gained id={any}", .{event.element_id});
+
+                        focused_element_id = event.element_id.id;
+                    },
+                    .focus_lost => {
+                        log.info("focus_lost id={any}", .{event.element_id});
+
+                        focused_element_id = null;
                     },
                 }
             }
