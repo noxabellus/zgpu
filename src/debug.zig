@@ -55,10 +55,24 @@ pub fn drawFpsChart(renderer: *Batch2D, chart_pos: Batch2D.Vec2) !void {
 
     const reference_ms = @max(16.67, max_ms);
 
+    const chart_width = @as(f32, FRAME_AVG_LEN) * bar_width;
+    try renderer.drawQuad(chart_pos, .{ .x = chart_width, .y = chart_height }, chart_color);
+
     var x: f32 = chart_pos.x;
     for (frame_ms_buf) |ms| {
         const height = @as(f32, @floatCast(ms)) / @as(f32, @floatCast(reference_ms)) * chart_height;
         try renderer.drawQuad(.{ .x = x, .y = chart_pos.y + (chart_height - height) }, .{ .x = bar_width - 1, .y = height }, chart_color);
         x += bar_width;
     }
+
+    //  string: []const u8, font_id: AssetCache.FontId, font_size: AssetCache.FontSize, line_spacing_override: ?u16, pos: Vec2, tint: Color
+    try renderer.formatText(
+        "FPS: {d:.2} Frame:{d:.2}ms Avg: {d:.2}ms Min: {d:.2}ms Max: {d:.2}ms",
+        0,
+        16,
+        null,
+        .{ .x = chart_pos.x + 5, .y = chart_pos.y + 5 },
+        .{ .r = 1, .g = 1, .b = 1, .a = 1 },
+        .{ avg_fps, frame_ms, avg_ms, min_ms, max_ms },
+    );
 }

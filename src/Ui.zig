@@ -830,13 +830,12 @@ fn measureTextCallback(
         return .{ .w = 0, .h = 0 };
     }
 
-    const font_info = &backend_ptr.asset_cache.fonts.items[config.font_id].info;
     const line_spacing_override = if (config.line_height > 0) config.line_height else null;
 
     // Use the Batch2D's own text measurement logic for perfect consistency.
-    const dimensions = Batch2D.measureText(
+    const dimensions = backend_ptr.renderer.measureText(
         text_slice,
-        font_info,
+        @intCast(config.font_id),
         config.font_size,
         line_spacing_override,
     );
@@ -1163,7 +1162,6 @@ fn draw(self: *Ui) !void {
                     log.err("Invalid font_id {d} used in text element.", .{data.font_id});
                     continue;
                 }
-                const font_info = &self.asset_cache.fonts.items[data.font_id].info;
                 const text_slice = data.string_contents.chars[0..@intCast(data.string_contents.length)];
                 const color = clayColorToBatchColor(data.text_color);
                 const line_spacing_override = if (data.line_height > 0) data.line_height else null;
@@ -1171,7 +1169,6 @@ fn draw(self: *Ui) !void {
                 // Clay provides the final bounding box after alignment. We can just draw at its top-left corner.
                 try self.renderer.drawText(
                     text_slice,
-                    font_info,
                     @intCast(data.font_id),
                     data.font_size,
                     line_spacing_override,

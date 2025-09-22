@@ -41,26 +41,12 @@ const Demo = struct {
     msaa_view: wgpu.TextureView = null,
 };
 
-// Asset Identifiers
-var syntax_image_id: AssetCache.ImageId = undefined;
-var check_image1_id: AssetCache.ImageId = undefined;
-var check_image2_id: AssetCache.ImageId = undefined;
-var check_image3_id: AssetCache.ImageId = undefined;
-var check_image4_id: AssetCache.ImageId = undefined;
-var check_image5_id: AssetCache.ImageId = undefined;
-var zig_logo_image_id: AssetCache.ImageId = undefined;
-var wgpu_logo_image_id: AssetCache.ImageId = undefined;
-
 var FONT_ID_BODY: AssetCache.FontId = undefined;
 var FONT_ID_TITLE: AssetCache.FontId = undefined;
 
-// UI State
-var window_height: i32 = 0;
-var window_width: i32 = 0;
-var mobile_screen: bool = false;
-var focused_element_id: ?u32 = null;
+var zig_logo_image_id: AssetCache.ImageId = undefined;
+var wgpu_logo_image_id: AssetCache.ImageId = undefined;
 
-// --- Clay UI Color Constants ---
 const COLOR_LIGHT = Ui.Color.init(244, 235, 230, 255);
 const COLOR_LIGHT_HOVER = Ui.Color.init(224, 215, 210, 255);
 const COLOR_BUTTON_HOVER = Ui.Color.init(238, 227, 225, 255);
@@ -73,26 +59,6 @@ const COLOR_TEAL = Ui.Color.init(111, 173, 162, 255);
 const COLOR_BLUE_DARK = Ui.Color.init(2, 32, 82, 255);
 const COLOR_NONE = Ui.Color.init(0, 0, 0, 255);
 const COLOR_WHITE = Ui.Color.init(255, 255, 255, 255);
-
-// Colors for top stripe
-const COLORS_TOP_BORDER = [_]Ui.Color{
-    .init(240, 213, 137, 255),
-    .init(236, 189, 80, 255),
-    .init(225, 138, 50, 255),
-    .init(223, 110, 44, 255),
-    .init(168, 66, 28, 255),
-};
-
-const COLOR_BLOB_BORDER_1 = Ui.Color.init(168, 66, 28, 255);
-const COLOR_BLOB_BORDER_2 = Ui.Color.init(203, 100, 44, 255);
-const COLOR_BLOB_BORDER_3 = Ui.Color.init(225, 138, 50, 255);
-const COLOR_BLOB_BORDER_4 = Ui.Color.init(236, 159, 70, 255);
-const COLOR_BLOB_BORDER_5 = Ui.Color.init(240, 189, 100, 255);
-
-const border_data = Ui.BorderData{
-    .width = .{ .top = 2, .bottom = 2, .left = 2, .right = 2 },
-    .color = COLOR_RED,
-};
 
 const test_text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla feugiat convallis viverra.\nNulla luctus odio arcu. Cras pellentesque vitae lorem vel egestas.\n";
 var caret_index: u32 = 32;
@@ -115,7 +81,7 @@ fn createLayout(ui: *Ui) !void {
 
         try ui.configureElement(.{
             .layout = .{
-                .sizing = .{ .w = .fixed(300), .h = .fixed(100) },
+                .sizing = .{ .w = .fixed(300 + 5 * 2), .h = .fixed(16 * 6 + 5 * 2 + 5) },
                 .padding = .all(5),
             },
             .background_color = COLOR_WHITE,
@@ -249,6 +215,8 @@ pub fn main() !void {
         .alpha_mode = surface_capabilities.alpha_modes.?[0],
     };
 
+    var window_width: i32 = 0;
+    var window_height: i32 = 0;
     {
         glfw.getFramebufferSize(window, &window_width, &window_height);
         demo.config.width = @intCast(window_width);
@@ -266,12 +234,7 @@ pub fn main() !void {
     defer asset_cache.deinit();
 
     // Init Batch Renderer
-    const provider_ctx = Batch2D.ProviderContext{
-        .provider = AssetCache.dataProvider,
-        .frame_allocator = arena_state.allocator(),
-        .user_context = &asset_cache,
-    };
-    demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format, provider_ctx, MSAA_SAMPLE_COUNT);
+    demo.renderer = try Batch2D.init(gpa, demo.device, queue, surface_format, &asset_cache, MSAA_SAMPLE_COUNT);
     defer demo.renderer.deinit();
 
     var inputs = InputState{};
@@ -279,7 +242,10 @@ pub fn main() !void {
 
     var bindings = BindingState.init(gpa, &inputs);
     defer bindings.deinit();
-    
+
+    try bindings.bind(.toggle_debugger, .{ .key = .{ .bind_point = .d, .modifiers = .ctrlMod } });
+    try bindings.bind(.dump_atlas, .{ .key = .{ .bind_point = .a, .modifiers = .altMod } });
+
     // Init Ui
     var ui = try Ui.init(gpa, demo.renderer, &asset_cache, &bindings);
     ui.custom_element_renderer = &struct {
@@ -301,18 +267,11 @@ pub fn main() !void {
     FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/Quicksand-Semibold.ttf");
     FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/Calistoga-Regular.ttf");
 
-    syntax_image_id = try asset_cache.loadImage("assets/images/clay/declarative.png", true);
-    check_image1_id = try asset_cache.loadImage("assets/images/clay/check_1.png", true);
-    check_image2_id = try asset_cache.loadImage("assets/images/clay/check_2.png", true);
-    check_image3_id = try asset_cache.loadImage("assets/images/clay/check_3.png", true);
-    check_image4_id = try asset_cache.loadImage("assets/images/clay/check_4.png", true);
-    check_image5_id = try asset_cache.loadImage("assets/images/clay/check_5.png", true);
     zig_logo_image_id = try asset_cache.loadImage("assets/images/zig-mark.png", true);
     wgpu_logo_image_id = try asset_cache.loadImage("assets/images/wgpu-logo.png", true);
 
-    try demo.renderer.preAtlasAllImages(&asset_cache);
+    try demo.renderer.preAtlasAllImages();
 
-    var animation_lerp_value: f32 = -1.0;
     var debug_mode_enabled = false;
 
     const startup_time = debug.start(&debug_timer);
@@ -323,36 +282,25 @@ pub fn main() !void {
         glfw.pollEvents();
         _ = arena_state.reset(.free_all);
 
-        if (bindings.get(.move_left) == .released) {
-            log.info("move_left action triggered", .{});
-        }
-
         // --- Calculate Delta Time ---
         const current_time = timer.read();
         const delta_time_ns = current_time - last_frame_time;
         last_frame_time = current_time;
         const delta_time_f32 = @as(f32, @floatFromInt(delta_time_ns)) / std.time.ns_per_s;
 
-        // --- Update Application State ---
-        animation_lerp_value += delta_time_f32;
-        if (animation_lerp_value > 1.0) {
-            animation_lerp_value -= 2.0;
-        }
-
         // --- Handle Input ---
-        if (glfw.getKey(window, .d) == .press) {
+        if (bindings.get(.toggle_debugger) == .pressed) {
             debug_mode_enabled = !debug_mode_enabled;
             ui.setDebugMode(debug_mode_enabled);
         }
 
-        if (glfw.getKey(window, .a) == .press and glfw.getKey(window, .left_alt).isDown()) {
+        if (bindings.get(.dump_atlas) == .pressed) {
             try demo.renderer.atlas.debugWriteAllAtlasesToPng("debug_atlas");
             log.info("finished writing debug_atlas_*.png", .{});
         }
 
         // --- Update Clay UI ---
         glfw.getFramebufferSize(window, &window_width, &window_height);
-        mobile_screen = window_width < 750;
 
         inputs.collectAllGlfw(window);
 
@@ -427,16 +375,12 @@ pub fn main() !void {
                     },
                     .focus_gained => {
                         log.info("focus_gained id={any}", .{event.element_id});
-
-                        focused_element_id = event.element_id.id;
                     },
                     .focusing => {
                         // log.info("focusing id={any}", .{event.element_id});
                     },
                     .focus_lost => {
                         log.info("focus_lost id={any}", .{event.element_id});
-
-                        focused_element_id = null;
                     },
                     .activate_begin => {
                         log.info("activate_begin id={any}", .{event.element_id});

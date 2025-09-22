@@ -123,12 +123,14 @@ vertex_staging_buffer_capacity: usize,
 vertices: std.ArrayList(Vertex),
 
 // Drawing State
+asset_cache: *AssetCache,
 atlas: *Atlas,
+frame_arena: std.heap.ArenaAllocator,
+provider_context: Atlas.ProviderContext,
 bind_group: wgpu.BindGroup,
 linear_sampler: wgpu.Sampler,
 nearest_sampler: wgpu.Sampler,
 patch_list: std.ArrayList(Patch),
-provider_context: Atlas.ProviderContext,
 batch_list: std.ArrayList(RenderBatch),
 scissor_stack: std.ArrayList(ScissorRect),
 current_batch_vertex_start: usize,
@@ -144,7 +146,7 @@ pub fn init(
     device: wgpu.Device,
     queue: wgpu.Queue,
     surface_format: wgpu.TextureFormat,
-    provider_context: Atlas.ProviderContext,
+    asset_cache: *AssetCache,
     sample_count: u32,
 ) !*Batch2D {
     const self = try allocator.create(Batch2D);
@@ -280,12 +282,18 @@ pub fn init(
         .vertex_staging_buffer = vertex_staging_buffer,
         .vertex_staging_buffer_capacity = initial_vertex_capacity_bytes,
         .vertices = .empty,
+        .asset_cache = asset_cache,
         .atlas = atlas,
+        .frame_arena = std.heap.ArenaAllocator.init(allocator),
+        .provider_context = .{
+            .provider = AssetCache.dataProvider,
+            .user_context = @constCast(asset_cache),
+            .frame_allocator = undefined, // This will be set per-frame in beginFrame
+        },
         .bind_group = null,
         .linear_sampler = linear_sampler,
         .nearest_sampler = nearest_sampler,
         .patch_list = .empty,
-        .provider_context = provider_context,
         .batch_list = .empty,
         .scissor_stack = .empty,
         .current_batch_vertex_start = 0,
@@ -318,12 +326,19 @@ pub fn deinit(self: *Batch2D) void {
     self.patch_list.deinit(self.allocator);
     self.batch_list.deinit(self.allocator);
     self.scissor_stack.deinit(self.allocator);
+    self.frame_arena.deinit();
     self.allocator.destroy(self);
 }
 
 pub fn beginFrame(self: *Batch2D, projection: Mat4, viewport_width: u32, viewport_height: u32) void {
     self.viewport_width = viewport_width;
     self.viewport_height = viewport_height;
+
+    // Reset the frame arena allocator and update the provider context for this frame.
+    // This provides a valid, temporary allocator for any assets that need to be
+    // generated on-the-fly during this frame (e.g., new glyphs, mipmaps).
+    _ = self.frame_arena.reset(.retain_capacity);
+    self.provider_context.frame_allocator = self.frame_arena.allocator();
 
     wgpu.queueWriteBuffer(self.queue, self.uniform_buffer, 0, &Uniforms{ .projection = projection }, @sizeOf(Uniforms));
     self.vertices.clearRetainingCapacity();
@@ -730,7 +745,6 @@ pub fn drawRoundedRectLine(self: *Batch2D, pos: Vec2, size: Vec2, radius: Corner
     try self.drawArcLine(.{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - r.bottom_left }, r.bottom_left, 0.5 * pi, pi, t, tint);
 }
 
-// --- This is the new public function you requested ---
 /// Draws a textured quad with rounded corners, using a 9-slice method.
 /// The `src_rect` defines the texture area, and `radius` defines the screen-space corner size.
 pub fn drawRoundedTexturedQuad(
@@ -1019,7 +1033,7 @@ pub fn drawSolidTriangleStrip(self: *Batch2D, vertices: []const Vec2, tint: Colo
     }
 }
 
-// Gelper struct to pass layout info from the generic layout function to the specific callbacks.
+// Helper struct to pass layout info from the generic layout function to the specific callbacks.
 pub const GlyphLayoutInfo = struct {
     glyph_id: Atlas.ImageId,
     pos: Vec2,
@@ -1027,11 +1041,10 @@ pub const GlyphLayoutInfo = struct {
 };
 
 /// Generic text layout engine. Iterates through a string and calls a callback for each glyph's calculated position and size.
-/// This internal function contains the shared logic for both `drawText` and `measureText`.
 pub fn layoutText(
+    self: *Batch2D,
     // Common text parameters
     string: []const u8,
-    font_info: *const stbtt.FontInfo,
     font_id: AssetCache.FontId,
     font_size: AssetCache.FontSize,
     line_spacing_override: ?u16,
@@ -1039,10 +1052,17 @@ pub fn layoutText(
 
     // Generic callback mechanism
     comptime T: type,
-    comptime E: ?type,
+    comptime E: type,
     context: *T,
-    callback: fn (context: *T, info: GlyphLayoutInfo) if (E) |e| e!void else void,
-) if (E) |e| e!void else void {
+    callback: fn (context: *T, info: GlyphLayoutInfo) E!void,
+) (E || error{InvalidFontId})!void {
+    // --- Font Info Lookup ---
+    if (font_id >= self.asset_cache.fonts.items.len) {
+        log.err("Invalid font_id {d} passed to layoutText", .{font_id});
+        return error.InvalidFontId;
+    }
+    const font_info = &self.asset_cache.fonts.items[font_id].info;
+
     // --- Identical Setup ---
     const font_size_f32 = @as(f32, @floatFromInt(font_size));
     const font_scale_f32 = stbtt.scaleForPixelHeight(font_info, font_size_f32);
@@ -1060,17 +1080,6 @@ pub fn layoutText(
             @as(f64, @floatFromInt(spacing))
         else
             @as(f64, @floatFromInt(ascent - descent + line_gap)) * font_scale;
-
-    // First, iterate through the string to find the highest-rising glyph.
-    // This allows us to align the entire string's top boundary to pos.y.
-    // Incompatible with standard ui layout algorithms; TODO: this is really useful in immediate mode, consider a flag for this.
-    // var min_iy0: i32 = 0;
-    // for (string) |char| {
-    //     if (char < 32) continue; // Skip control characters
-    //     var iy0: i32 = 0;
-    //     stbtt.getCodepointBitmapBox(font_info, @intCast(@as(u21, @intCast(char))), font_scale_f32, font_scale_f32, null, &iy0, null, null);
-    //     min_iy0 = @min(min_iy0, iy0);
-    // }
 
     // --- Layout Loop ---
     var baseline_y: f64 = pos.y + (@as(f64, @floatFromInt(ascent)) * font_scale);
@@ -1118,15 +1127,13 @@ pub fn layoutText(
                 .glyph_id = AssetCache.encodeGlyphId(.{
                     .char_code = char_code,
                     .font_size = font_size,
-                    .font_id = @intCast(font_id),
+                    .font_id = font_id,
                     ._reserved = 0,
                     .is_glyph_or_special = true,
                 }),
             };
 
-            const res = callback(context, info);
-
-            if (comptime E != null) try res;
+            try callback(context, info);
         }
 
         var adv: i32 = 0;
@@ -1137,12 +1144,15 @@ pub fn layoutText(
 }
 
 /// Measures the pixel dimensions of a multi-line string when rendered with the specified font and size.
-pub fn measureText(string: []const u8, font_info: *const stbtt.FontInfo, font_size: AssetCache.FontSize, line_spacing_override: ?u16) ?Vec2 {
-    // TODO: probably should use the generic layout engine here too, but there are some incompatibilities to resolve:
-    // - The layout engine does not call back on empty glyphs, which means spaces and tabs are ignored.
-    // - Proper measurement relies on the advance, not just the glyph bounds.
-
+pub fn measureText(self: *Batch2D, string: []const u8, font_id: AssetCache.FontId, font_size: AssetCache.FontSize, line_spacing_override: ?u16) ?Vec2 {
     if (string.len == 0) return .{ .x = 0, .y = 0 };
+
+    // --- Font Info Lookup ---
+    if (font_id >= self.asset_cache.fonts.items.len) {
+        log.err("Invalid font_id {d} passed to measureText", .{font_id});
+        return null;
+    }
+    const font_info = &self.asset_cache.fonts.items[font_id].info;
 
     // --- Font Metrics Setup ---
     const font_size_f32 = @as(f32, @floatFromInt(font_size));
@@ -1216,17 +1226,28 @@ const DrawContext = struct {
     }
 };
 
+/// Draws a formatted string of text, handling multiple lines.
+pub fn formatText(self: *Batch2D, comptime fmt: []const u8, font_id: AssetCache.FontId, font_size: AssetCache.FontSize, line_spacing_override: ?u16, pos: Vec2, tint: Color, args: anytype) !void {
+    try self.drawText(
+        try std.fmt.allocPrint(self.frame_arena.allocator(), fmt, args),
+        font_id,
+        font_size,
+        line_spacing_override,
+        pos,
+        tint,
+    );
+}
+
 /// Draws a string of text, handling multiple lines.
-pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.FontInfo, font_id: AssetCache.FontId, font_size: AssetCache.FontSize, line_spacing_override: ?u16, pos: Vec2, tint: Color) !void {
+pub fn drawText(self: *Batch2D, string: []const u8, font_id: AssetCache.FontId, font_size: AssetCache.FontSize, line_spacing_override: ?u16, pos: Vec2, tint: Color) !void {
     var context = DrawContext{
         .batch = self,
         .tint = tint,
     };
 
     // Use the generic layout engine with our drawing callback.
-    try layoutText(
+    try self.layoutText(
         string,
-        font_info,
         font_id,
         font_size,
         line_spacing_override,
@@ -1244,30 +1265,24 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_info: *const stbtt.Font
 ///
 /// This function will repeatedly call the atlas's query and flush mechanisms until
 /// all known images have been processed and uploaded to the GPU.
-///
-/// Parameters:
-///   - ui: The main Ui struct instance.
-///   - asset_cache: The AssetCache containing the images to be pre-atlased.
-///   - renderer: The Batch2D renderer containing the atlas.
-pub fn preAtlasAllImages(renderer: *Batch2D, asset_cache: *const AssetCache) !void {
-    log.info("Beginning pre-atlasing of {d} images...", .{asset_cache.images.items.len});
+pub fn preAtlasAllImages(renderer: *Batch2D) !void {
+    log.info("Beginning pre-atlasing of {d} images...", .{renderer.asset_cache.images.items.len});
     var timer = try std.time.Timer.start();
 
-    // The Atlas needs a provider context to function. We'll create one here.
-    // We use a temporary arena allocator because the provider might generate
-    // temporary data (like mipmaps), and we want to clean that up easily.
+    // The Atlas needs a provider context to function. We'll create one here
+    // using a temporary arena that will be cleaned up after this function returns.
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
     const provider_ctx = Atlas.ProviderContext{
         .provider = AssetCache.dataProvider,
         .frame_allocator = arena.allocator(),
-        .user_context = @constCast(asset_cache),
+        .user_context = @constCast(renderer.asset_cache),
     };
 
     // We need to iterate over all *logical* images, not the internal storage.
     // The image_map's value iterator gives us the ImageIds.
-    var image_id_iterator = asset_cache.image_map.valueIterator();
+    var image_id_iterator = renderer.asset_cache.image_map.valueIterator();
     while (image_id_iterator.next()) |image_id_ptr| {
         // 1. Query the image. This will add it to the atlas's pending list.
         //    We expect it to return ImageNotYetPacked. If it returns anything
