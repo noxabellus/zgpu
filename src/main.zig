@@ -60,7 +60,8 @@ const COLOR_BLUE_DARK = Ui.Color.init(2, 32, 82, 255);
 const COLOR_NONE = Ui.Color.init(0, 0, 0, 255);
 const COLOR_WHITE = Ui.Color.init(255, 255, 255, 255);
 
-const test_text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla feugiat convallis viverra.\nNulla luctus odio arcu. Cras pellentesque vitae lorem vel egestas.\n";
+const test_text_default = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla feugiat convallis viverra.\nNulla luctus odio arcu. Cras pellentesque vitae lorem vel egestas.\n";
+var test_text = std.ArrayList(u8).empty;
 var caret_index: u32 = 32;
 
 fn createLayout(ui: *Ui) !void {
@@ -91,11 +92,16 @@ fn createLayout(ui: *Ui) !void {
             },
             .corner_radius = .all(5),
 
-            .state = .flags(.{ .wheel = true, .click = true }),
             .custom = &caret_index, // TODO: in future we will need a more advanced facility for dispatch on kinds of custom elements
+            .state = .flags(.{
+                .wheel = true,
+                .click = true,
+                .focus = true,
+                .text = true,
+            }),
         });
 
-        try ui.text(test_text, .{
+        try ui.text(test_text.items, .{
             .alignment = .left,
             .font_id = FONT_ID_BODY,
             .font_size = 16,
@@ -229,6 +235,8 @@ pub fn main() !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
 
+    const arena = arena_state.allocator();
+
     // Init Asset Cache
     var asset_cache = AssetCache.init(gpa);
     defer asset_cache.deinit();
@@ -271,13 +279,12 @@ pub fn main() !void {
     wgpu_logo_image_id = try asset_cache.loadImage("assets/images/wgpu-logo.png", true);
 
     try demo.renderer.preAtlasAllImages();
-
-    var debug_mode_enabled = false;
+    try test_text.appendSlice(gpa, test_text_default);
 
     const startup_time = debug.start(&debug_timer);
     log.info("startup_time={d}ms", .{startup_time});
 
-    // --- Main Loop ---
+    var debug_mode_enabled = false;
     main_loop: while (!glfw.windowShouldClose(window)) {
         glfw.pollEvents();
         _ = arena_state.reset(.free_all);
@@ -365,12 +372,12 @@ pub fn main() !void {
                                     caret_index -= 1;
                                 }
                             } else if (wheel_data.delta.y > 0) {
-                                if (caret_index < @as(u32, @intCast(test_text.len))) {
+                                if (caret_index < @as(u32, @intCast(test_text.items.len))) {
                                     caret_index += 1;
                                 }
                             }
 
-                            log.info("  -> new caret_index={d}/{d}", .{ caret_index, test_text.len });
+                            log.info("  -> new caret_index={d}/{d}", .{ caret_index, test_text.items.len });
                         }
                     },
                     .focus_gained => {
@@ -390,6 +397,27 @@ pub fn main() !void {
                     },
                     .activate_end => |activate_end_data| {
                         log.info("activate_end id={any} end_element={any}", .{ event.element_id, activate_end_data.end_element });
+                    },
+                    .text => |text_data| {
+                        log.info("text id={any} cmds={any}", .{ event.element_id, text_data.chars });
+
+                        if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
+                            var input = std.ArrayList(u8).empty;
+
+                            for (text_data.chars) |char_cmd| {
+                                _ = char_cmd.modifiers; // currently ignoring these, could be used for various IME states etc
+
+                                const width = try std.unicode.utf8CodepointSequenceLength(char_cmd.codepoint);
+                                const buf = try input.addManyAsSlice(arena, width);
+                                _ = try std.unicode.utf8Encode(char_cmd.codepoint, buf);
+
+                                log.info("  -> char input: '{s}'", .{buf});
+
+                                // Insert at caret position
+                                try test_text.insertSlice(gpa, caret_index, buf);
+                                caret_index += width;
+                            }
+                        }
                     },
                 }
             }

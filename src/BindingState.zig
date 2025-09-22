@@ -8,6 +8,7 @@ const InputState = @import("InputState.zig");
 
 pub const Vec2 = InputState.Vec2; // TODO: linalg library
 pub const Action = InputState.Action;
+pub const Char = InputState.Char;
 
 const log = std.log.scoped(.input_bindings);
 
@@ -63,6 +64,11 @@ pub fn getMousePosition(self: *const BindingState) Vec2 {
 /// Consume the mouse wheel delta for this frame from the underlying InputState.
 pub fn consumeScrollDelta(self: *BindingState) Vec2 {
     return self.input_state.consumeScrollDelta();
+}
+
+/// Consume the text entry buffer for this frame from the underlying InputState.
+pub fn consumeCharInput(self: *BindingState) []const Char {
+    return self.input_state.consumeCharInput();
 }
 
 /// Represents a specific input configuration that can be bound to an action.

@@ -25,7 +25,7 @@ pub const default_bindings = .{
     .primary_mouse = BindingState.InputBinding{ .mouse = .{ .bind_point = .button_1 } },
     .focus_next = BindingState.InputBinding{ .key = .{ .bind_point = .tab } },
     .focus_prev = BindingState.InputBinding{ .key = .{ .bind_point = .tab, .modifiers = .shiftMod } },
-    .activate_focused = BindingState.InputBinding{ .key = .{ .bind_point = .enter } },
+    .activate_focused = BindingState.InputBinding{ .key = .{ .bind_point = .space } },
 };
 
 allocator: std.mem.Allocator,
@@ -46,6 +46,7 @@ user_data: ?*anyopaque = null,
 state: State = .{},
 last_state: State = .{},
 wheel_delta: Vec2 = .{},
+char_input: []const BindingState.Char = &.{},
 
 // A stack of all elements currently under the mouse, populated during layout. The last element is the top-most.
 hovered_element_stack: std.ArrayList(StateElement) = .empty,
@@ -131,6 +132,7 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
     self.state.focused_id = self.last_state.focused_id;
 
     self.wheel_delta = self.bindings.consumeScrollDelta();
+    self.char_input = self.bindings.consumeCharInput();
 
     clay.setCurrentContext(self.clay_context);
 
@@ -329,6 +331,8 @@ pub const Event = struct {
         mouse_up: struct { mouse_position: Vec2, end_element: ?ElementId },
         clicked: struct { mouse_position: Vec2 },
 
+        text: struct { chars: []const BindingState.Char },
+
         wheel: struct { delta: Vec2 },
 
         focus_gained: void,
@@ -387,8 +391,9 @@ pub const ElementState = packed struct(usize) {
         click: bool = false,
         focus: bool = false,
         activate: bool = false,
+        text: bool = false,
 
-        _reserved: u11 = 0,
+        _reserved: u10 = 0,
 
         pub const none = Flags{};
         pub const hoverable = Flags{ .hover = true };
@@ -396,12 +401,14 @@ pub const ElementState = packed struct(usize) {
         pub const clickable = Flags{ .click = true };
         pub const focusable = Flags{ .focus = true };
         pub const activatable = Flags{ .activate = true };
+        pub const textable = Flags{ .text = true };
         pub const all = Flags{
             .hover = true,
             .wheel = true,
             .click = true,
             .focus = true,
             .activate = true,
+            .text = true,
         };
 
         pub fn merge(a: Flags, b: Flags) Flags {
@@ -411,11 +418,12 @@ pub const ElementState = packed struct(usize) {
                 .click = a.click or b.click,
                 .focus = a.focus or b.focus,
                 .activate = a.activate or b.activate,
+                .text = a.text or b.text,
             };
         }
 
         pub fn takesInput(self: Flags) bool {
-            return self.hover or self.wheel or self.click or self.focus or self.activate;
+            return self.hover or self.wheel or self.click or self.focus or self.activate or self.text;
         }
 
         pub fn usesMouse(self: Flags) bool {
@@ -429,6 +437,7 @@ pub const ElementState = packed struct(usize) {
     pub const clickable = ElementState{ .event_flags = .clickable };
     pub const focusable = ElementState{ .event_flags = .focusable };
     pub const activatable = ElementState{ .event_flags = .activatable };
+    pub const textable = ElementState{ .event_flags = .textable };
     pub const all = ElementState{ .event_flags = .all };
 
     pub fn flags(f: Flags) ElementState {
@@ -855,11 +864,28 @@ fn generateEvents(self: *Ui) !void {
     const primary_mouse_action = self.bindings.get(.primary_mouse);
     const activate_action = self.bindings.get(.activate_focused);
     const focus_next_action = self.bindings.get(.focus_next);
-    const focus_previous_action = self.bindings.get(.focus_previous);
+    const focus_prev_action = self.bindings.get(.focus_prev);
 
     // The top-most element in the stack is the one we consider "hovered" for this frame.
     if (self.hovered_element_stack.items.len > 0) {
         self.state.hovered = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1];
+    }
+
+    // --- Handle Text Input Events ---
+    // This is processed before activation to give it priority.
+    var processed_text_input = false;
+    if (self.char_input.len > 0) {
+        if (self.state.focused_id) |focused_elem| {
+            if (focused_elem.state.event_flags.text) {
+                try self.events.append(self.allocator, .{
+                    .element_id = focused_elem.id,
+                    .bounding_box = focused_elem.bounding_box,
+                    .user_data = focused_elem.state.getUserData(),
+                    .data = .{ .text = .{ .chars = self.char_input } },
+                });
+                processed_text_input = true;
+            }
+        }
     }
 
     // --- Handle Hover Events ---
@@ -919,7 +945,9 @@ fn generateEvents(self: *Ui) !void {
 
     // If mouse isn't activating, check keyboard.
     if (!is_mouse_activating) {
-        if (activate_action.isDown() and self.state.focused_id != null) {
+        // Only consider keyboard activation if we haven't just processed text input.
+        // This prevents, for example, the space key from both typing a space and activating the element.
+        if (activate_action.isDown() and self.state.focused_id != null and !processed_text_input) {
             if (self.state.focused_id.?.state.event_flags.activate) {
                 self.state.active_id = self.state.focused_id.?;
             } else {
@@ -1011,7 +1039,7 @@ fn generateEvents(self: *Ui) !void {
 
     // --- Handle Keyboard Focus Events ---
     if (self.navigable_elements.count() > 0) {
-        if (focus_previous_action == .released) {
+        if (focus_prev_action == .released) {
             var current_index: ?u32 = null;
             if (self.state.focusedId()) |focused_id| {
                 current_index = self.reverse_navigable_elements.get(focused_id.id);

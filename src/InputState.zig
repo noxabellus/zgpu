@@ -314,7 +314,7 @@ pub const MouseButton = enum(u3) {
 };
 
 /// Represents a unicode character input event
-const Char = packed struct(u27) {
+pub const Char = packed struct(u27) {
     codepoint: u21,
     modifiers: Modifiers,
 };
