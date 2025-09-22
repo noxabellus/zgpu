@@ -38,7 +38,7 @@ user_data: ?*anyopaque = null,
 
 state: State = .{},
 last_state: State = .{},
-scroll_delta: Vec2 = .{},
+wheel_delta: Vec2 = .{},
 
 // A stack of all elements currently under the mouse, populated during layout. The last element is the top-most.
 hovered_element_stack: std.ArrayList(StateElement) = .empty,
@@ -117,7 +117,7 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
     self.state.active_id = self.last_state.active_id;
     self.state.focused_id = self.last_state.focused_id;
 
-    self.scroll_delta = self.inputs.consumeScrollDelta();
+    self.wheel_delta = self.inputs.consumeScrollDelta();
 
     clay.setCurrentContext(self.clay_context);
 
@@ -128,7 +128,7 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
 
     clay.updateScrollContainers(
         false, // never use drag scrolling
-        vec2ToClay(self.scroll_delta),
+        vec2ToClay(self.wheel_delta),
         delta_ms,
     );
 
@@ -316,10 +316,10 @@ pub const Event = struct {
         mouse_up: struct { mouse_position: Vec2, end_element: ?ElementId },
         clicked: struct { mouse_position: Vec2 },
 
+        wheel: struct { delta: Vec2 },
+
         focus_gained: void,
         focus_lost: void,
-
-        scroll: struct { delta: Vec2 },
     };
 };
 
@@ -365,7 +365,7 @@ pub const ElementState = packed struct(usize) {
 
     pub const Flags = packed struct(u16) {
         hover: bool = false,
-        scroll: bool = false,
+        wheel: bool = false,
         click: bool = false,
         focus: bool = false,
 
@@ -373,25 +373,25 @@ pub const ElementState = packed struct(usize) {
 
         pub const none = Flags{};
         pub const hoverable = Flags{ .hover = true };
-        pub const scrollable = Flags{ .scroll = true };
+        pub const scrollable = Flags{ .wheel = true };
         pub const clickable = Flags{ .click = true };
         pub const focusable = Flags{ .focus = true };
 
         pub fn merge(a: Flags, b: Flags) Flags {
             return Flags{
                 .hover = a.hover or b.hover,
-                .scroll = a.scroll or b.scroll,
+                .wheel = a.wheel or b.wheel,
                 .click = a.click or b.click,
                 .focus = a.focus or b.focus,
             };
         }
 
         pub fn takesInput(self: Flags) bool {
-            return self.hover or self.scroll or self.click or self.focus;
+            return self.hover or self.wheel or self.click or self.focus;
         }
 
         pub fn usesMouse(self: Flags) bool {
-            return self.hover or self.scroll or self.click;
+            return self.hover or self.wheel or self.click;
         }
     };
 
@@ -975,19 +975,19 @@ fn generateEvents(self: *Ui) !void {
         }
     }
 
-    // --- Handle Scroll Events ---
-    if (self.scroll_delta.x != 0 or self.scroll_delta.y != 0) {
-        // Iterate from the top-most hovered element downwards to find a scroll target.
+    // --- Handle Wheel Events ---
+    if (self.wheel_delta.x != 0 or self.wheel_delta.y != 0) {
+        // Iterate from the top-most hovered element downwards to find a wheel target.
         for (self.hovered_element_stack.items, 0..) |_, i| {
             const hovered_state = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1 - i];
-            if (hovered_state.state.event_flags.scroll) {
+            if (hovered_state.state.event_flags.wheel) {
                 try self.events.append(self.allocator, .{
                     .element_id = hovered_state.id,
                     .bounding_box = hovered_state.bounding_box,
                     .user_data = hovered_state.state.getUserData(),
-                    .data = .{ .scroll = .{ .delta = self.scroll_delta } },
+                    .data = .{ .wheel = .{ .delta = self.wheel_delta } },
                 });
-                // Once a scrollable container is found, stop propagating the event.
+                // Once a wheel container is found, stop propagating the event.
                 break;
             }
         }

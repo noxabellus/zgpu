@@ -1224,6 +1224,9 @@ pub fn main() !void {
                     .clicked => |clicked_data| {
                         log.info("clicked id={any} loc={f}", .{ event.element_id, clicked_data.mouse_position });
                     },
+                    .wheel => |wheel_data| {
+                        log.info("wheel id={any} delta={f}", .{ event.element_id, wheel_data.delta });
+                    },
                     .focus_gained => {
                         log.info("focus_gained id={any}", .{event.element_id});
 
@@ -1233,9 +1236,6 @@ pub fn main() !void {
                         log.info("focus_lost id={any}", .{event.element_id});
 
                         focused_element_id = null;
-                    },
-                    .scroll => |scroll_data| {
-                        log.info("scroll id={any} delta={f}", .{ event.element_id, scroll_data.delta });
                     },
                 }
             }
