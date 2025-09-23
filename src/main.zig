@@ -62,7 +62,47 @@ const COLOR_WHITE = Ui.Color.init(255, 255, 255, 255);
 
 const test_text_default = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla feugiat convallis viverra.\nNulla luctus odio arcu. Cras pellentesque vitae lorem vel egestas.\n";
 var test_text = std.ArrayList(u8).empty;
-var caret_index: u32 = 32;
+
+const TextInputState = struct {
+    start: u32 = 32,
+    end: u32 = 32,
+
+    fn min(self: *TextInputState) u32 {
+        return @min(self.start, self.end);
+    }
+    fn max(self: *TextInputState) u32 {
+        return @max(self.start, self.end);
+    }
+    fn hasSelection(self: *TextInputState) bool {
+        return self.start != self.end;
+    }
+    fn deleteSelection(self: *TextInputState) !void {
+        if (!self.hasSelection()) return;
+
+        const start = self.min();
+        const end = self.max();
+        const delete_count = end - start;
+        const remaining_after = test_text.items.len - end;
+
+        if (remaining_after > 0) {
+            const src = test_text.items.ptr + end;
+            const dest = test_text.items.ptr + start;
+            @memmove(dest[0..remaining_after], src[0..remaining_after]);
+        }
+        test_text.shrinkRetainingCapacity(test_text.items.len - delete_count);
+
+        self.start = start;
+        self.end = start;
+    }
+};
+var text_input_state: TextInputState = .{};
+
+const SelectionRenderData = struct {
+    state: *TextInputState,
+};
+var selection_render_data = SelectionRenderData{
+    .state = &text_input_state,
+};
 
 fn createLayout(ui: *Ui) !void {
     try ui.openElement(.{
@@ -82,7 +122,7 @@ fn createLayout(ui: *Ui) !void {
 
         try ui.configureElement(.{
             .layout = .{
-                .sizing = .{ .w = .fixed(300 + 5 * 2), .h = .fixed(16 * 6 + 5 * 2 + 5) },
+                .sizing = .{ .w = .fixed(300 + 5 * 2 + 2 * 2), .h = .fixed(16 * 6 + 5 * 2 + 2 * 2) },
                 .padding = .all(5),
             },
             .background_color = COLOR_WHITE,
@@ -91,13 +131,13 @@ fn createLayout(ui: *Ui) !void {
                 .color = COLOR_BROWN,
             },
             .corner_radius = .all(5),
-
-            .custom = &caret_index, // TODO: in future we will need a more advanced facility for dispatch on kinds of custom elements
+            .custom = &selection_render_data,
             .state = .flags(.{
                 .wheel = true,
                 .click = true,
                 .focus = true,
                 .text = true,
+                .hover = true, // needed for drag selection
             }),
         });
 
@@ -257,18 +297,71 @@ pub fn main() !void {
     // Init Ui
     var ui = try Ui.init(gpa, demo.renderer, &asset_cache, &bindings);
     ui.custom_element_renderer = &struct {
-        pub fn caret_renderer(g: *Ui, _: ?*anyopaque, command: clay.RenderCommand) !void {
+        pub fn selection_renderer(g: *Ui, _: ?*anyopaque, command: clay.RenderCommand) !void {
+            const data = @as(*const SelectionRenderData, @ptrCast(@alignCast(command.render_data.custom.custom_data.?)));
+            const state = data.state;
+
+            const selection_color = Ui.Color.init(0.75, 0, 0.75, 0.5);
             const caret_width: f32 = 1.5;
 
-            const character_offset = clay.getCharacterOffset(Ui.ElementId{ .id = command.id }, @as(*const u32, @ptrCast(@alignCast(command.render_data.custom.custom_data.?))).*);
-            std.debug.assert(character_offset.found);
+            clay.setCurrentContext(g.clay_context);
+            defer clay.setCurrentContext(null);
 
-            const caret_x = command.bounding_box.x + character_offset.offset.x;
-            const caret_y = command.bounding_box.y + character_offset.offset.y;
+            // Draw selection highlight
+            if (state.hasSelection()) {
+                const start_idx = state.min();
+                const end_idx = state.max();
 
-            try g.renderer.drawRect(.{ .x = caret_x, .y = caret_y }, .{ .x = caret_width, .y = character_offset.line_height }, .{ .r = 1, .a = 1 });
+                var i = start_idx;
+                while (i < end_idx) {
+                    const start_of_line = i;
+
+                    const start_offset = clay.getCharacterOffset(.fromRawId(command.id), start_of_line);
+                    if (!start_offset.found) {
+                        i += 1;
+                        continue;
+                    }
+
+                    // Find the end of the current line within the selection
+                    var end_of_line = i;
+                    while (end_of_line + 1 < end_idx) {
+                        const next_offset = clay.getCharacterOffset(.fromRawId(command.id), end_of_line + 1);
+                        if (!next_offset.found or next_offset.offset.y != start_offset.offset.y) {
+                            break;
+                        }
+                        end_of_line += 1;
+                    }
+
+                    const end_offset = clay.getCharacterOffset(.fromRawId(command.id), end_of_line);
+                    const next_char_after_end_offset = clay.getCharacterOffset(.fromRawId(command.id), end_of_line + 1);
+
+                    const rect_x = command.bounding_box.x + start_offset.offset.x;
+                    const rect_y = command.bounding_box.y + start_offset.offset.y;
+                    const rect_h = start_offset.line_height;
+
+                    // Determine the width of the selection rectangle for this line
+                    const rect_w = if (next_char_after_end_offset.found and next_char_after_end_offset.offset.y == end_offset.offset.y)
+                        // The selection ends mid-line
+                        next_char_after_end_offset.offset.x - start_offset.offset.x
+                    else
+                        // The selection covers the rest of the line
+                        end_offset.offset.x - start_offset.offset.x;
+
+                    try g.renderer.drawRect(.{ .x = rect_x, .y = rect_y }, .{ .x = rect_w, .y = rect_h }, selection_color);
+
+                    i = end_of_line + 1;
+                }
+            }
+
+            // Draw caret at the end position
+            const caret_offset = clay.getCharacterOffset(.fromRawId(command.id), state.end);
+            if (caret_offset.found) {
+                const caret_x = command.bounding_box.x + caret_offset.offset.x;
+                const caret_y = command.bounding_box.y + caret_offset.offset.y;
+                try g.renderer.drawRect(.{ .x = caret_x, .y = caret_y }, .{ .x = caret_width, .y = caret_offset.line_height }, .{ .r = 1, .a = 1 });
+            }
         }
-    }.caret_renderer;
+    }.selection_renderer;
     defer ui.deinit();
 
     // --- Load Assets ---
@@ -285,6 +378,7 @@ pub fn main() !void {
     log.info("startup_time={d}ms", .{startup_time});
 
     var debug_mode_enabled = false;
+    var is_dragging_text = false;
     main_loop: while (!glfw.windowShouldClose(window)) {
         glfw.pollEvents();
         _ = arena_state.reset(.free_all);
@@ -331,53 +425,69 @@ pub fn main() !void {
                         log.info("hover_end id={any} loc={f}", .{ event.element_id, hover_end_data.mouse_position });
                     },
                     .hovering => |hovering_data| {
-                        _ = hovering_data; // too noisey rn
-                        // log.info("hovering id={any} loc={f}", .{ event.element_id, hovering_data.mouse_position });
+                        if (is_dragging_text) {
+                            if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
+                                const location = clay.Vector2{
+                                    .x = hovering_data.mouse_position.x - event.bounding_box.x,
+                                    .y = hovering_data.mouse_position.y - event.bounding_box.y,
+                                };
+
+                                clay.setCurrentContext(ui.clay_context);
+                                defer clay.setCurrentContext(null);
+
+                                const offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), location);
+                                if (offset.found) {
+                                    text_input_state.end = offset.index;
+                                }
+                            }
+                        }
                     },
                     .mouse_down => |mouse_down_data| {
                         log.info("mouse_down id={any} loc={f}", .{ event.element_id, mouse_down_data.mouse_position });
+
+                        if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
+                            is_dragging_text = true;
+
+                            const location = clay.Vector2{
+                                .x = mouse_down_data.mouse_position.x - event.bounding_box.x,
+                                .y = mouse_down_data.mouse_position.y - event.bounding_box.y,
+                            };
+                            clay.setCurrentContext(ui.clay_context);
+                            defer clay.setCurrentContext(null);
+                            const offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), location);
+                            if (offset.found) {
+                                if (inputs.getModifiers().shift) {
+                                    text_input_state.end = offset.index;
+                                } else {
+                                    text_input_state.start = offset.index;
+                                    text_input_state.end = offset.index;
+                                }
+                            }
+                        }
                     },
                     .mouse_up => |mouse_up_data| {
                         log.info("mouse_up id={any} loc={f} end_id={any}", .{ event.element_id, mouse_up_data.mouse_position, mouse_up_data.end_element });
+                        is_dragging_text = false;
                     },
                     .clicked => |clicked_data| {
                         log.info("clicked id={any} loc={f}", .{ event.element_id, clicked_data.mouse_position });
-
-                        const id = Ui.ElementId.fromSlice("TextInputTest");
-
-                        if (event.element_id.id == id.id) {
-                            const location = clay.Vector2{
-                                .x = clicked_data.mouse_position.x - event.bounding_box.x,
-                                .y = clicked_data.mouse_position.y - event.bounding_box.y,
-                            };
-
-                            log.info("  -> clicked local={d:.2}, {d:.2}", .{ location.x, location.y });
-
-                            clay.setCurrentContext(ui.clay_context);
-                            defer clay.setCurrentContext(null);
-
-                            const offset = clay.getCharacterIndexAtOffset(id, location);
-
-                            log.info("  -> offset result: index={d} found={any}", .{ offset.index, offset.found });
-
-                            if (offset.found) caret_index = offset.index;
-                        }
                     },
                     .wheel => |wheel_data| {
                         log.info("wheel id={any} delta={f}", .{ event.element_id, wheel_data.delta });
 
                         if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
+                            var new_caret_pos = text_input_state.end;
                             if (wheel_data.delta.y < 0) {
-                                if (caret_index > 0) {
-                                    caret_index -= 1;
-                                }
+                                if (new_caret_pos > 0) new_caret_pos -= 1;
                             } else if (wheel_data.delta.y > 0) {
-                                if (caret_index < @as(u32, @intCast(test_text.items.len))) {
-                                    caret_index += 1;
-                                }
+                                if (new_caret_pos < @as(u32, @intCast(test_text.items.len))) new_caret_pos += 1;
                             }
+                            text_input_state.end = new_caret_pos;
 
-                            log.info("  -> new caret_index={d}/{d}", .{ caret_index, test_text.items.len });
+                            if (!inputs.getModifiers().shift) {
+                                text_input_state.start = new_caret_pos;
+                            }
+                            log.info("  -> new selection=[{d}..{d}]/{d}", .{ text_input_state.min(), text_input_state.max(), test_text.items.len });
                         }
                     },
                     .focus_gained => {
@@ -402,43 +512,160 @@ pub fn main() !void {
                         log.info("text id={any} cmds={any}", .{ event.element_id, text_data });
                         if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
                             switch (text_data) {
-                                .command => |cmd| switch (cmd) {
-                                    .backspace => if (caret_index > 0) {
-                                        // Find the start of the previous UTF-8 codepoint
-                                        var delete_start = caret_index - 1;
-                                        while (delete_start > 0 and (test_text.items[delete_start] & 0b1100_0000) == 0b1000_0000) : (delete_start -= 1) {}
-                                        const delete_len = caret_index - delete_start;
-
-                                        log.info("  -> backspace at {d}, deleting {d} bytes", .{ caret_index, delete_len });
-
-                                        for (delete_start..caret_index) |i| {
-                                            _ = test_text.orderedRemove(i);
+                                .command => |cmd| switch (cmd.action) {
+                                    .copy => {
+                                        if (text_input_state.hasSelection()) {
+                                            const selection = test_text.items[text_input_state.min()..text_input_state.max()];
+                                            const selection_z = try arena.dupeZ(u8, selection);
+                                            glfw.setClipboardString(window, selection_z);
+                                            log.info(" -> copied '{s}' to clipboard", .{selection});
                                         }
-                                        caret_index = delete_start;
+                                    },
+                                    .paste => pasting: {
+                                        try text_input_state.deleteSelection();
+                                        const clipboard = std.mem.span(glfw.getClipboardString(window) orelse break :pasting);
+                                        log.info("  -> paste at {d}: '{s}'", .{ text_input_state.end, clipboard });
+                                        try test_text.insertSlice(gpa, text_input_state.end, clipboard);
+                                        const new_pos = @as(u32, @intCast(text_input_state.end + clipboard.len));
+                                        text_input_state.start = new_pos;
+                                        text_input_state.end = new_pos;
+                                    },
+                                    .delete => {
+                                        if (text_input_state.hasSelection()) {
+                                            try text_input_state.deleteSelection();
+                                        } else if (text_input_state.end < test_text.items.len) {
+                                            var delete_end = text_input_state.end + 1;
+                                            while (delete_end < test_text.items.len and (test_text.items[delete_end] & 0b1100_0000) == 0b1000_0000) : (delete_end += 1) {}
+                                            const delete_len = delete_end - text_input_state.end;
+
+                                            log.info("  -> delete at {d}, deleting {d} bytes", .{ text_input_state.end, delete_len });
+
+                                            const remaining_after = test_text.items.len - delete_end;
+                                            if (remaining_after > 0) {
+                                                const src = test_text.items.ptr + delete_end;
+                                                const dest = test_text.items.ptr + text_input_state.end;
+                                                @memmove(dest[0..remaining_after], src[0..remaining_after]);
+                                            }
+                                            test_text.shrinkRetainingCapacity(test_text.items.len - delete_len);
+                                        }
+                                    },
+                                    .backspace => {
+                                        if (text_input_state.hasSelection()) {
+                                            try text_input_state.deleteSelection();
+                                        } else if (text_input_state.end > 0) {
+                                            var delete_start = text_input_state.end - 1;
+                                            while (delete_start > 0 and (test_text.items[delete_start] & 0b1100_0000) == 0b1000_0000) : (delete_start -= 1) {}
+                                            const delete_len = text_input_state.end - delete_start;
+
+                                            log.info("  -> backspace at {d}, deleting {d} bytes", .{ text_input_state.end, delete_len });
+
+                                            const remaining_after = test_text.items.len - text_input_state.end;
+                                            if (remaining_after > 0) {
+                                                const src = test_text.items.ptr + text_input_state.end;
+                                                const dest = test_text.items.ptr + delete_start;
+                                                @memmove(dest[0..remaining_after], src[0..remaining_after]);
+                                            }
+                                            test_text.shrinkRetainingCapacity(test_text.items.len - delete_len);
+
+                                            text_input_state.start = delete_start;
+                                            text_input_state.end = delete_start;
+                                        }
                                     },
                                     .newline => {
+                                        try text_input_state.deleteSelection();
                                         const newline = "\n";
-                                        log.info("  -> newline at {d}", .{caret_index});
-                                        try test_text.insertSlice(gpa, caret_index, newline);
-                                        caret_index += newline.len;
+                                        log.info("  -> newline at {d}", .{text_input_state.end});
+                                        try test_text.insertSlice(gpa, text_input_state.end, newline);
+                                        const new_pos: u32 = @intCast(text_input_state.end + newline.len);
+                                        text_input_state.start = new_pos;
+                                        text_input_state.end = new_pos;
+                                    },
+                                    .move_left => {
+                                        if (text_input_state.hasSelection() and !cmd.modifiers.shift) {
+                                            const new_pos = text_input_state.min();
+                                            text_input_state.start = new_pos;
+                                            text_input_state.end = new_pos;
+                                        } else {
+                                            if (text_input_state.end > 0) {
+                                                var new_pos = text_input_state.end - 1;
+                                                // move to the beginning of the utf-8 sequence
+                                                while (new_pos > 0 and (test_text.items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos -= 1) {}
+                                                text_input_state.end = new_pos;
+                                                if (!cmd.modifiers.shift) {
+                                                    text_input_state.start = new_pos;
+                                                }
+                                            }
+                                        }
+                                    },
+                                    .move_right => {
+                                        if (text_input_state.hasSelection() and !cmd.modifiers.shift) {
+                                            const new_pos = text_input_state.max();
+                                            text_input_state.start = new_pos;
+                                            text_input_state.end = new_pos;
+                                        } else {
+                                            if (text_input_state.end < test_text.items.len) {
+                                                var new_pos = text_input_state.end + 1;
+                                                // move to the start of the next utf-8 sequence
+                                                while (new_pos < test_text.items.len and (test_text.items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos += 1) {}
+                                                text_input_state.end = new_pos;
+                                                if (!cmd.modifiers.shift) {
+                                                    text_input_state.start = new_pos;
+                                                }
+                                            }
+                                        }
+                                    },
+                                    .move_up => {
+                                        clay.setCurrentContext(ui.clay_context);
+                                        defer clay.setCurrentContext(null);
+
+                                        const offset = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), text_input_state.end);
+                                        if (offset.found) {
+                                            const target_location = clay.Vector2{
+                                                .x = offset.offset.x,
+                                                .y = offset.offset.y - offset.line_height,
+                                            };
+                                            const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_location);
+                                            if (target_offset.found) {
+                                                text_input_state.end = target_offset.index;
+                                                if (!cmd.modifiers.shift) {
+                                                    text_input_state.start = target_offset.index;
+                                                }
+                                            }
+                                        }
+                                    },
+                                    .move_down => {
+                                        clay.setCurrentContext(ui.clay_context);
+                                        defer clay.setCurrentContext(null);
+
+                                        const offset = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), text_input_state.end);
+                                        if (offset.found) {
+                                            const target_location = clay.Vector2{
+                                                .x = offset.offset.x,
+                                                .y = offset.offset.y + offset.line_height,
+                                            };
+                                            const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_location);
+                                            if (target_offset.found) {
+                                                text_input_state.end = target_offset.index;
+                                                if (!cmd.modifiers.shift) {
+                                                    text_input_state.start = target_offset.index;
+                                                }
+                                            }
+                                        }
                                     },
                                 },
-                                .chars => |chars| if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
-                                    var input = std.ArrayList(u8).empty;
-
+                                .chars => |chars| {
+                                    try text_input_state.deleteSelection();
                                     for (chars) |char_cmd| {
-                                        _ = char_cmd.modifiers; // currently ignoring these, could be used for various IME states etc
-
+                                        _ = char_cmd.modifiers;
                                         const width = try std.unicode.utf8CodepointSequenceLength(char_cmd.codepoint);
-                                        const buf = try input.addManyAsSlice(arena, width);
+                                        const buf = try arena.alloc(u8, width);
                                         _ = try std.unicode.utf8Encode(char_cmd.codepoint, buf);
 
                                         log.info("  -> char input: '{s}'", .{buf});
-
-                                        // Insert at caret position
-                                        try test_text.insertSlice(gpa, caret_index, buf);
-                                        caret_index += width;
+                                        try test_text.insertSlice(gpa, text_input_state.end, buf);
+                                        text_input_state.end += @intCast(width);
                                     }
+                                    text_input_state.start = text_input_state.end;
                                 },
                             }
                         }

@@ -353,7 +353,10 @@ pub const Event = struct {
 
         text: union(enum) {
             chars: []const BindingState.Char,
-            command: enum { backspace, newline },
+            command: struct {
+                action: enum { delete, backspace, newline, copy, paste, move_left, move_right, move_up, move_down },
+                modifiers: BindingState.Modifiers,
+            },
         },
 
         wheel: struct { delta: Vec2 },
@@ -911,10 +914,19 @@ fn generateEvents(self: *Ui) !void {
             }
 
             // Handle special command keys by accessing the raw input state.
+            const delete_down = self.bindings.input_state.getKey(.delete).isDown();
             const backspace_down = self.bindings.input_state.getKey(.backspace).isDown();
             const enter_down = self.bindings.input_state.getKey(.enter).isDown();
+            const l_arrow_down = self.bindings.input_state.getKey(.left).isDown();
+            const r_arrow_down = self.bindings.input_state.getKey(.right).isDown();
+            const u_arrow_down = self.bindings.input_state.getKey(.up).isDown();
+            const d_arrow_down = self.bindings.input_state.getKey(.down).isDown();
 
-            if (backspace_down or enter_down) special_text: {
+            const modifiers = self.bindings.input_state.getModifiers();
+            const copy_down = self.bindings.input_state.getKey(.c).isDown();
+            const paste_down = self.bindings.input_state.getKey(.v).isDown();
+
+            if (delete_down or backspace_down or enter_down or (modifiers.ctrl and (copy_down or paste_down)) or l_arrow_down or r_arrow_down or u_arrow_down or d_arrow_down) special_text: {
                 switch (self.text_repeat.state) {
                     .none => {},
                     .first => if (self.text_repeat.timer.read() < self.text_repeat.initial_delay) {
@@ -927,27 +939,76 @@ fn generateEvents(self: *Ui) !void {
 
                 self.text_repeat.state.advance();
 
-                defer self.text_repeat.timer.reset();
+                processed_text_input = true;
 
-                if (backspace_down) {
+                self.text_repeat.timer.reset();
+
+                if (delete_down) {
                     try self.events.append(self.allocator, .{
                         .element_id = focused_elem.id,
                         .bounding_box = focused_elem.bounding_box,
                         .user_data = focused_elem.state.getUserData(),
-                        .data = .{ .text = .{ .command = .backspace } },
+                        .data = .{ .text = .{ .command = .{ .action = .delete, .modifiers = modifiers } } },
                     });
-                    processed_text_input = true;
-                } else {
+                } else if (backspace_down) {
                     try self.events.append(self.allocator, .{
                         .element_id = focused_elem.id,
                         .bounding_box = focused_elem.bounding_box,
                         .user_data = focused_elem.state.getUserData(),
-                        .data = .{ .text = .{ .command = .newline } },
+                        .data = .{ .text = .{ .command = .{ .action = .backspace, .modifiers = modifiers } } },
                     });
-                    processed_text_input = true;
+                } else if (enter_down) {
+                    try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .text = .{ .command = .{ .action = .newline, .modifiers = modifiers } } },
+                    });
+                } else if (copy_down) {
+                    try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .text = .{ .command = .{ .action = .copy, .modifiers = modifiers } } },
+                    });
+                } else if (paste_down) {
+                    try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .text = .{ .command = .{ .action = .paste, .modifiers = modifiers } } },
+                    });
+                } else if (l_arrow_down) {
+                    try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .text = .{ .command = .{ .action = .move_left, .modifiers = modifiers } } },
+                    });
+                } else if (r_arrow_down) {
+                    try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .text = .{ .command = .{ .action = .move_right, .modifiers = modifiers } } },
+                    });
+                } else if (u_arrow_down) {
+                    try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .text = .{ .command = .{ .action = .move_up, .modifiers = modifiers } } },
+                    });
+                } else if (d_arrow_down) {
+                    try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .text = .{ .command = .{ .action = .move_down, .modifiers = modifiers } } },
+                    });
                 }
             } else {
-                // Neither key is down, so reset the repeat state.
+                // No special event, so reset the repeat state.
                 self.text_repeat.state = .none;
             }
         }

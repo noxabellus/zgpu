@@ -9,6 +9,7 @@ const InputState = @import("InputState.zig");
 pub const Vec2 = InputState.Vec2; // TODO: linalg library
 pub const Action = InputState.Action;
 pub const Char = InputState.Char;
+pub const Modifiers = InputState.Modifiers;
 
 const log = std.log.scoped(.input_bindings);
 
