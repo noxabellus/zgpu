@@ -322,7 +322,7 @@ pub fn getGamepadState(jid: i32, state: *GamepadState) bool {
     return glfwGetGamepadState(jid, state) == 1;
 }
 
-pub const setClipboardString = @extern(*const fn (window: *Window, string: [*c]const u8) callconv(.c) void, .{ .name = "glfwSetClipboardString" });
+pub const setClipboardString = @extern(*const fn (window: *Window, string: [*:0]const u8) callconv(.c) void, .{ .name = "glfwSetClipboardString" });
 pub const getClipboardString = @extern(*const fn (window: *Window) callconv(.c) ?[*:0]const u8, .{ .name = "glfwGetClipboardString" });
 pub const getTime = @extern(*const fn () callconv(.c) f64, .{ .name = "glfwGetTime" });
 pub const setTime = @extern(*const fn (time: f64) callconv(.c) void, .{ .name = "glfwSetTime" });
