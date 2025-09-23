@@ -740,6 +740,84 @@ pub fn main() !void {
                                             }
                                         }
                                     },
+                                    .home => {
+                                        if (cmd.modifiers.ctrl) {
+                                            // Ctrl+Home moves to the beginning of the text.
+                                            text_input_state.end = 0;
+                                            if (!cmd.modifiers.shift) {
+                                                text_input_state.start = 0;
+                                            }
+                                        } else {
+                                            // Home moves to the beginning of the current visual line.
+                                            clay.setCurrentContext(ui.clay_context);
+                                            defer clay.setCurrentContext(null);
+
+                                            const current_offset = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), text_input_state.end);
+                                            if (current_offset.found) {
+                                                // Target the beginning (x=0) of the same visual line (y).
+                                                const target_location = clay.Vector2{
+                                                    .x = 0,
+                                                    .y = current_offset.offset.y,
+                                                };
+                                                const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_location);
+                                                if (target_offset.found) {
+                                                    text_input_state.end = target_offset.index;
+                                                    if (!cmd.modifiers.shift) {
+                                                        text_input_state.start = target_offset.index;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
+                                    .end => {
+                                        if (cmd.modifiers.ctrl) {
+                                            // Ctrl+End moves to the very end of the text.
+                                            const new_pos = @as(u32, @intCast(test_text.items.len));
+                                            text_input_state.end = new_pos;
+                                            if (!cmd.modifiers.shift) {
+                                                text_input_state.start = new_pos;
+                                            }
+                                        } else {
+                                            // End moves to the end of the current visual line.
+                                            clay.setCurrentContext(ui.clay_context);
+                                            defer clay.setCurrentContext(null);
+
+                                            // Get the visual y-position of the current caret
+                                            const current_offset_res = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), text_input_state.end);
+                                            if (current_offset_res.found) {
+                                                // Find the character index at the far-right of the current visual line
+                                                const end_of_line_target_loc = clay.Vector2{
+                                                    .x = 999999.0, // A very large X coordinate
+                                                    .y = current_offset_res.offset.y,
+                                                };
+                                                const end_of_line_res = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), end_of_line_target_loc);
+
+                                                if (end_of_line_res.found) {
+                                                    var last_char_idx = end_of_line_res.index;
+
+                                                    // Check if the returned index is for a character on the next visual line.
+                                                    const check_offset_res = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), last_char_idx);
+                                                    if (check_offset_res.found and check_offset_res.offset.y != current_offset_res.offset.y) {
+                                                        // It is. This means the layout engine returned the index of the first character
+                                                        // after a soft wrap. The actual last character on our line is the one right before it.
+                                                        if (last_char_idx > 0) {
+                                                            var prev_char_start = last_char_idx - 1;
+                                                            // Step backwards to the beginning of the previous UTF-8 character sequence.
+                                                            while (prev_char_start > 0 and (test_text.items[prev_char_start] & 0b1100_0000) == 0b1000_0000) {
+                                                                prev_char_start -= 1;
+                                                            }
+                                                            last_char_idx = prev_char_start;
+                                                        }
+                                                    }
+
+                                                    text_input_state.end = last_char_idx;
+                                                    if (!cmd.modifiers.shift) {
+                                                        text_input_state.start = last_char_idx;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    },
                                 },
                                 .chars => |chars| {
                                     try text_input_state.deleteSelection();

@@ -354,7 +354,7 @@ pub const Event = struct {
         text: union(enum) {
             chars: []const BindingState.Char,
             command: struct {
-                action: enum { delete, backspace, newline, copy, paste, move_left, move_right, move_up, move_down },
+                action: enum { delete, backspace, newline, copy, paste, move_left, move_right, move_up, move_down, home, end },
                 modifiers: BindingState.Modifiers,
             },
         },
@@ -921,12 +921,17 @@ fn generateEvents(self: *Ui) !void {
             const r_arrow_down = self.bindings.input_state.getKey(.right).isDown();
             const u_arrow_down = self.bindings.input_state.getKey(.up).isDown();
             const d_arrow_down = self.bindings.input_state.getKey(.down).isDown();
+            const home_down = self.bindings.input_state.getKey(.home).isDown();
+            const end_down = self.bindings.input_state.getKey(.end).isDown();
 
             const modifiers = self.bindings.input_state.getModifiers();
             const copy_down = self.bindings.input_state.getKey(.c).isDown();
             const paste_down = self.bindings.input_state.getKey(.v).isDown();
 
-            if (delete_down or backspace_down or enter_down or (modifiers.ctrl and (copy_down or paste_down)) or l_arrow_down or r_arrow_down or u_arrow_down or d_arrow_down) special_text: {
+            // zig fmt: off
+            if (delete_down or backspace_down or enter_down or (modifiers.ctrl and (copy_down or paste_down))
+            or l_arrow_down or r_arrow_down or u_arrow_down or d_arrow_down or home_down or end_down) special_text: {
+            // zig fmt: on
                 switch (self.text_repeat.state) {
                     .none => {},
                     .first => if (self.text_repeat.timer.read() < self.text_repeat.initial_delay) {
@@ -1005,6 +1010,20 @@ fn generateEvents(self: *Ui) !void {
                         .bounding_box = focused_elem.bounding_box,
                         .user_data = focused_elem.state.getUserData(),
                         .data = .{ .text = .{ .command = .{ .action = .move_down, .modifiers = modifiers } } },
+                    });
+                } else if (home_down) {
+                    try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .text = .{ .command = .{ .action = .home, .modifiers = modifiers } } },
+                    });
+                } else if (end_down) {
+                    try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .text = .{ .command = .{ .action = .end, .modifiers = modifiers } } },
                     });
                 }
             } else {
