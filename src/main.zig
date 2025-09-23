@@ -61,48 +61,184 @@ const COLOR_NONE = Ui.Color.init(0, 0, 0, 255);
 const COLOR_WHITE = Ui.Color.init(255, 255, 255, 255);
 
 const test_text_default = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla feugiat convallis viverra.\nNulla luctus odio arcu. Cras pellentesque vitae lorem vel egestas.\n";
-var test_text = std.ArrayList(u8).empty;
 
-const TextInputState = struct {
-    start: u32 = 32,
-    end: u32 = 32,
+// --- Double-buffered text state for safe immediate-mode UI updates ---
+var text_buffers: [2]std.ArrayList(u8) = .{ .empty, .empty };
+var current_buffer_idx: u2 = 0;
+var text_was_modified_last_frame: bool = false;
 
-    fn min(self: *TextInputState) u32 {
+fn currentText() *std.ArrayList(u8) {
+    return &text_buffers[current_buffer_idx];
+}
+fn nextText() *std.ArrayList(u8) {
+    return &text_buffers[1 - current_buffer_idx];
+}
+// ---
+
+var carets: std.ArrayList(Caret) = .empty;
+
+const Caret = struct {
+    start: u32,
+    end: u32,
+
+    fn min(self: Caret) u32 {
         return @min(self.start, self.end);
     }
-    fn max(self: *TextInputState) u32 {
+    fn max(self: Caret) u32 {
         return @max(self.start, self.end);
     }
-    fn hasSelection(self: *TextInputState) bool {
+    fn hasSelection(self: Caret) bool {
         return self.start != self.end;
     }
-    fn deleteSelection(self: *TextInputState) !void {
-        if (!self.hasSelection()) return;
-
-        const start = self.min();
-        const end = self.max();
-        const delete_count = end - start;
-        const remaining_after = test_text.items.len - end;
-
-        if (remaining_after > 0) {
-            const src = test_text.items.ptr + end;
-            const dest = test_text.items.ptr + start;
-            @memmove(dest[0..remaining_after], src[0..remaining_after]);
-        }
-        test_text.shrinkRetainingCapacity(test_text.items.len - delete_count);
-
-        self.start = start;
-        self.end = start;
-    }
 };
-var text_input_state: TextInputState = .{};
 
 const SelectionRenderData = struct {
-    state: *TextInputState,
+    carets: *const std.ArrayList(Caret),
 };
 var selection_render_data = SelectionRenderData{
-    .state = &text_input_state,
+    .carets = &carets,
 };
+
+/// Sorts carets by position and merges any that are overlapping or adjacent.
+fn sortAndMergeCarets(caret_list: *std.ArrayList(Caret)) !void {
+    if (caret_list.items.len <= 1) return;
+
+    // Sort by start position
+    std.mem.sort(Caret, caret_list.items, {}, struct {
+        fn lt(_: void, a: Caret, b: Caret) bool {
+            return a.min() < b.min();
+        }
+    }.lt);
+
+    // Merge overlapping selections
+    var i: usize = 1;
+    while (i < caret_list.items.len) {
+        const prev_max = caret_list.items[i - 1].max();
+        const curr_min = caret_list.items[i].min();
+
+        if (prev_max >= curr_min) {
+            // Overlap detected, merge curr into prev
+            const prev_min = caret_list.items[i - 1].min();
+            const curr_max = caret_list.items[i].max();
+            caret_list.items[i - 1].start = prev_min;
+            caret_list.items[i - 1].end = @max(prev_max, curr_max);
+            _ = caret_list.orderedRemove(i);
+            // Do not increment i, as the new element at i needs to be checked against i-1
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Rebuilds the text string by applying a given modification at each caret.
+/// This reads from the 'current' buffer and writes the result to the 'next' buffer.
+fn applyTextModification(
+    gpa: std.mem.Allocator,
+    action: enum { insert, delete, backspace },
+    payload: []const u8,
+) !void {
+    try sortAndMergeCarets(&carets);
+
+    var new_text = std.ArrayList(u8).empty;
+    var new_carets = std.ArrayList(Caret).empty;
+    errdefer {
+        new_text.deinit(gpa);
+        new_carets.deinit(gpa);
+    }
+
+    const source_text = currentText().items;
+
+    var last_idx: u32 = 0;
+    for (carets.items) |caret| {
+        if (caret.hasSelection()) {
+            // Copy text before the current selection
+            try new_text.appendSlice(gpa, source_text[last_idx..caret.min()]);
+            // For inserts (like paste), add the payload here. For deletes, do nothing.
+            if (action == .insert) {
+                try new_text.appendSlice(gpa, payload);
+            }
+            // Advance the cursor in the old text string past the selection
+            last_idx = caret.max();
+        } else { // No selection, just a cursor.
+            switch (action) {
+                .insert => {
+                    // Copy up to the cursor, insert payload, and update last_idx
+                    try new_text.appendSlice(gpa, source_text[last_idx..caret.end]);
+                    try new_text.appendSlice(gpa, payload);
+                    last_idx = caret.end;
+                },
+                .delete => {
+                    // Copy up to the cursor
+                    try new_text.appendSlice(gpa, source_text[last_idx..caret.end]);
+                    // Advance last_idx past the next UTF-8 character to effectively delete it
+                    if (caret.end < source_text.len) {
+                        var delete_end = caret.end + 1;
+                        while (delete_end < source_text.len and (source_text[delete_end] & 0b1100_0000) == 0b1000_0000) : (delete_end += 1) {}
+                        last_idx = delete_end;
+                    } else {
+                        last_idx = caret.end;
+                    }
+                },
+                .backspace => {
+                    // Find the start of the previous UTF-8 character
+                    var delete_start = if (caret.end > 0) caret.end - 1 else 0;
+                    while (delete_start > 0 and (source_text[delete_start] & 0b1100_0000) == 0b1000_0000) : (delete_start -= 1) {}
+                    // Copy up to that point
+                    try new_text.appendSlice(gpa, source_text[last_idx..delete_start]);
+                    // Advance last_idx past the cursor to effectively delete the character
+                    last_idx = caret.end;
+                },
+            }
+        }
+        // Add a new, collapsed caret at the end of the modified section
+        const new_pos: u32 = @intCast(new_text.items.len);
+        try new_carets.append(gpa, .{ .start = new_pos, .end = new_pos });
+    }
+
+    // Append any remaining text after the last caret
+    try new_text.appendSlice(gpa, source_text[last_idx..]);
+
+    // Apply changes to the 'next' buffer and set the modified flag
+    var target_buffer = nextText();
+    target_buffer.deinit(gpa);
+    target_buffer.* = new_text;
+
+    carets.deinit(gpa);
+    carets = new_carets;
+
+    text_was_modified_last_frame = true;
+}
+
+/// Finds the index of the start of the next word.
+fn findNextWordBreak(text: []const u8, start_index: u32) u32 {
+    if (start_index >= text.len) return @intCast(text.len);
+    var idx: u32 = start_index;
+
+    // Skip any initial whitespace
+    while (idx < text.len and std.ascii.isWhitespace(text[idx])) : (idx += 1) {}
+    // Skip non-whitespace characters
+    while (idx < text.len and !std.ascii.isWhitespace(text[idx])) : (idx += 1) {}
+
+    return idx;
+}
+
+/// Finds the index of the start of the previous word.
+fn findPrevWordBreak(text: []const u8, start_index: u32) u32 {
+    if (start_index == 0) return 0;
+    var idx: u32 = start_index - 1;
+
+    // Skip any initial whitespace (backwards)
+    while (idx > 0 and std.ascii.isWhitespace(text[idx])) : (idx -= 1) {}
+    // Skip non-whitespace characters (backwards)
+    while (idx > 0 and !std.ascii.isWhitespace(text[idx])) : (idx -= 1) {}
+
+    // If we landed on whitespace, move forward one to be at the start of the word.
+    if (idx > 0 and std.ascii.isWhitespace(text[idx])) {
+        idx += 1;
+    }
+
+    return idx;
+}
 
 fn createLayout(ui: *Ui) !void {
     try ui.openElement(.{
@@ -141,7 +277,7 @@ fn createLayout(ui: *Ui) !void {
             }),
         });
 
-        try ui.text(test_text.items, .{
+        try ui.text(currentText().items, .{
             .alignment = .left,
             .font_id = FONT_ID_BODY,
             .font_size = 16,
@@ -157,6 +293,8 @@ pub fn main() !void {
     var last_frame_time = timer.read();
 
     const gpa = std.heap.page_allocator;
+
+    try carets.append(gpa, .{ .start = 32, .end = 32 });
 
     if (comptime builtin.os.tag != .windows) {
         glfw.initHint(.{ .platform = .x11 });
@@ -299,7 +437,7 @@ pub fn main() !void {
     ui.custom_element_renderer = &struct {
         pub fn selection_renderer(g: *Ui, _: ?*anyopaque, command: clay.RenderCommand) !void {
             const data = @as(*const SelectionRenderData, @ptrCast(@alignCast(command.render_data.custom.custom_data.?)));
-            const state = data.state;
+            const caret_list = data.carets;
 
             const selection_color = Ui.Color.init(0.75, 0, 0.75, 0.5);
             const caret_width: f32 = 1.5;
@@ -309,58 +447,60 @@ pub fn main() !void {
 
             if (g.state.focusedIdValue() != command.id) return;
 
-            // Draw selection highlight
-            if (state.hasSelection()) {
-                const start_idx = state.min();
-                const end_idx = state.max();
+            for (caret_list.items) |caret| {
+                // Draw selection highlight
+                if (caret.hasSelection()) {
+                    const start_idx = caret.min();
+                    const end_idx = caret.max();
 
-                var i = start_idx;
-                while (i < end_idx) {
-                    const start_of_line = i;
+                    var i = start_idx;
+                    while (i < end_idx) {
+                        const start_of_line = i;
 
-                    const start_offset = clay.getCharacterOffset(.fromRawId(command.id), start_of_line);
-                    if (!start_offset.found) {
-                        i += 1;
-                        continue;
-                    }
-
-                    // Find the end of the current line within the selection
-                    var end_of_line = i;
-                    while (end_of_line + 1 < end_idx) {
-                        const next_offset = clay.getCharacterOffset(.fromRawId(command.id), end_of_line + 1);
-                        if (!next_offset.found or next_offset.offset.y != start_offset.offset.y) {
-                            break;
+                        const start_offset = clay.getCharacterOffset(.fromRawId(command.id), start_of_line);
+                        if (!start_offset.found) {
+                            i += 1;
+                            continue;
                         }
-                        end_of_line += 1;
+
+                        // Find the end of the current line within the selection
+                        var end_of_line = i;
+                        while (end_of_line + 1 < end_idx) {
+                            const next_offset = clay.getCharacterOffset(.fromRawId(command.id), end_of_line + 1);
+                            if (!next_offset.found or next_offset.offset.y != start_offset.offset.y) {
+                                break;
+                            }
+                            end_of_line += 1;
+                        }
+
+                        const end_offset = clay.getCharacterOffset(.fromRawId(command.id), end_of_line);
+                        const next_char_after_end_offset = clay.getCharacterOffset(.fromRawId(command.id), end_of_line + 1);
+
+                        const rect_x = command.bounding_box.x + start_offset.offset.x;
+                        const rect_y = command.bounding_box.y + start_offset.offset.y;
+                        const rect_h = start_offset.line_height;
+
+                        // Determine the width of the selection rectangle for this line
+                        const rect_w = if (next_char_after_end_offset.found and next_char_after_end_offset.offset.y == end_offset.offset.y)
+                            // The selection ends mid-line
+                            next_char_after_end_offset.offset.x - start_offset.offset.x
+                        else
+                            // The selection covers the rest of the line
+                            end_offset.offset.x - start_offset.offset.x;
+
+                        try g.renderer.drawRect(.{ .x = rect_x, .y = rect_y }, .{ .x = rect_w, .y = rect_h }, selection_color);
+
+                        i = end_of_line + 1;
                     }
-
-                    const end_offset = clay.getCharacterOffset(.fromRawId(command.id), end_of_line);
-                    const next_char_after_end_offset = clay.getCharacterOffset(.fromRawId(command.id), end_of_line + 1);
-
-                    const rect_x = command.bounding_box.x + start_offset.offset.x;
-                    const rect_y = command.bounding_box.y + start_offset.offset.y;
-                    const rect_h = start_offset.line_height;
-
-                    // Determine the width of the selection rectangle for this line
-                    const rect_w = if (next_char_after_end_offset.found and next_char_after_end_offset.offset.y == end_offset.offset.y)
-                        // The selection ends mid-line
-                        next_char_after_end_offset.offset.x - start_offset.offset.x
-                    else
-                        // The selection covers the rest of the line
-                        end_offset.offset.x - start_offset.offset.x;
-
-                    try g.renderer.drawRect(.{ .x = rect_x, .y = rect_y }, .{ .x = rect_w, .y = rect_h }, selection_color);
-
-                    i = end_of_line + 1;
                 }
-            }
 
-            // Draw caret at the end position
-            const caret_offset = clay.getCharacterOffset(.fromRawId(command.id), state.end);
-            if (caret_offset.found) {
-                const caret_x = command.bounding_box.x + caret_offset.offset.x;
-                const caret_y = command.bounding_box.y + caret_offset.offset.y;
-                try g.renderer.drawRect(.{ .x = caret_x, .y = caret_y }, .{ .x = caret_width, .y = caret_offset.line_height }, .{ .r = 1, .a = 1 });
+                // Draw caret at the end position
+                const caret_offset = clay.getCharacterOffset(.fromRawId(command.id), caret.end);
+                if (caret_offset.found) {
+                    const caret_x = command.bounding_box.x + caret_offset.offset.x;
+                    const caret_y = command.bounding_box.y + caret_offset.offset.y;
+                    try g.renderer.drawRect(.{ .x = caret_x, .y = caret_y }, .{ .x = caret_width, .y = caret_offset.line_height }, .{ .r = 1, .a = 1 });
+                }
             }
         }
     }.selection_renderer;
@@ -374,7 +514,10 @@ pub fn main() !void {
     wgpu_logo_image_id = try asset_cache.loadImage("assets/images/wgpu-logo.png", true);
 
     try demo.renderer.preAtlasAllImages();
-    try test_text.appendSlice(gpa, test_text_default);
+    try text_buffers[0].appendSlice(gpa, test_text_default);
+    text_buffers[1] = try text_buffers[0].clone(gpa);
+    defer text_buffers[0].deinit(gpa);
+    defer text_buffers[1].deinit(gpa);
 
     const startup_time = debug.start(&debug_timer);
     log.info("startup_time={d}ms", .{startup_time});
@@ -384,6 +527,19 @@ pub fn main() !void {
     main_loop: while (!glfw.windowShouldClose(window)) {
         glfw.pollEvents();
         _ = arena_state.reset(.free_all);
+
+        // --- Handle Text Buffer Swap ---
+        if (text_was_modified_last_frame) {
+            // Swap to the buffer that was modified last frame, making it current.
+            current_buffer_idx = 1 - current_buffer_idx;
+            text_was_modified_last_frame = false;
+
+            // Sync the 'next' buffer to be a fresh copy of the 'current' one,
+            // so subsequent edits in this frame start from the correct state.
+            var target_buffer = nextText();
+            target_buffer.deinit(gpa);
+            target_buffer.* = try currentText().clone(gpa);
+        }
 
         // --- Calculate Delta Time ---
         const current_time = timer.read();
@@ -438,8 +594,8 @@ pub fn main() !void {
                                 defer clay.setCurrentContext(null);
 
                                 const offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), location);
-                                if (offset.found) {
-                                    text_input_state.end = offset.index;
+                                if (offset.found and carets.items.len > 0) {
+                                    carets.items[carets.items.len - 1].end = offset.index;
                                 }
                             }
                         }
@@ -458,55 +614,45 @@ pub fn main() !void {
                             defer clay.setCurrentContext(null);
                             const offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), location);
                             if (offset.found) {
-                                if (inputs.getModifiers().shift) {
-                                    text_input_state.end = offset.index;
+                                const modifiers = inputs.getModifiers();
+                                if (modifiers.alt) {
+                                    // Alt-click: Add a new caret
+                                    try carets.append(gpa, .{ .start = offset.index, .end = offset.index });
+                                } else if (modifiers.shift and carets.items.len > 0) {
+                                    // Shift-click: Extend selection of the last caret
+                                    carets.items[carets.items.len - 1].end = offset.index;
                                 } else {
-                                    text_input_state.start = offset.index;
-                                    text_input_state.end = offset.index;
+                                    // Normal click: Clear all and create one new caret
+                                    carets.clearRetainingCapacity();
+                                    try carets.append(gpa, .{ .start = offset.index, .end = offset.index });
                                 }
                             }
                         }
                     },
                     .mouse_up => |mouse_up_data| {
                         log.info("mouse_up id={any} loc={f} end_id={any}", .{ event.element_id, mouse_up_data.mouse_position, mouse_up_data.end_element });
-                        is_dragging_text = false;
+                        if (is_dragging_text) {
+                            is_dragging_text = false;
+                            try sortAndMergeCarets(&carets);
+                        }
                     },
                     .clicked => |clicked_data| {
                         log.info("clicked id={any} loc={f}", .{ event.element_id, clicked_data.mouse_position });
                     },
                     .wheel => |wheel_data| {
                         log.info("wheel id={any} delta={f}", .{ event.element_id, wheel_data.delta });
-
-                        if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
-                            var new_caret_pos = text_input_state.end;
-                            if (wheel_data.delta.y < 0) {
-                                if (new_caret_pos > 0) new_caret_pos -= 1;
-                            } else if (wheel_data.delta.y > 0) {
-                                if (new_caret_pos < @as(u32, @intCast(test_text.items.len))) new_caret_pos += 1;
-                            }
-                            text_input_state.end = new_caret_pos;
-
-                            if (!inputs.getModifiers().shift) {
-                                text_input_state.start = new_caret_pos;
-                            }
-                            log.info("  -> new selection=[{d}..{d}]/{d}", .{ text_input_state.min(), text_input_state.max(), test_text.items.len });
-                        }
                     },
                     .focus_gained => {
                         log.info("focus_gained id={any}", .{event.element_id});
                     },
-                    .focusing => {
-                        // log.info("focusing id={any}", .{event.element_id});
-                    },
+                    .focusing => {},
                     .focus_lost => {
                         log.info("focus_lost id={any}", .{event.element_id});
                     },
                     .activate_begin => {
                         log.info("activate_begin id={any}", .{event.element_id});
                     },
-                    .activating => {
-                        // log.info("activating id={any}", .{event.element_id});
-                    },
+                    .activating => {},
                     .activate_end => |activate_end_data| {
                         log.info("activate_end id={any} end_element={any}", .{ event.element_id, activate_end_data.end_element });
                     },
@@ -515,323 +661,162 @@ pub fn main() !void {
                         if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
                             switch (text_data) {
                                 .command => |cmd| switch (cmd.action) {
-                                    .copy => {
-                                        if (text_input_state.hasSelection()) {
-                                            const selection = test_text.items[text_input_state.min()..text_input_state.max()];
-                                            const selection_z = try arena.dupeZ(u8, selection);
-                                            glfw.setClipboardString(window, selection_z);
-                                            log.info(" -> copied '{s}' to clipboard", .{selection});
+                                    .copy => copy_action: {
+                                        try sortAndMergeCarets(&carets);
+                                        var has_selection = false;
+                                        for (carets.items) |c| {
+                                            if (c.hasSelection()) {
+                                                has_selection = true;
+                                            }
                                         }
+                                        if (!has_selection) break :copy_action;
+
+                                        var clipboard_list = std.ArrayList(u8).empty;
+
+                                        var first = true;
+                                        for (carets.items) |caret| {
+                                            if (!caret.hasSelection()) continue;
+                                            if (!first) try clipboard_list.append(arena, '\n');
+                                            first = false;
+
+                                            const selection = currentText().items[caret.min()..caret.max()];
+                                            try clipboard_list.appendSlice(arena, selection);
+                                        }
+
+                                        const selection_z = try clipboard_list.toOwnedSliceSentinel(arena, 0);
+                                        glfw.setClipboardString(window, selection_z);
+                                        log.info(" -> copied '{s}' to clipboard", .{selection_z});
                                     },
                                     .paste => pasting: {
-                                        try text_input_state.deleteSelection();
                                         const clipboard = std.mem.span(glfw.getClipboardString(window) orelse break :pasting);
-                                        log.info("  -> paste at {d}: '{s}'", .{ text_input_state.end, clipboard });
-                                        try test_text.insertSlice(gpa, text_input_state.end, clipboard);
-                                        const new_pos = @as(u32, @intCast(text_input_state.end + clipboard.len));
-                                        text_input_state.start = new_pos;
-                                        text_input_state.end = new_pos;
+                                        log.info("  -> paste: '{s}'", .{clipboard});
+                                        try applyTextModification(gpa, .insert, clipboard);
                                     },
                                     .delete => {
-                                        if (text_input_state.hasSelection()) {
-                                            try text_input_state.deleteSelection();
-                                        } else if (cmd.modifiers.ctrl) {
-                                            // Ctrl+Delete: Delete to the next word break
-                                            if (text_input_state.end < test_text.items.len) {
-                                                var delete_end = text_input_state.end;
-                                                const text = test_text.items;
-
-                                                // Skip any initial whitespace
-                                                while (delete_end < text.len and std.ascii.isWhitespace(text[delete_end])) : (delete_end += 1) {}
-                                                // Skip non-whitespace characters
-                                                while (delete_end < text.len and !std.ascii.isWhitespace(text[delete_end])) : (delete_end += 1) {}
-
-                                                const delete_len = delete_end - text_input_state.end;
-                                                if (delete_len > 0) {
-                                                    log.info("  -> ctrl+delete at {d}, deleting {d} bytes", .{ text_input_state.end, delete_len });
-                                                    const remaining_after = test_text.items.len - delete_end;
-                                                    if (remaining_after > 0) {
-                                                        const src = test_text.items.ptr + delete_end;
-                                                        const dest = test_text.items.ptr + text_input_state.end;
-                                                        @memmove(dest[0..remaining_after], src[0..remaining_after]);
-                                                    }
-                                                    test_text.shrinkRetainingCapacity(test_text.items.len - delete_len);
+                                        if (cmd.modifiers.ctrl) {
+                                            for (carets.items) |*caret| {
+                                                if (!caret.hasSelection()) {
+                                                    caret.end = findNextWordBreak(currentText().items, caret.end);
                                                 }
                                             }
-                                        } else if (text_input_state.end < test_text.items.len) {
-                                            var delete_end = text_input_state.end + 1;
-                                            while (delete_end < test_text.items.len and (test_text.items[delete_end] & 0b1100_0000) == 0b1000_0000) : (delete_end += 1) {}
-                                            const delete_len = delete_end - text_input_state.end;
-
-                                            log.info("  -> delete at {d}, deleting {d} bytes", .{ text_input_state.end, delete_len });
-
-                                            const remaining_after = test_text.items.len - delete_end;
-                                            if (remaining_after > 0) {
-                                                const src = test_text.items.ptr + delete_end;
-                                                const dest = test_text.items.ptr + text_input_state.end;
-                                                @memmove(dest[0..remaining_after], src[0..remaining_after]);
-                                            }
-                                            test_text.shrinkRetainingCapacity(test_text.items.len - delete_len);
                                         }
+                                        try applyTextModification(gpa, .delete, "");
                                     },
                                     .backspace => {
-                                        if (text_input_state.hasSelection()) {
-                                            try text_input_state.deleteSelection();
-                                        } else if (cmd.modifiers.ctrl) {
-                                            // Ctrl+Backspace: Delete to the previous word break
-                                            if (text_input_state.end > 0) {
-                                                var delete_start = text_input_state.end;
-                                                const text = test_text.items;
-
-                                                delete_start -= 1;
-                                                while (delete_start > 0 and std.ascii.isWhitespace(text[delete_start])) : (delete_start -= 1) {}
-                                                while (delete_start > 0 and !std.ascii.isWhitespace(text[delete_start])) : (delete_start -= 1) {}
-
-                                                if (std.ascii.isWhitespace(text[delete_start])) {
-                                                    delete_start += 1;
-                                                }
-
-                                                const delete_len = text_input_state.end - delete_start;
-
-                                                if (delete_len > 0) {
-                                                    log.info("  -> ctrl+backspace at {d}, deleting {d} bytes from {d}", .{ text_input_state.end, delete_len, delete_start });
-
-                                                    const remaining_after = test_text.items.len - text_input_state.end;
-                                                    if (remaining_after > 0) {
-                                                        const src = test_text.items.ptr + text_input_state.end;
-                                                        const dest = test_text.items.ptr + delete_start;
-                                                        @memmove(dest[0..remaining_after], src[0..remaining_after]);
-                                                    }
-                                                    test_text.shrinkRetainingCapacity(test_text.items.len - delete_len);
-
-                                                    text_input_state.start = delete_start;
-                                                    text_input_state.end = delete_start;
+                                        if (cmd.modifiers.ctrl) {
+                                            for (carets.items) |*caret| {
+                                                if (!caret.hasSelection()) {
+                                                    caret.end = findPrevWordBreak(currentText().items, caret.end);
                                                 }
                                             }
-                                        } else if (text_input_state.end > 0) {
-                                            var delete_start = text_input_state.end - 1;
-                                            while (delete_start > 0 and (test_text.items[delete_start] & 0b1100_0000) == 0b1000_0000) : (delete_start -= 1) {}
-                                            const delete_len = text_input_state.end - delete_start;
-
-                                            log.info("  -> backspace at {d}, deleting {d} bytes", .{ text_input_state.end, delete_len });
-
-                                            const remaining_after = test_text.items.len - text_input_state.end;
-                                            if (remaining_after > 0) {
-                                                const src = test_text.items.ptr + text_input_state.end;
-                                                const dest = test_text.items.ptr + delete_start;
-                                                @memmove(dest[0..remaining_after], src[0..remaining_after]);
-                                            }
-                                            test_text.shrinkRetainingCapacity(test_text.items.len - delete_len);
-
-                                            text_input_state.start = delete_start;
-                                            text_input_state.end = delete_start;
                                         }
+                                        try applyTextModification(gpa, .backspace, "");
                                     },
                                     .newline => {
-                                        try text_input_state.deleteSelection();
-                                        const newline = "\n";
-                                        log.info("  -> newline at {d}", .{text_input_state.end});
-                                        try test_text.insertSlice(gpa, text_input_state.end, newline);
-                                        const new_pos: u32 = @intCast(text_input_state.end + newline.len);
-                                        text_input_state.start = new_pos;
-                                        text_input_state.end = new_pos;
+                                        try applyTextModification(gpa, .insert, "\n");
                                     },
-                                    .move_left => {
-                                        if (text_input_state.hasSelection() and !cmd.modifiers.shift) {
-                                            const new_pos = text_input_state.min();
-                                            text_input_state.start = new_pos;
-                                            text_input_state.end = new_pos;
-                                        } else if (cmd.modifiers.ctrl) {
-                                            // Ctrl+Left: Move to the previous word break
-                                            if (text_input_state.end > 0) {
-                                                var new_pos = text_input_state.end - 1;
-                                                const text = test_text.items;
-
-                                                while (new_pos > 0 and std.ascii.isWhitespace(text[new_pos])) : (new_pos -= 1) {}
-                                                while (new_pos > 0 and !std.ascii.isWhitespace(text[new_pos])) : (new_pos -= 1) {}
-
-                                                if (std.ascii.isWhitespace(text[new_pos])) {
-                                                    new_pos += 1;
-                                                }
-
-                                                text_input_state.end = new_pos;
-                                                if (!cmd.modifiers.shift) {
-                                                    text_input_state.start = new_pos;
-                                                }
-                                            }
-                                        } else {
-                                            if (text_input_state.end > 0) {
-                                                var new_pos = text_input_state.end - 1;
-                                                // move to the beginning of the utf-8 sequence
-                                                while (new_pos > 0 and (test_text.items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos -= 1) {}
-                                                text_input_state.end = new_pos;
-                                                if (!cmd.modifiers.shift) {
-                                                    text_input_state.start = new_pos;
-                                                }
-                                            }
-                                        }
-                                    },
-                                    .move_right => {
-                                        if (text_input_state.hasSelection() and !cmd.modifiers.shift) {
-                                            const new_pos = text_input_state.max();
-                                            text_input_state.start = new_pos;
-                                            text_input_state.end = new_pos;
-                                        } else if (cmd.modifiers.ctrl) {
-                                            // Ctrl+Right: Move to the next word break
-                                            if (text_input_state.end < test_text.items.len) {
-                                                var new_pos = text_input_state.end;
-                                                const text = test_text.items;
-
-                                                while (new_pos < text.len and !std.ascii.isWhitespace(text[new_pos])) : (new_pos += 1) {}
-                                                while (new_pos < text.len and std.ascii.isWhitespace(text[new_pos])) : (new_pos += 1) {}
-
-                                                text_input_state.end = new_pos;
-                                                if (!cmd.modifiers.shift) {
-                                                    text_input_state.start = new_pos;
-                                                }
-                                            }
-                                        } else {
-                                            if (text_input_state.end < test_text.items.len) {
-                                                var new_pos = text_input_state.end + 1;
-                                                // move to the start of the next utf-8 sequence
-                                                while (new_pos < test_text.items.len and (test_text.items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos += 1) {}
-                                                text_input_state.end = new_pos;
-                                                if (!cmd.modifiers.shift) {
-                                                    text_input_state.start = new_pos;
-                                                }
-                                            }
-                                        }
-                                    },
-                                    .move_up => {
-                                        clay.setCurrentContext(ui.clay_context);
-                                        defer clay.setCurrentContext(null);
-
-                                        const offset = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), text_input_state.end);
-                                        if (offset.found) {
-                                            const target_location = clay.Vector2{
-                                                .x = offset.offset.x,
-                                                .y = offset.offset.y - offset.line_height,
-                                            };
-                                            const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_location);
-                                            if (target_offset.found) {
-                                                text_input_state.end = target_offset.index;
-                                                if (!cmd.modifiers.shift) {
-                                                    text_input_state.start = target_offset.index;
-                                                }
-                                            }
-                                        }
-                                    },
-                                    .move_down => {
-                                        clay.setCurrentContext(ui.clay_context);
-                                        defer clay.setCurrentContext(null);
-
-                                        const offset = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), text_input_state.end);
-                                        if (offset.found) {
-                                            const target_location = clay.Vector2{
-                                                .x = offset.offset.x,
-                                                .y = offset.offset.y + offset.line_height,
-                                            };
-                                            const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_location);
-                                            if (target_offset.found) {
-                                                text_input_state.end = target_offset.index;
-                                                if (!cmd.modifiers.shift) {
-                                                    text_input_state.start = target_offset.index;
-                                                }
-                                            }
-                                        }
-                                    },
-                                    .home => {
-                                        if (cmd.modifiers.ctrl) {
-                                            // Ctrl+Home moves to the beginning of the text.
-                                            text_input_state.end = 0;
-                                            if (!cmd.modifiers.shift) {
-                                                text_input_state.start = 0;
-                                            }
-                                        } else {
-                                            // Home moves to the beginning of the current visual line.
-                                            clay.setCurrentContext(ui.clay_context);
-                                            defer clay.setCurrentContext(null);
-
-                                            const current_offset = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), text_input_state.end);
-                                            if (current_offset.found) {
-                                                // Target the beginning (x=0) of the same visual line (y).
-                                                const target_location = clay.Vector2{
-                                                    .x = 0,
-                                                    .y = current_offset.offset.y,
-                                                };
-                                                const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_location);
-                                                if (target_offset.found) {
-                                                    text_input_state.end = target_offset.index;
-                                                    if (!cmd.modifiers.shift) {
-                                                        text_input_state.start = target_offset.index;
+                                    .move_left, .move_right, .move_up, .move_down, .home, .end => {
+                                        for (carets.items) |*caret| {
+                                            switch (cmd.action) {
+                                                .move_left => {
+                                                    if (caret.hasSelection() and !cmd.modifiers.shift) {
+                                                        caret.end = caret.min();
+                                                    } else if (cmd.modifiers.ctrl) {
+                                                        caret.end = findPrevWordBreak(currentText().items, caret.end);
+                                                    } else if (caret.end > 0) {
+                                                        var new_pos = caret.end - 1;
+                                                        while (new_pos > 0 and (currentText().items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos -= 1) {}
+                                                        caret.end = new_pos;
                                                     }
-                                                }
-                                            }
-                                        }
-                                    },
-                                    .end => {
-                                        if (cmd.modifiers.ctrl) {
-                                            // Ctrl+End moves to the very end of the text.
-                                            const new_pos = @as(u32, @intCast(test_text.items.len));
-                                            text_input_state.end = new_pos;
-                                            if (!cmd.modifiers.shift) {
-                                                text_input_state.start = new_pos;
-                                            }
-                                        } else {
-                                            // End moves to the end of the current visual line.
-                                            clay.setCurrentContext(ui.clay_context);
-                                            defer clay.setCurrentContext(null);
-
-                                            // Get the visual y-position of the current caret
-                                            const current_offset_res = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), text_input_state.end);
-                                            if (current_offset_res.found) {
-                                                // Find the character index at the far-right of the current visual line
-                                                const end_of_line_target_loc = clay.Vector2{
-                                                    .x = 999999.0, // A very large X coordinate
-                                                    .y = current_offset_res.offset.y,
-                                                };
-                                                const end_of_line_res = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), end_of_line_target_loc);
-
-                                                if (end_of_line_res.found) {
-                                                    var last_char_idx = end_of_line_res.index;
-
-                                                    // Check if the returned index is for a character on the next visual line.
-                                                    const check_offset_res = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), last_char_idx);
-                                                    if (check_offset_res.found and check_offset_res.offset.y != current_offset_res.offset.y) {
-                                                        // It is. This means the layout engine returned the index of the first character
-                                                        // after a soft wrap. The actual last character on our line is the one right before it.
-                                                        if (last_char_idx > 0) {
-                                                            var prev_char_start = last_char_idx - 1;
-                                                            // Step backwards to the beginning of the previous UTF-8 character sequence.
-                                                            while (prev_char_start > 0 and (test_text.items[prev_char_start] & 0b1100_0000) == 0b1000_0000) {
-                                                                prev_char_start -= 1;
-                                                            }
-                                                            last_char_idx = prev_char_start;
+                                                },
+                                                .move_right => {
+                                                    if (caret.hasSelection() and !cmd.modifiers.shift) {
+                                                        caret.end = caret.max();
+                                                    } else if (cmd.modifiers.ctrl) {
+                                                        caret.end = findNextWordBreak(currentText().items, caret.end);
+                                                    } else if (caret.end < currentText().items.len) {
+                                                        var new_pos = caret.end + 1;
+                                                        while (new_pos < currentText().items.len and (currentText().items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos += 1) {}
+                                                        caret.end = new_pos;
+                                                    }
+                                                },
+                                                .move_up => {
+                                                    clay.setCurrentContext(ui.clay_context);
+                                                    defer clay.setCurrentContext(null);
+                                                    const offset = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), caret.end);
+                                                    if (offset.found) {
+                                                        const target_loc = clay.Vector2{ .x = offset.offset.x, .y = offset.offset.y - offset.line_height };
+                                                        const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_loc);
+                                                        if (target_offset.found) caret.end = target_offset.index;
+                                                    }
+                                                },
+                                                .move_down => {
+                                                    clay.setCurrentContext(ui.clay_context);
+                                                    defer clay.setCurrentContext(null);
+                                                    const offset = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), caret.end);
+                                                    if (offset.found) {
+                                                        const target_loc = clay.Vector2{ .x = offset.offset.x, .y = offset.offset.y + offset.line_height };
+                                                        const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_loc);
+                                                        if (target_offset.found) caret.end = target_offset.index;
+                                                    }
+                                                },
+                                                .home => {
+                                                    if (cmd.modifiers.ctrl) {
+                                                        caret.end = 0;
+                                                    } else {
+                                                        clay.setCurrentContext(ui.clay_context);
+                                                        defer clay.setCurrentContext(null);
+                                                        const offset = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), caret.end);
+                                                        if (offset.found) {
+                                                            const target_loc = clay.Vector2{ .x = 0, .y = offset.offset.y };
+                                                            const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_loc);
+                                                            if (target_offset.found) caret.end = target_offset.index;
                                                         }
                                                     }
-
-                                                    text_input_state.end = last_char_idx;
-                                                    if (!cmd.modifiers.shift) {
-                                                        text_input_state.start = last_char_idx;
+                                                },
+                                                .end => {
+                                                    if (cmd.modifiers.ctrl) {
+                                                        caret.end = @intCast(currentText().items.len);
+                                                    } else {
+                                                        clay.setCurrentContext(ui.clay_context);
+                                                        defer clay.setCurrentContext(null);
+                                                        const current_offset_res = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), caret.end);
+                                                        if (current_offset_res.found) {
+                                                            const end_of_line_target_loc = clay.Vector2{ .x = 999999.0, .y = current_offset_res.offset.y };
+                                                            const end_of_line_res = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), end_of_line_target_loc);
+                                                            if (end_of_line_res.found) {
+                                                                var last_char_idx = end_of_line_res.index;
+                                                                const check_offset_res = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), last_char_idx);
+                                                                if (check_offset_res.found and check_offset_res.offset.y != current_offset_res.offset.y and last_char_idx > 0) {
+                                                                    var prev_char_start = last_char_idx - 1;
+                                                                    while (prev_char_start > 0 and (currentText().items[prev_char_start] & 0b1100_0000) == 0b1000_0000) {
+                                                                        prev_char_start -= 1;
+                                                                    }
+                                                                    last_char_idx = prev_char_start;
+                                                                }
+                                                                caret.end = last_char_idx;
+                                                            }
+                                                        }
                                                     }
-                                                }
+                                                },
+                                                else => {},
+                                            }
+                                            if (!cmd.modifiers.shift) {
+                                                caret.start = caret.end;
                                             }
                                         }
+                                        try sortAndMergeCarets(&carets);
                                     },
                                 },
                                 .chars => |chars| {
-                                    try text_input_state.deleteSelection();
+                                    var buffer = std.ArrayList(u8).empty;
                                     for (chars) |char_cmd| {
-                                        _ = char_cmd.modifiers;
                                         const width = try std.unicode.utf8CodepointSequenceLength(char_cmd.codepoint);
                                         const buf = try arena.alloc(u8, width);
                                         _ = try std.unicode.utf8Encode(char_cmd.codepoint, buf);
-
-                                        log.info("  -> char input: '{s}'", .{buf});
-                                        try test_text.insertSlice(gpa, text_input_state.end, buf);
-                                        text_input_state.end += @intCast(width);
+                                        try buffer.appendSlice(arena, buf);
                                     }
-                                    text_input_state.start = text_input_state.end;
+                                    try applyTextModification(gpa, .insert, buffer.items);
                                 },
                             }
                         }
