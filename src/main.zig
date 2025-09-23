@@ -307,6 +307,8 @@ pub fn main() !void {
             clay.setCurrentContext(g.clay_context);
             defer clay.setCurrentContext(null);
 
+            if (g.state.focusedIdValue() != command.id) return;
+
             // Draw selection highlight
             if (state.hasSelection()) {
                 const start_idx = state.min();
