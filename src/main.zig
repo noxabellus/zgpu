@@ -43,6 +43,7 @@ const Demo = struct {
 
 var FONT_ID_BODY: AssetCache.FontId = undefined;
 var FONT_ID_TITLE: AssetCache.FontId = undefined;
+var FONT_ID_MONO: AssetCache.FontId = undefined;
 
 var zig_logo_image_id: AssetCache.ImageId = undefined;
 var wgpu_logo_image_id: AssetCache.ImageId = undefined;
@@ -282,7 +283,7 @@ fn createLayout(ui: *Ui) !void {
 
         try ui.text(currentText().items, .{
             .alignment = .left,
-            .font_id = FONT_ID_BODY,
+            .font_id = FONT_ID_MONO,
             .font_size = 16,
             .color = COLOR_BLUE,
             .line_height = 20,
@@ -512,6 +513,7 @@ pub fn main() !void {
     // --- Load Assets ---
     FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/Quicksand-Semibold.ttf");
     FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/Calistoga-Regular.ttf");
+    FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/dejavu/DejaVuSansMono.ttf");
 
     zig_logo_image_id = try asset_cache.loadImage("assets/images/zig-mark.png", true);
     wgpu_logo_image_id = try asset_cache.loadImage("assets/images/wgpu-logo.png", true);
