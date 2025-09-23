@@ -715,13 +715,14 @@ pub fn main() !void {
                                     .newline => {
                                         try applyTextModification(gpa, .insert, "\n");
                                     },
+                                    .select_all => {
+                                        carets.clearRetainingCapacity();
+                                        try carets.append(gpa, .{ .start = 0, .end = @intCast(currentText().items.len) });
+                                    },
                                     .move_left, .move_right, .move_up, .move_down, .home, .end => {
-                                        // A temporary list to hold new carets created with Alt+Up/Down,
-                                        // to avoid modifying the main list while iterating over it.
                                         var new_carets_to_add = std.ArrayList(Caret).empty;
 
                                         for (carets.items) |*caret| {
-                                            var caret_was_modified = true;
                                             switch (cmd.action) {
                                                 .move_left => {
                                                     if (caret.hasSelection() and !cmd.modifiers.shift) {
@@ -733,6 +734,7 @@ pub fn main() !void {
                                                         while (new_pos > 0 and (currentText().items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos -= 1) {}
                                                         caret.end = new_pos;
                                                     }
+                                                    if (!cmd.modifiers.shift) caret.start = caret.end;
                                                 },
                                                 .move_right => {
                                                     if (caret.hasSelection() and !cmd.modifiers.shift) {
@@ -744,42 +746,48 @@ pub fn main() !void {
                                                         while (new_pos < currentText().items.len and (currentText().items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos += 1) {}
                                                         caret.end = new_pos;
                                                     }
+                                                    if (!cmd.modifiers.shift) caret.start = caret.end;
                                                 },
-                                                .move_up => {
+                                                .move_up, .move_down => {
                                                     clay.setCurrentContext(ui.clay_context);
                                                     defer clay.setCurrentContext(null);
-                                                    const offset = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), caret.end);
-                                                    if (offset.found) {
-                                                        const target_loc = clay.Vector2{ .x = offset.offset.x, .y = offset.offset.y - offset.line_height };
-                                                        const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_loc);
-                                                        if (target_offset.found) {
-                                                            if (cmd.modifiers.alt) {
-                                                                // Alt is held: Add a new caret, don't move the original.
-                                                                try new_carets_to_add.append(arena, .{ .start = target_offset.index, .end = target_offset.index });
-                                                                caret_was_modified = false;
-                                                            } else {
-                                                                // Alt is not held: Move the current caret.
-                                                                caret.end = target_offset.index;
-                                                            }
+
+                                                    const start_offset_res = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), caret.start);
+                                                    const end_offset_res = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), caret.end);
+
+                                                    if (!start_offset_res.found or !end_offset_res.found) continue;
+
+                                                    const target_y_offset = if (cmd.action == .move_up)
+                                                        -start_offset_res.line_height
+                                                    else
+                                                        start_offset_res.line_height;
+
+                                                    if (cmd.modifiers.alt) {
+                                                        // Alt: Duplicate selection to the next line
+                                                        const target_start_loc = clay.Vector2{ .x = start_offset_res.offset.x, .y = start_offset_res.offset.y + target_y_offset };
+                                                        const new_start_res = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_start_loc);
+
+                                                        const target_end_loc = clay.Vector2{ .x = end_offset_res.offset.x, .y = end_offset_res.offset.y + target_y_offset };
+                                                        const new_end_res = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_end_loc);
+
+                                                        if (new_start_res.found and new_end_res.found) {
+                                                            try new_carets_to_add.append(arena, .{ .start = new_start_res.index, .end = new_end_res.index });
                                                         }
-                                                    }
-                                                },
-                                                .move_down => {
-                                                    clay.setCurrentContext(ui.clay_context);
-                                                    defer clay.setCurrentContext(null);
-                                                    const offset = clay.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), caret.end);
-                                                    if (offset.found) {
-                                                        const target_loc = clay.Vector2{ .x = offset.offset.x, .y = offset.offset.y + offset.line_height };
-                                                        const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_loc);
-                                                        if (target_offset.found) {
-                                                            if (cmd.modifiers.alt) {
-                                                                // Alt is held: Add a new caret, don't move the original.
-                                                                try new_carets_to_add.append(arena, .{ .start = target_offset.index, .end = target_offset.index });
-                                                                caret_was_modified = false;
-                                                            } else {
-                                                                // Alt is not held: Move the current caret.
-                                                                caret.end = target_offset.index;
-                                                            }
+                                                    } else if (cmd.modifiers.shift) {
+                                                        // Shift: Extend selection to the next line
+                                                        const target_end_loc = clay.Vector2{ .x = end_offset_res.offset.x, .y = end_offset_res.offset.y + target_y_offset };
+                                                        const new_end_res = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_end_loc);
+
+                                                        if (new_end_res.found) {
+                                                            caret.end = new_end_res.index;
+                                                        }
+                                                    } else {
+                                                        // No modifiers: Move caret, collapsing selection
+                                                        const target_end_loc = clay.Vector2{ .x = end_offset_res.offset.x, .y = end_offset_res.offset.y + target_y_offset };
+                                                        const new_end_res = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_end_loc);
+                                                        if (new_end_res.found) {
+                                                            caret.start = new_end_res.index;
+                                                            caret.end = new_end_res.index;
                                                         }
                                                     }
                                                 },
@@ -796,6 +804,7 @@ pub fn main() !void {
                                                             if (target_offset.found) caret.end = target_offset.index;
                                                         }
                                                     }
+                                                    if (!cmd.modifiers.shift) caret.start = caret.end;
                                                 },
                                                 .end => {
                                                     if (cmd.modifiers.ctrl) {
@@ -821,11 +830,9 @@ pub fn main() !void {
                                                             }
                                                         }
                                                     }
+                                                    if (!cmd.modifiers.shift) caret.start = caret.end;
                                                 },
                                                 else => {},
-                                            }
-                                            if (caret_was_modified and !cmd.modifiers.shift) {
-                                                caret.start = caret.end;
                                             }
                                         }
 
