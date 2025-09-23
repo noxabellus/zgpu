@@ -267,13 +267,16 @@ fn createLayout(ui: *Ui) !void {
                 .color = COLOR_BROWN,
             },
             .corner_radius = .all(5),
+            .clip = .{
+                .vertical = true,
+                .child_offset = ui.scrollOffset(),
+            },
             .custom = &selection_render_data,
             .state = .flags(.{
-                .wheel = true,
                 .click = true,
                 .focus = true,
                 .text = true,
-                .hover = true, // needed for drag selection
+                .hover = true,
             }),
         });
 
