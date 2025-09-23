@@ -535,6 +535,29 @@ pub fn main() !void {
                                     .delete => {
                                         if (text_input_state.hasSelection()) {
                                             try text_input_state.deleteSelection();
+                                        } else if (cmd.modifiers.ctrl) {
+                                            // Ctrl+Delete: Delete to the next word break
+                                            if (text_input_state.end < test_text.items.len) {
+                                                var delete_end = text_input_state.end;
+                                                const text = test_text.items;
+
+                                                // Skip any initial whitespace
+                                                while (delete_end < text.len and std.ascii.isWhitespace(text[delete_end])) : (delete_end += 1) {}
+                                                // Skip non-whitespace characters
+                                                while (delete_end < text.len and !std.ascii.isWhitespace(text[delete_end])) : (delete_end += 1) {}
+
+                                                const delete_len = delete_end - text_input_state.end;
+                                                if (delete_len > 0) {
+                                                    log.info("  -> ctrl+delete at {d}, deleting {d} bytes", .{ text_input_state.end, delete_len });
+                                                    const remaining_after = test_text.items.len - delete_end;
+                                                    if (remaining_after > 0) {
+                                                        const src = test_text.items.ptr + delete_end;
+                                                        const dest = test_text.items.ptr + text_input_state.end;
+                                                        @memmove(dest[0..remaining_after], src[0..remaining_after]);
+                                                    }
+                                                    test_text.shrinkRetainingCapacity(test_text.items.len - delete_len);
+                                                }
+                                            }
                                         } else if (text_input_state.end < test_text.items.len) {
                                             var delete_end = text_input_state.end + 1;
                                             while (delete_end < test_text.items.len and (test_text.items[delete_end] & 0b1100_0000) == 0b1000_0000) : (delete_end += 1) {}
@@ -554,6 +577,37 @@ pub fn main() !void {
                                     .backspace => {
                                         if (text_input_state.hasSelection()) {
                                             try text_input_state.deleteSelection();
+                                        } else if (cmd.modifiers.ctrl) {
+                                            // Ctrl+Backspace: Delete to the previous word break
+                                            if (text_input_state.end > 0) {
+                                                var delete_start = text_input_state.end;
+                                                const text = test_text.items;
+
+                                                delete_start -= 1;
+                                                while (delete_start > 0 and std.ascii.isWhitespace(text[delete_start])) : (delete_start -= 1) {}
+                                                while (delete_start > 0 and !std.ascii.isWhitespace(text[delete_start])) : (delete_start -= 1) {}
+
+                                                if (std.ascii.isWhitespace(text[delete_start])) {
+                                                    delete_start += 1;
+                                                }
+
+                                                const delete_len = text_input_state.end - delete_start;
+
+                                                if (delete_len > 0) {
+                                                    log.info("  -> ctrl+backspace at {d}, deleting {d} bytes from {d}", .{ text_input_state.end, delete_len, delete_start });
+
+                                                    const remaining_after = test_text.items.len - text_input_state.end;
+                                                    if (remaining_after > 0) {
+                                                        const src = test_text.items.ptr + text_input_state.end;
+                                                        const dest = test_text.items.ptr + delete_start;
+                                                        @memmove(dest[0..remaining_after], src[0..remaining_after]);
+                                                    }
+                                                    test_text.shrinkRetainingCapacity(test_text.items.len - delete_len);
+
+                                                    text_input_state.start = delete_start;
+                                                    text_input_state.end = delete_start;
+                                                }
+                                            }
                                         } else if (text_input_state.end > 0) {
                                             var delete_start = text_input_state.end - 1;
                                             while (delete_start > 0 and (test_text.items[delete_start] & 0b1100_0000) == 0b1000_0000) : (delete_start -= 1) {}
@@ -587,6 +641,24 @@ pub fn main() !void {
                                             const new_pos = text_input_state.min();
                                             text_input_state.start = new_pos;
                                             text_input_state.end = new_pos;
+                                        } else if (cmd.modifiers.ctrl) {
+                                            // Ctrl+Left: Move to the previous word break
+                                            if (text_input_state.end > 0) {
+                                                var new_pos = text_input_state.end - 1;
+                                                const text = test_text.items;
+
+                                                while (new_pos > 0 and std.ascii.isWhitespace(text[new_pos])) : (new_pos -= 1) {}
+                                                while (new_pos > 0 and !std.ascii.isWhitespace(text[new_pos])) : (new_pos -= 1) {}
+
+                                                if (std.ascii.isWhitespace(text[new_pos])) {
+                                                    new_pos += 1;
+                                                }
+
+                                                text_input_state.end = new_pos;
+                                                if (!cmd.modifiers.shift) {
+                                                    text_input_state.start = new_pos;
+                                                }
+                                            }
                                         } else {
                                             if (text_input_state.end > 0) {
                                                 var new_pos = text_input_state.end - 1;
@@ -604,6 +676,20 @@ pub fn main() !void {
                                             const new_pos = text_input_state.max();
                                             text_input_state.start = new_pos;
                                             text_input_state.end = new_pos;
+                                        } else if (cmd.modifiers.ctrl) {
+                                            // Ctrl+Right: Move to the next word break
+                                            if (text_input_state.end < test_text.items.len) {
+                                                var new_pos = text_input_state.end;
+                                                const text = test_text.items;
+
+                                                while (new_pos < text.len and !std.ascii.isWhitespace(text[new_pos])) : (new_pos += 1) {}
+                                                while (new_pos < text.len and std.ascii.isWhitespace(text[new_pos])) : (new_pos += 1) {}
+
+                                                text_input_state.end = new_pos;
+                                                if (!cmd.modifiers.shift) {
+                                                    text_input_state.start = new_pos;
+                                                }
+                                            }
                                         } else {
                                             if (text_input_state.end < test_text.items.len) {
                                                 var new_pos = text_input_state.end + 1;
