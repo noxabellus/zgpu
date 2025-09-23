@@ -716,7 +716,12 @@ pub fn main() !void {
                                         try applyTextModification(gpa, .insert, "\n");
                                     },
                                     .move_left, .move_right, .move_up, .move_down, .home, .end => {
+                                        // A temporary list to hold new carets created with Alt+Up/Down,
+                                        // to avoid modifying the main list while iterating over it.
+                                        var new_carets_to_add = std.ArrayList(Caret).empty;
+
                                         for (carets.items) |*caret| {
+                                            var caret_was_modified = true;
                                             switch (cmd.action) {
                                                 .move_left => {
                                                     if (caret.hasSelection() and !cmd.modifiers.shift) {
@@ -747,7 +752,16 @@ pub fn main() !void {
                                                     if (offset.found) {
                                                         const target_loc = clay.Vector2{ .x = offset.offset.x, .y = offset.offset.y - offset.line_height };
                                                         const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_loc);
-                                                        if (target_offset.found) caret.end = target_offset.index;
+                                                        if (target_offset.found) {
+                                                            if (cmd.modifiers.alt) {
+                                                                // Alt is held: Add a new caret, don't move the original.
+                                                                try new_carets_to_add.append(arena, .{ .start = target_offset.index, .end = target_offset.index });
+                                                                caret_was_modified = false;
+                                                            } else {
+                                                                // Alt is not held: Move the current caret.
+                                                                caret.end = target_offset.index;
+                                                            }
+                                                        }
                                                     }
                                                 },
                                                 .move_down => {
@@ -757,7 +771,16 @@ pub fn main() !void {
                                                     if (offset.found) {
                                                         const target_loc = clay.Vector2{ .x = offset.offset.x, .y = offset.offset.y + offset.line_height };
                                                         const target_offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_loc);
-                                                        if (target_offset.found) caret.end = target_offset.index;
+                                                        if (target_offset.found) {
+                                                            if (cmd.modifiers.alt) {
+                                                                // Alt is held: Add a new caret, don't move the original.
+                                                                try new_carets_to_add.append(arena, .{ .start = target_offset.index, .end = target_offset.index });
+                                                                caret_was_modified = false;
+                                                            } else {
+                                                                // Alt is not held: Move the current caret.
+                                                                caret.end = target_offset.index;
+                                                            }
+                                                        }
                                                     }
                                                 },
                                                 .home => {
@@ -801,10 +824,12 @@ pub fn main() !void {
                                                 },
                                                 else => {},
                                             }
-                                            if (!cmd.modifiers.shift) {
+                                            if (caret_was_modified and !cmd.modifiers.shift) {
                                                 caret.start = caret.end;
                                             }
                                         }
+
+                                        try carets.appendSlice(gpa, new_carets_to_add.items);
                                         try sortAndMergeCarets(&carets);
                                     },
                                 },
