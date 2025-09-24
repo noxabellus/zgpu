@@ -351,6 +351,8 @@ pub const Event = struct {
         mouse_up: struct { mouse_position: Vec2, end_element: ?ElementId },
         clicked: struct { mouse_position: Vec2 },
 
+        drag: struct { mouse_position: Vec2 },
+
         text: union(enum) {
             chars: []const BindingState.Char,
             command: struct {
@@ -415,23 +417,26 @@ pub const ElementState = packed struct(usize) {
         hover: bool = false,
         wheel: bool = false,
         click: bool = false,
+        drag: bool = false,
         focus: bool = false,
         activate: bool = false,
         text: bool = false,
 
-        _reserved: u10 = 0,
+        _reserved: u9 = 0,
 
         pub const none = Flags{};
         pub const hoverFlag = Flags{ .hover = true };
         pub const wheelFlag = Flags{ .wheel = true };
         pub const clickFlag = Flags{ .click = true };
+        pub const dragFlag = Flags{ .drag = true };
         pub const focusFlag = Flags{ .focus = true };
-        pub const activatFlag = Flags{ .activate = true };
+        pub const activateFlag = Flags{ .activate = true };
         pub const textFlag = Flags{ .text = true };
         pub const all = Flags{
             .hover = true,
             .wheel = true,
             .click = true,
+            .drag = true,
             .focus = true,
             .activate = true,
             .text = true,
@@ -442,6 +447,7 @@ pub const ElementState = packed struct(usize) {
                 .hover = a.hover or b.hover,
                 .wheel = a.wheel or b.wheel,
                 .click = a.click or b.click,
+                .drag = a.drag or b.drag,
                 .focus = a.focus or b.focus,
                 .activate = a.activate or b.activate,
                 .text = a.text or b.text,
@@ -449,11 +455,11 @@ pub const ElementState = packed struct(usize) {
         }
 
         pub fn takesInput(self: Flags) bool {
-            return self.hover or self.wheel or self.click or self.focus or self.activate or self.text;
+            return self.hover or self.wheel or self.click or self.drag or self.focus or self.activate or self.text;
         }
 
         pub fn usesMouse(self: Flags) bool {
-            return self.hover or self.wheel or self.click;
+            return self.hover or self.wheel or self.click or self.drag;
         }
     };
 
@@ -461,8 +467,9 @@ pub const ElementState = packed struct(usize) {
     pub const hoverFlag = ElementState{ .event_flags = .hoverFlag };
     pub const wheelFlag = ElementState{ .event_flags = .wheelFlag };
     pub const clickFlag = ElementState{ .event_flags = .clickFlag };
+    pub const dragFlag = ElementState{ .event_flags = .dragFlag };
     pub const focusFlag = ElementState{ .event_flags = .focusFlag };
-    pub const activatFlag = ElementState{ .event_flags = .activatFlag };
+    pub const activatFlag = ElementState{ .event_flags = .activateFlag };
     pub const textFlag = ElementState{ .event_flags = .textFlag };
     pub const all = ElementState{ .event_flags = .all };
 
@@ -1087,8 +1094,8 @@ fn generateEvents(self: *Ui) !void {
         for (self.hovered_element_stack.items, 0..) |_, i| {
             const hovered_state = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1 - i];
 
-            // The first clickable or activatable element we find becomes active.
-            if (!found_click_target and (hovered_state.state.event_flags.click or hovered_state.state.event_flags.activate)) {
+            // The first clickable, draggable or activatable element we find becomes active.
+            if (!found_click_target and (hovered_state.state.event_flags.click or hovered_state.state.event_flags.activate or hovered_state.state.event_flags.drag)) {
                 self.state.active_id = hovered_state;
                 is_mouse_activating = true;
                 found_click_target = true;
@@ -1108,7 +1115,27 @@ fn generateEvents(self: *Ui) !void {
                 self.state.active_id = null;
             }
         } else {
-            self.state.active_id = null;
+            // If the mouse is down on a draggable element, we are dragging, so don't clear the active id.
+            var is_dragging = false;
+            if (primary_mouse_action.isDown() and self.state.active_id != null) {
+                is_dragging = self.state.active_id.?.state.event_flags.drag;
+            }
+
+            if (!is_dragging) {
+                self.state.active_id = null;
+            }
+        }
+    }
+
+    // --- Generate Drag Event ---
+    if (primary_mouse_action.isDown() and self.state.active_id != null) {
+        if (self.state.active_id.?.state.event_flags.drag) {
+            try self.events.append(self.allocator, .{
+                .element_id = self.state.active_id.?.id,
+                .bounding_box = self.state.active_id.?.bounding_box,
+                .user_data = self.state.active_id.?.state.getUserData(),
+                .data = .{ .drag = .{ .mouse_position = mouse_pos } },
+            });
         }
     }
 

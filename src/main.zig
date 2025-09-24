@@ -278,6 +278,7 @@ fn createLayout(ui: *Ui) !void {
                 .focus = true,
                 .text = true,
                 .hover = true,
+                .drag = true, // Enable drag events for text selection
             }),
         });
 
@@ -588,22 +589,8 @@ pub fn main() !void {
                         log.info("hover_end id={any} loc={f}", .{ event.element_id, hover_end_data.mouse_position });
                     },
                     .hovering => |hovering_data| {
-                        if (is_dragging_text) {
-                            if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
-                                const location = clay.Vector2{
-                                    .x = hovering_data.mouse_position.x - event.bounding_box.x,
-                                    .y = hovering_data.mouse_position.y - event.bounding_box.y,
-                                };
-
-                                clay.setCurrentContext(ui.clay_context);
-                                defer clay.setCurrentContext(null);
-
-                                const offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), location);
-                                if (offset.found and carets.items.len > 0) {
-                                    carets.items[carets.items.len - 1].end = offset.index;
-                                }
-                            }
-                        }
+                        _ = hovering_data;
+                        // Text selection logic has moved to the .drag event for better behavior.
                     },
                     .mouse_down => |mouse_down_data| {
                         log.info("mouse_down id={any} loc={f}", .{ event.element_id, mouse_down_data.mouse_position });
@@ -643,6 +630,24 @@ pub fn main() !void {
                     },
                     .clicked => |clicked_data| {
                         log.info("clicked id={any} loc={f}", .{ event.element_id, clicked_data.mouse_position });
+                    },
+                    .drag => |drag_data| {
+                        // This event is fired for the element where the drag started,
+                        // even if the mouse is now outside its bounds.
+                        if (event.element_id.id == Ui.ElementId.fromSlice("TextInputTest").id) {
+                            const location = clay.Vector2{
+                                .x = drag_data.mouse_position.x - event.bounding_box.x,
+                                .y = drag_data.mouse_position.y - event.bounding_box.y,
+                            };
+
+                            clay.setCurrentContext(ui.clay_context);
+                            defer clay.setCurrentContext(null);
+
+                            const offset = clay.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), location);
+                            if (offset.found and carets.items.len > 0) {
+                                carets.items[carets.items.len - 1].end = offset.index;
+                            }
+                        }
                     },
                     .wheel => |wheel_data| {
                         log.info("wheel id={any} delta={f}", .{ event.element_id, wheel_data.delta });
