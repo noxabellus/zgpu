@@ -20,6 +20,8 @@ pub const GLYPH_PADDING = 2;
 pub const GLYPH_PADDING_F = 2.0;
 
 // --- Public API Structs ---
+pub const ImageId = Atlas.ImageId;
+pub const FontId = AssetCache.FontId;
 pub const Mat4 = [16]f32;
 pub const Vec2 = struct {
     x: f32 = 0.0,
