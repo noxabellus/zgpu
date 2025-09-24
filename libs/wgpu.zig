@@ -129,7 +129,7 @@ pub const MapMode = packed struct(u64) {
     }
 };
 
-pub const InstanceBackend = packed struct {
+pub const InstanceBackend = packed struct(u64) {
     vulkan: bool = false,
     gl: bool = false,
     metal: bool = false,
@@ -154,7 +154,7 @@ pub const InstanceBackend = packed struct {
     }
 };
 
-pub const InstanceFlag = packed struct {
+pub const InstanceFlag = packed struct(u64) {
     debug: bool = false,
     validation: bool = false,
     discard_hal_labels: bool = false,
