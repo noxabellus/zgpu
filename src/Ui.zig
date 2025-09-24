@@ -16,53 +16,23 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-/// Manages registration and dispatching of UI events to listeners.
-const EventDispatch = struct {
-    /// Key combines element ID and event type for efficient lookup.
-    const Key = struct {
-        element_id: u32,
-        event_tag: Event.Tag,
-    };
+pub const Widget = struct {
+    user_data: *anyopaque,
+    render: *const fn (*anyopaque, *Ui, RenderCommand) anyerror!void,
+    unbind: *const fn (*anyopaque, *Ui) void,
+    deinit: *const fn (*anyopaque, *Ui) void,
 
-    const Listener = struct {
-        /// Store the function pointer as a generic pointer.
-        func: *const anyopaque,
-        user_data: *anyopaque,
-    };
+    pub const TextInput = @import("widgets/TextInput.zig");
 
-    /// The value is a list of listeners for a given key.
-    const ListenerList = std.ArrayList(Listener);
-
-    pub fn Handler(comptime T: type, comptime event_tag: Event.Tag) type {
-        return fn (user_data: *T, ui: *Ui, info: Event.Info, payload: Event.Payload(event_tag)) anyerror!void;
-    }
-
-    /// The main storage for all listeners.
-    listeners: std.HashMapUnmanaged(Key, ListenerList, struct {
-        pub fn hash(_: @This(), self: Key) u64 {
-            var hasher = std.hash.Wyhash.init(0);
-            std.hash.autoHash(&hasher, self);
-            return hasher.final();
-        }
-
-        pub fn eql(_: @This(), self: Key, other: Key) bool {
-            return self.element_id == other.element_id and self.event_tag == other.event_tag;
-        }
-    }, 80) = .empty,
-
-    pub const empty = EventDispatch{};
-
-    pub fn deinit(self: *EventDispatch, allocator: std.mem.Allocator) void {
-        var it = self.listeners.iterator();
-        while (it.next()) |entry| {
-            entry.value_ptr.deinit(allocator);
-        }
-        self.listeners.deinit(allocator);
+    test {
+        log.debug("semantic analysis for Ui.Widgets", .{});
+        std.testing.refAllDecls(@This());
     }
 };
 
 pub const Vec2 = Batch2D.Vec2;
 pub const Color = Batch2D.Color;
+pub const FontId = Batch2D.FontId;
 
 pub const default_bindings = .{
     .primary_mouse = BindingState.InputBinding{ .mouse = .{ .bind_point = .button_1 } },
@@ -85,7 +55,6 @@ events: std.ArrayList(Event) = .empty,
 
 event_dispatch: EventDispatch = .empty,
 
-custom_element_renderer: ?*const fn (*Ui, ?*anyopaque, clay.RenderCommand) anyerror!void = null,
 user_data: ?*anyopaque = null,
 
 state: State = .{},
@@ -106,6 +75,15 @@ open_ids: std.ArrayList(ElementId) = .empty,
 current_scroll_states: std.AutoHashMapUnmanaged(u32, ScrollState) = .empty,
 // Scroll states from the last frame
 last_scroll_states: std.AutoHashMapUnmanaged(u32, ScrollState) = .empty,
+
+// States for rich-interaction widgets
+widget_states: std.AutoHashMapUnmanaged(u32, Widget) = .empty,
+
+// widgets seen this frame
+widgets_seen: std.AutoHashMapUnmanaged(u32, void) = .empty,
+
+// events from widgets triggered this frame, to be dispatched on the next frame
+widget_events: std.ArrayList(Event) = .empty,
 
 text_repeat: struct {
     timer: std.time.Timer = undefined,
@@ -175,12 +153,23 @@ pub fn init(gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *B
 }
 
 pub fn deinit(self: *Ui) void {
+    var it = self.widget_states.valueIterator();
+    while (it.next()) |vtable| {
+        vtable.deinit(vtable.user_data, self);
+    }
+
     self.events.deinit(self.gpa);
     self.hovered_element_stack.deinit(self.gpa);
     self.navigable_elements.deinit(self.gpa);
     self.reverse_navigable_elements.deinit(self.gpa);
     self.open_ids.deinit(self.gpa);
     self.event_dispatch.deinit(self.gpa);
+    self.current_scroll_states.deinit(self.gpa);
+    self.last_scroll_states.deinit(self.gpa);
+
+    self.widget_states.deinit(self.gpa);
+    self.widgets_seen.deinit(self.gpa);
+    self.widget_events.deinit(self.gpa);
 
     self.gpa.free(self.clay_memory);
     self.gpa.destroy(self);
@@ -188,10 +177,13 @@ pub fn deinit(self: *Ui) void {
 
 /// Call this at any time in the update stage to begin declaring the ui layout. Caller must ensure `Ui.endLayout` is called before the next `Ui.beginLayout` and/or `Ui.render`.
 /// Note: it is acceptable to run the layout code multiple times per frame, but all state will be discarded when calling this function.
-pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
+pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) !void {
     self.render_commands = null;
 
     self.events.clearRetainingCapacity();
+    try self.events.appendSlice(self.gpa, self.widget_events.items);
+    self.widget_events.clearRetainingCapacity();
+
     self.hovered_element_stack.clearRetainingCapacity();
     self.navigable_elements.clearRetainingCapacity();
     self.reverse_navigable_elements.clearRetainingCapacity();
@@ -233,8 +225,16 @@ pub fn endLayout(self: *Ui) !void {
     std.debug.assert(self.clay_context == clay.getCurrentContext());
     defer clay.setCurrentContext(null);
 
-    const render_commands = clay.endLayout();
-    self.render_commands = render_commands;
+    self.render_commands = clay.endLayout();
+
+    var widget_it = self.widget_states.iterator();
+    while (widget_it.next()) |kv| {
+        if (!self.widgets_seen.contains(kv.key_ptr.*)) {
+            kv.value_ptr.unbind(kv.value_ptr.user_data, self);
+            kv.value_ptr.deinit(kv.value_ptr.user_data, self);
+        }
+    }
+    self.widgets_seen.clearRetainingCapacity();
 
     try self.generateEvents();
 }
@@ -331,7 +331,7 @@ pub fn removeListener(
         var i = listener_list.items.len;
         while (i > 0) {
             i -= 1;
-            if (listener_list.items[i].func == listener_fn) {
+            if (listener_list.items[i].func == @as(*const anyopaque, @ptrCast(listener_fn))) {
                 _ = listener_list.orderedRemove(i);
             }
         }
@@ -359,11 +359,11 @@ pub fn beginElement(self: *Ui, id: ElementId) !void {
 
 /// Configure the current element opened with `Ui.beginElement`.
 /// * See also `Ui.openElement`, `Ui.elem`.
-pub fn configureElement(self: *Ui, declaration: HeadlessElementDeclaration) !void {
+pub fn configureElement(self: *Ui, declaration: Headless(ElementDeclaration)) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     const id = self.open_ids.items[self.open_ids.items.len - 1];
-    const full = declaration.toFull(id);
+    const full = attachHead(ElementDeclaration, declaration, id);
     clay.configureElement(full.toClay());
 
     try self.handleStateSetup(full);
@@ -373,7 +373,7 @@ pub fn configureElement(self: *Ui, declaration: HeadlessElementDeclaration) !voi
 /// * Must be followed by a call to `Ui.closeElement`.
 /// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside the passed declaration; use `Ui.beginElement` and `Ui.configureElement` instead.
 /// * See also `Ui.elem`.
-pub fn openElement(self: *Ui, declaration: ElementDeclarationWithId) !void {
+pub fn openElement(self: *Ui, declaration: ElementDeclaration) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     try self.open_ids.append(self.gpa, declaration.id);
@@ -397,7 +397,7 @@ pub fn closeElement(self: *Ui) void {
 
 /// Create a new element with the given declaration, and immediately close it.
 /// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside this declaration; use `Ui.beginElement`, `Ui.configureElement` and `Ui.closeElement` instead.
-pub fn elem(self: *Ui, declaration: ElementDeclarationWithId) !void {
+pub fn elem(self: *Ui, declaration: ElementDeclaration) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     try self.openElement(declaration);
@@ -413,6 +413,50 @@ pub fn text(self: *Ui, str: []const u8, config: TextElementConfig) !void {
     std.debug.assert(self.open_ids.items.len > 0);
 
     clay.text(str, config.toClay());
+}
+
+/// Configure an open element as a text input widget
+pub fn bindTextInput(self: *Ui, default_value: []const u8, config: Widget.TextInput.Config) !void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
+    const id = self.open_ids.items[self.open_ids.items.len - 1];
+    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
+    const widget = if (!gop.found_existing) create_new: {
+        const ptr = try Widget.TextInput.init(self, id, default_value);
+        gop.value_ptr.* = Widget{
+            .user_data = ptr,
+            .render = @ptrCast(&Widget.TextInput.renderTextInput),
+            .unbind = @ptrCast(&Widget.TextInput.unbindEvents),
+            .deinit = @ptrCast(&Widget.TextInput.deinit),
+        };
+
+        try ptr.bindEvents(self);
+
+        break :create_new ptr;
+    } else reuse_existing: {
+        const ptr: *Widget.TextInput = @ptrCast(@alignCast(gop.value_ptr.user_data));
+        try ptr.swapBuffers(self);
+        break :reuse_existing ptr;
+    };
+
+    try self.widgets_seen.put(self.gpa, id.id, {});
+
+    try self.text(widget.currentText(), config.toFull());
+}
+
+/// Get the current text value of the open text input widget
+pub fn currentTextInputValue(self: *Ui) []const u8 {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
+    const id = self.open_ids.items[self.open_ids.items.len - 1];
+    if (self.widget_states.get(id.id)) |widget_vtable| {
+        const widget: *Widget.TextInput = @ptrCast(@alignCast(widget_vtable.user_data));
+        return widget.currentText();
+    } else {
+        return &.{};
+    }
 }
 
 /// Determine if the currently-open element is hovered by the mouse.
@@ -489,7 +533,68 @@ pub fn getCharacterIndexAtOffset(self: *Ui, id: ElementId, offset: Vec2) ?u32 {
     return clay.getCharacterIndexAtOffset(id, vec2ToClay(offset));
 }
 
+pub fn pushEvent(self: *Ui, id: ElementId, data: Event.Data, user_data: ?*anyopaque) !void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+
+    const element_data = clay.getElementData(id);
+    if (!element_data.found) return;
+
+    try self.widget_events.append(self.gpa, Event{
+        .info = Event.Info{
+            .element_id = id,
+            .bounding_box = element_data.bounding_box,
+            .user_data = user_data,
+        },
+        .data = data,
+    });
+}
+
 // --- Structures ---
+
+/// Manages registration and dispatching of UI events to listeners.
+pub const EventDispatch = struct {
+    /// Key combines element ID and event type for efficient lookup.
+    pub const Key = struct {
+        element_id: u32,
+        event_tag: Event.Tag,
+    };
+
+    pub const Listener = struct {
+        /// Store the function pointer as a generic pointer.
+        func: *const anyopaque,
+        user_data: *anyopaque,
+    };
+
+    /// The value is a list of listeners for a given key.
+    pub const ListenerList = std.ArrayList(Listener);
+
+    pub fn Handler(comptime T: type, comptime event_tag: Event.Tag) type {
+        return fn (user_data: *T, ui: *Ui, info: Event.Info, payload: Event.Payload(event_tag)) anyerror!void;
+    }
+
+    /// The main storage for all listeners.
+    listeners: std.HashMapUnmanaged(Key, ListenerList, struct {
+        pub fn hash(_: @This(), self: Key) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            std.hash.autoHash(&hasher, self);
+            return hasher.final();
+        }
+
+        pub fn eql(_: @This(), self: Key, other: Key) bool {
+            return self.element_id == other.element_id and self.event_tag == other.event_tag;
+        }
+    }, 80) = .empty,
+
+    pub const empty = EventDispatch{};
+
+    pub fn deinit(self: *EventDispatch, allocator: std.mem.Allocator) void {
+        var it = self.listeners.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(allocator);
+        }
+        self.listeners.deinit(allocator);
+    }
+};
 
 pub const Event = struct {
     info: Info,
@@ -554,6 +659,8 @@ pub const Event = struct {
             new_offset: Vec2,
             delta: Vec2,
         },
+
+        text_change: []const u8,
     };
 };
 
@@ -612,8 +719,9 @@ pub const ElementState = packed struct(usize) {
         text: bool = false,
         keyboard: bool = false,
         scroll: bool = false,
+        change: bool = false,
 
-        _reserved: u7 = 0,
+        _reserved: u6 = 0,
 
         pub const none = Flags{};
         pub const hoverFlag = Flags{ .hover = true };
@@ -625,6 +733,7 @@ pub const ElementState = packed struct(usize) {
         pub const textFlag = Flags{ .text = true };
         pub const keyboardFlag = Flags{ .keyboard = true };
         pub const scrollFlag = Flags{ .scroll = true };
+        pub const changeFlag = Flags{ .change = true };
         pub const all = Flags{
             .hover = true,
             .wheel = true,
@@ -635,6 +744,7 @@ pub const ElementState = packed struct(usize) {
             .text = true,
             .keyboard = true,
             .scroll = true,
+            .change = true,
         };
 
         pub fn merge(a: Flags, b: Flags) Flags {
@@ -669,6 +779,8 @@ pub const ElementState = packed struct(usize) {
     pub const activateFlag = ElementState{ .event_flags = .activateFlag };
     pub const textFlag = ElementState{ .event_flags = .textFlag };
     pub const keyboardFlag = ElementState{ .event_flags = .keyboardFlag };
+    pub const scrollFlag = ElementState{ .event_flags = .scrollFlag };
+    pub const changeFlag = ElementState{ .event_flags = .changeFlag };
     pub const all = ElementState{ .event_flags = .all };
 
     pub fn flags(f: Flags) ElementState {
@@ -834,6 +946,35 @@ pub const ClipElementConfig = struct {
     }
 };
 
+pub fn Headless(comptime T: type) type {
+    comptime return switch (T) {
+        ElementDeclaration => HeadlessElementDeclaration,
+        else => @compileError("Unsupported type for Headless"),
+    };
+}
+
+fn attachHead(comptime T: type, value: Headless(T), head: ElementId) T {
+    var out: T = undefined;
+
+    out.id = head;
+
+    inline for (comptime std.meta.fieldNames(Headless(T))) |field| {
+        @field(out, field) = @field(value, field);
+    }
+
+    return out;
+}
+
+fn detachHead(comptime T: type, value: T) Headless(T) {
+    var out: Headless(T) = undefined;
+
+    inline for (comptime std.meta.fieldNames(Headless(T))) |field| {
+        @field(out, field) = @field(value, field);
+    }
+
+    return out;
+}
+
 pub const HeadlessElementDeclaration = struct {
     /// Controls various settings that affect the size and position of an element, as well as the sizes and positions of any child elements.
     layout: LayoutConfig = .{},
@@ -850,33 +991,17 @@ pub const HeadlessElementDeclaration = struct {
     /// Controls whether and how an element "floats", which means it layers over the top of other elements in z order, and doesn't affect the position and size of siblings or parent elements.
     /// Note: in order to activate floating, `.floating.attachTo` must be set to something other than the default value.
     floating: FloatingElementConfig = .{},
-    /// Used to create CUSTOM render commands, usually to render element types not supported by default.
-    custom: CustomElementConfig = null,
+    /// Whether or not this element will be treated as a widget.
+    widget: bool = false,
     /// Controls whether an element should clip its contents and allow scrolling rather than expanding to contain them.
     clip: ClipElementConfig = .{},
     /// Controls settings related to element borders, and will generate BORDER render command
     border: BorderElementConfig = .{},
     /// A pointer that will be transparently passed through to resulting render command
     state: ElementState = .none,
-
-    fn toFull(self: HeadlessElementDeclaration, id: ElementId) ElementDeclarationWithId {
-        return ElementDeclarationWithId{
-            .id = id,
-            .layout = self.layout,
-            .background_color = self.background_color,
-            .corner_radius = self.corner_radius,
-            .aspect_ratio = self.aspect_ratio,
-            .image = self.image,
-            .floating = self.floating,
-            .custom = self.custom,
-            .clip = self.clip,
-            .border = self.border,
-            .state = self.state,
-        };
-    }
 };
 
-pub const ElementDeclarationWithId = struct {
+pub const ElementDeclaration = struct {
     id: ElementId = .{},
     /// Controls various settings that affect the size and position of an element, as well as the sizes and positions of any child elements.
     layout: LayoutConfig = .{},
@@ -893,8 +1018,8 @@ pub const ElementDeclarationWithId = struct {
     /// Controls whether and how an element "floats", which means it layers over the top of other elements in z order, and doesn't affect the position and size of siblings or parent elements.
     /// Note: in order to activate floating, `.floating.attachTo` must be set to something other than the default value.
     floating: FloatingElementConfig = .{},
-    /// Used to create CUSTOM render commands, usually to render element types not supported by default.
-    custom: CustomElementConfig = null,
+    /// Whether or not this element will be treated as a widget.
+    widget: bool = false,
     /// Controls whether an element should clip its contents and allow scrolling rather than expanding to contain them.
     clip: ClipElementConfig = .{},
     /// Controls settings related to element borders, and will generate BORDER render command
@@ -902,22 +1027,7 @@ pub const ElementDeclarationWithId = struct {
     /// A pointer that will be transparently passed through to resulting render command
     state: ElementState = .none,
 
-    fn toHeadless(self: ElementDeclarationWithId) HeadlessElementDeclaration {
-        return HeadlessElementDeclaration{
-            .layout = self.layout,
-            .background_color = self.background_color,
-            .corner_radius = self.corner_radius,
-            .aspect_ratio = self.aspect_ratio,
-            .image = self.image,
-            .floating = self.floating,
-            .custom = self.custom,
-            .clip = self.clip,
-            .border = self.border,
-            .state = self.state,
-        };
-    }
-
-    fn toClay(self: ElementDeclarationWithId) clay.ElementDeclaration {
+    fn toClay(self: ElementDeclaration) clay.ElementDeclaration {
         return clay.ElementDeclaration{
             .id = self.id,
             .layout = self.layout,
@@ -926,7 +1036,7 @@ pub const ElementDeclarationWithId = struct {
             .aspect_ratio = .{ .aspect_ratio = self.aspect_ratio },
             .image = imageToClay(self.image),
             .floating = self.floating.toClay(),
-            .custom = .{ .custom_data = self.custom },
+            .custom = .{ .custom_data = @ptrFromInt(@intFromBool(self.widget)) },
             .clip = self.clip.toClay(),
             .border = self.border.toClay(),
             .user_data = self.state.toClay(),
@@ -1033,7 +1143,7 @@ fn clayColorToBatchColor(c: clay.Color) Batch2D.Color {
 
 // --- Backend implementation --- //
 
-fn handleStateSetup(self: *Ui, declaration: ElementDeclarationWithId) !void {
+fn handleStateSetup(self: *Ui, declaration: ElementDeclaration) !void {
     // Add navigable elements to the map in the order they are declared
     if (declaration.state.event_flags.focus) {
         const index = self.navigable_elements.count();
@@ -1639,9 +1749,6 @@ fn generateEvents(self: *Ui) !void {
 
 /// Processes the current array of RenderCommands from Clay and issues draw calls to Batch2D.
 fn draw(self: *Ui) !void {
-    clay.setCurrentContext(self.clay_context); // Needed for text measurement callbacks.
-    defer clay.setCurrentContext(null);
-
     const render_commands = self.render_commands orelse {
         log.debug("Ui.render called without any render commands (did you forget to call Ui.beginLayout/Ui.endLayout?)", .{});
         return;
@@ -1733,10 +1840,10 @@ fn draw(self: *Ui) !void {
             },
             .scissor_start => try self.renderer.scissorStart(pos, size),
             .scissor_end => try self.renderer.scissorEnd(),
-            .custom => if (self.custom_element_renderer) |func| {
-                try func(self, self.user_data, cmd);
-            } else {
-                log.err("Encountered CUSTOM render command but no custom renderer is set up; element will be discarded.", .{});
+            .custom => {
+                const widget = self.widget_states.get(cmd.id).?;
+
+                try widget.render(widget.user_data, self, cmd);
             },
         }
     }
