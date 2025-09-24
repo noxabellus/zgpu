@@ -422,12 +422,12 @@ pub const ElementState = packed struct(usize) {
         _reserved: u10 = 0,
 
         pub const none = Flags{};
-        pub const hoverable = Flags{ .hover = true };
-        pub const scrollable = Flags{ .wheel = true };
-        pub const clickable = Flags{ .click = true };
-        pub const focusable = Flags{ .focus = true };
-        pub const activatable = Flags{ .activate = true };
-        pub const textable = Flags{ .text = true };
+        pub const hoverFlag = Flags{ .hover = true };
+        pub const wheelFlag = Flags{ .wheel = true };
+        pub const clickFlag = Flags{ .click = true };
+        pub const focusFlag = Flags{ .focus = true };
+        pub const activatFlag = Flags{ .activate = true };
+        pub const textFlag = Flags{ .text = true };
         pub const all = Flags{
             .hover = true,
             .wheel = true,
@@ -458,12 +458,12 @@ pub const ElementState = packed struct(usize) {
     };
 
     pub const none = ElementState{ .event_flags = .none };
-    pub const hoverable = ElementState{ .event_flags = .hoverable };
-    pub const scrollable = ElementState{ .event_flags = .scrollable };
-    pub const clickable = ElementState{ .event_flags = .clickable };
-    pub const focusable = ElementState{ .event_flags = .focusable };
-    pub const activatable = ElementState{ .event_flags = .activatable };
-    pub const textable = ElementState{ .event_flags = .textable };
+    pub const hoverFlag = ElementState{ .event_flags = .hoverFlag };
+    pub const wheelFlag = ElementState{ .event_flags = .wheelFlag };
+    pub const clickFlag = ElementState{ .event_flags = .clickFlag };
+    pub const focusFlag = ElementState{ .event_flags = .focusFlag };
+    pub const activatFlag = ElementState{ .event_flags = .activatFlag };
+    pub const textFlag = ElementState{ .event_flags = .textFlag };
     pub const all = ElementState{ .event_flags = .all };
 
     pub fn flags(f: Flags) ElementState {
