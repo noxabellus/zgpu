@@ -554,12 +554,12 @@ pub fn main() !void {
         const delta_time_f32 = @as(f32, @floatFromInt(delta_time_ns)) / std.time.ns_per_s;
 
         // --- Handle Input ---
-        if (bindings.get(.toggle_debugger) == .pressed) {
+        if (bindings.getAction(.toggle_debugger) == .pressed) {
             debug_mode_enabled = !debug_mode_enabled;
             ui.setDebugMode(debug_mode_enabled);
         }
 
-        if (bindings.get(.dump_atlas) == .pressed) {
+        if (bindings.getAction(.dump_atlas) == .pressed) {
             try demo.renderer.atlas.debugWriteAllAtlasesToPng("debug_atlas");
             log.info("finished writing debug_atlas_*.png", .{});
         }

@@ -159,7 +159,7 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
     clay.setLayoutDimensions(vec2ToDims(dimensions));
 
     // Although we inform Clay of current mouse button state, it is only used in debug mode or for drag scrolling.
-    clay.setPointerState(vec2ToClay(self.bindings.getMousePosition()), self.bindings.get(.primary_mouse).isDown());
+    clay.setPointerState(vec2ToClay(self.bindings.getMousePosition()), self.bindings.getAction(.primary_mouse).isDown());
 
     clay.updateScrollContainers(
         false, // never use drag scrolling
@@ -430,7 +430,7 @@ pub const ElementState = packed struct(usize) {
         pub const clickFlag = Flags{ .click = true };
         pub const dragFlag = Flags{ .drag = true };
         pub const focusFlag = Flags{ .focus = true };
-        pub const activateFlag = Flags{ .activate = true };
+        pub const activatFlag = Flags{ .activate = true };
         pub const textFlag = Flags{ .text = true };
         pub const all = Flags{
             .hover = true,
@@ -469,7 +469,7 @@ pub const ElementState = packed struct(usize) {
     pub const clickFlag = ElementState{ .event_flags = .clickFlag };
     pub const dragFlag = ElementState{ .event_flags = .dragFlag };
     pub const focusFlag = ElementState{ .event_flags = .focusFlag };
-    pub const activatFlag = ElementState{ .event_flags = .activateFlag };
+    pub const activatFlag = ElementState{ .event_flags = .activatFlag };
     pub const textFlag = ElementState{ .event_flags = .textFlag };
     pub const all = ElementState{ .event_flags = .all };
 
@@ -894,10 +894,10 @@ fn generateEvents(self: *Ui) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     const mouse_pos = self.bindings.getMousePosition();
-    const primary_mouse_action = self.bindings.get(.primary_mouse);
-    const activate_action = self.bindings.get(.activate_focused);
-    const focus_next_action = self.bindings.get(.focus_next);
-    const focus_prev_action = self.bindings.get(.focus_prev);
+    const primary_mouse_action = self.bindings.getAction(.primary_mouse);
+    const activate_action = self.bindings.getAction(.activate_focused);
+    const focus_next_action = self.bindings.getAction(.focus_next);
+    const focus_prev_action = self.bindings.getAction(.focus_prev);
 
     // The top-most element in the stack is the one we consider "hovered" for this frame.
     if (self.hovered_element_stack.items.len > 0) {
@@ -1118,7 +1118,8 @@ fn generateEvents(self: *Ui) !void {
             // If the mouse is down on a draggable element, we are dragging, so don't clear the active id.
             var is_dragging = false;
             if (primary_mouse_action.isDown() and self.state.active_id != null) {
-                is_dragging = self.state.active_id.?.state.event_flags.drag;
+                const active_elem = self.state.active_id.?;
+                is_dragging = active_elem.state.event_flags.drag;
             }
 
             if (!is_dragging) {
@@ -1129,11 +1130,12 @@ fn generateEvents(self: *Ui) !void {
 
     // --- Generate Drag Event ---
     if (primary_mouse_action.isDown() and self.state.active_id != null) {
-        if (self.state.active_id.?.state.event_flags.drag) {
+        const active_elem = self.state.active_id.?;
+        if (active_elem.state.event_flags.drag) {
             try self.events.append(self.allocator, .{
-                .element_id = self.state.active_id.?.id,
-                .bounding_box = self.state.active_id.?.bounding_box,
-                .user_data = self.state.active_id.?.state.getUserData(),
+                .element_id = active_elem.id,
+                .bounding_box = active_elem.bounding_box,
+                .user_data = active_elem.state.getUserData(),
                 .data = .{ .drag = .{ .mouse_position = mouse_pos } },
             });
         }
