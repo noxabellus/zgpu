@@ -16,6 +16,51 @@ test {
     std.testing.refAllDecls(@This());
 }
 
+/// Manages registration and dispatching of UI events to listeners.
+const EventDispatch = struct {
+    /// Key combines element ID and event type for efficient lookup.
+    const Key = struct {
+        element_id: u32,
+        event_tag: Event.Tag,
+    };
+
+    const Listener = struct {
+        /// Store the function pointer as a generic pointer.
+        func: *const anyopaque,
+        user_data: *anyopaque,
+    };
+
+    /// The value is a list of listeners for a given key.
+    const ListenerList = std.ArrayList(Listener);
+
+    pub fn Handler(comptime T: type, comptime event_tag: Event.Tag) type {
+        return fn (user_data: *T, ui: *Ui, info: Event.Info, payload: Event.Payload(event_tag)) anyerror!void;
+    }
+
+    /// The main storage for all listeners.
+    listeners: std.HashMapUnmanaged(Key, ListenerList, struct {
+        pub fn hash(_: @This(), self: Key) u64 {
+            var hasher = std.hash.Wyhash.init(0);
+            std.hash.autoHash(&hasher, self);
+            return hasher.final();
+        }
+
+        pub fn eql(_: @This(), self: Key, other: Key) bool {
+            return self.element_id == other.element_id and self.event_tag == other.event_tag;
+        }
+    }, 80) = .empty,
+
+    pub const empty = EventDispatch{};
+
+    pub fn deinit(self: *EventDispatch, allocator: std.mem.Allocator) void {
+        var it = self.listeners.iterator();
+        while (it.next()) |entry| {
+            entry.value_ptr.deinit(allocator);
+        }
+        self.listeners.deinit(allocator);
+    }
+};
+
 pub const Vec2 = Batch2D.Vec2;
 pub const Color = Batch2D.Color;
 
@@ -26,8 +71,8 @@ pub const default_bindings = .{
     .activate_focused = BindingState.InputBinding{ .key = .{ .bind_point = .enter } },
 };
 
-allocator: std.mem.Allocator,
-
+gpa: std.mem.Allocator,
+frame_arena: std.mem.Allocator,
 renderer: *Batch2D,
 asset_cache: *AssetCache,
 bindings: *BindingState,
@@ -37,6 +82,8 @@ clay_memory: []const u8,
 
 render_commands: ?[]clay.RenderCommand = null,
 events: std.ArrayList(Event) = .empty,
+
+event_dispatch: EventDispatch = .empty,
 
 custom_element_renderer: ?*const fn (*Ui, ?*anyopaque, clay.RenderCommand) anyerror!void = null,
 user_data: ?*anyopaque = null,
@@ -78,14 +125,14 @@ text_repeat: struct {
     } = .none,
 } = .{},
 
-pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, bindings: *BindingState) !*Ui {
-    const self = try allocator.create(Ui);
-    errdefer allocator.destroy(self);
+pub fn init(gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, bindings: *BindingState) !*Ui {
+    const self = try gpa.create(Ui);
+    errdefer gpa.destroy(self);
 
     // Init Clay
     const min_memory_size = clay.minMemorySize();
-    const clay_memory = try allocator.alloc(u8, min_memory_size);
-    errdefer allocator.free(clay_memory);
+    const clay_memory = try gpa.alloc(u8, min_memory_size);
+    errdefer gpa.free(clay_memory);
 
     const clay_arena = clay.createArenaWithCapacityAndMemory(clay_memory);
     const clay_context = clay.initialize(
@@ -107,7 +154,8 @@ pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *Asse
     );
 
     self.* = Ui{
-        .allocator = allocator,
+        .gpa = gpa,
+        .frame_arena = frame_arena,
         .renderer = renderer,
         .asset_cache = asset_cache,
         .bindings = bindings,
@@ -127,14 +175,15 @@ pub fn init(allocator: std.mem.Allocator, renderer: *Batch2D, asset_cache: *Asse
 }
 
 pub fn deinit(self: *Ui) void {
-    self.events.deinit(self.allocator);
-    self.hovered_element_stack.deinit(self.allocator);
-    self.navigable_elements.deinit(self.allocator);
-    self.reverse_navigable_elements.deinit(self.allocator);
-    self.open_ids.deinit(self.allocator);
+    self.events.deinit(self.gpa);
+    self.hovered_element_stack.deinit(self.gpa);
+    self.navigable_elements.deinit(self.gpa);
+    self.reverse_navigable_elements.deinit(self.gpa);
+    self.open_ids.deinit(self.gpa);
+    self.event_dispatch.deinit(self.gpa);
 
-    self.allocator.free(self.clay_memory);
-    self.allocator.destroy(self);
+    self.gpa.free(self.clay_memory);
+    self.gpa.destroy(self);
 }
 
 /// Call this at any time in the update stage to begin declaring the ui layout. Caller must ensure `Ui.endLayout` is called before the next `Ui.beginLayout` and/or `Ui.render`.
@@ -180,7 +229,7 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
 
 /// End the current layout declaration and finalize the render commands and events.
 /// Must be called after `Ui.beginLayout` and before `Ui.render`.
-pub fn endLayout(self: *Ui) ![]const Event {
+pub fn endLayout(self: *Ui) !void {
     std.debug.assert(self.clay_context == clay.getCurrentContext());
     defer clay.setCurrentContext(null);
 
@@ -188,8 +237,46 @@ pub fn endLayout(self: *Ui) ![]const Event {
     self.render_commands = render_commands;
 
     try self.generateEvents();
+}
 
-    return self.events.items;
+/// Iterates through the generated events and calls any registered listeners.
+pub fn dispatchEvents(self: *Ui) !void {
+    clay.setCurrentContext(self.clay_context);
+    defer clay.setCurrentContext(null);
+
+    for (self.events.items) |event| {
+        const event_tag: Event.Tag = event.data;
+        const key = EventDispatch.Key{ .element_id = event.info.element_id.id, .event_tag = event_tag };
+        log.debug("Attempting to dispatch event {s} for element {any}", .{ @tagName(event_tag), event.info.element_id });
+
+        if (self.event_dispatch.listeners.get(key)) |listener_list| {
+            log.debug("Got {d} listeners", .{listener_list.items.len});
+            // This inline for loop will generate a compile-time branch for each possible event type,
+            // ensuring that the payload is correctly typed when calling the listener function.
+            inline for (comptime std.meta.fieldNames(Event.Tag)) |field_name| inline_loop: {
+                const comptime_tag = comptime @field(Event.Tag, field_name);
+                if (event_tag == comptime_tag) {
+                    const payload = @field(event.data, field_name);
+
+                    for (listener_list.items) |*listener| {
+                        const typed_fn = @as(*const EventDispatch.Handler(anyopaque, comptime_tag), @ptrCast(@alignCast(listener.func)));
+                        log.debug("dispatching event {s} to element {any}", .{ @tagName(comptime_tag), event.info.element_id });
+                        try typed_fn(
+                            listener.user_data,
+                            self,
+                            event.info,
+                            payload,
+                        );
+                        log.debug("dispatched successfully", .{});
+                    }
+
+                    break :inline_loop;
+                }
+            }
+        } else {
+            log.debug("No listeners for this event on this element", .{});
+        }
+    }
 }
 
 /// After calling `Ui.beginLayout` and `Ui.endLayout`, this function issues the generated draw calls to Batch2D to render the UI.
@@ -208,6 +295,55 @@ pub fn setDebugMode(self: *Ui, enabled: bool) void {
     clay.setDebugModeEnabled(enabled);
 }
 
+/// Registers a function to be called when a specific event occurs on a given element.
+pub fn addListener(
+    self: *Ui,
+    element_id: ElementId,
+    comptime event_tag: Event.Tag,
+    comptime T: type,
+    listener_fn: *const EventDispatch.Handler(T, event_tag),
+    user_data: *T,
+) !void {
+    const key = EventDispatch.Key{ .element_id = element_id.id, .event_tag = event_tag };
+
+    var gop = try self.event_dispatch.listeners.getOrPut(self.gpa, key);
+    if (!gop.found_existing) {
+        // Initialize the ArrayList if this is a new key.
+        gop.value_ptr.* = .empty;
+    }
+
+    try gop.value_ptr.append(self.gpa, .{
+        .func = listener_fn,
+        .user_data = user_data,
+    });
+}
+
+/// Removes the registered listener that uses the given function pointer for a specific event on a given element.
+pub fn removeListener(
+    self: *Ui,
+    element_id: ElementId,
+    comptime event_tag: Event.Tag,
+    comptime T: type,
+    listener_fn: *const EventDispatch.Handler(T, event_tag),
+) void {
+    const key = EventDispatch.Key{ .element_id = element_id.id, .event_tag = event_tag };
+    if (self.event_dispatch.listeners.getPtr(key)) |listener_list| {
+        var i = listener_list.items.len;
+        while (i > 0) {
+            i -= 1;
+            if (listener_list.items[i].func == listener_fn) {
+                _ = listener_list.orderedRemove(i);
+            }
+        }
+        // If the list is now empty, we can remove the key from the hash map to save memory.
+        if (listener_list.items.len == 0) {
+            listener_list.deinit(self.gpa);
+            const success = self.event_dispatch.listeners.remove(key);
+            std.debug.assert(success);
+        }
+    }
+}
+
 // --- Element Interface ---
 
 /// Create a new, unconfigured element.
@@ -216,7 +352,7 @@ pub fn setDebugMode(self: *Ui, enabled: bool) void {
 pub fn beginElement(self: *Ui, id: ElementId) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    try self.open_ids.append(self.allocator, id);
+    try self.open_ids.append(self.gpa, id);
 
     clay.beginElement();
 }
@@ -240,7 +376,7 @@ pub fn configureElement(self: *Ui, declaration: HeadlessElementDeclaration) !voi
 pub fn openElement(self: *Ui, declaration: ElementDeclarationWithId) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    try self.open_ids.append(self.allocator, declaration.id);
+    try self.open_ids.append(self.gpa, declaration.id);
 
     clay.beginElement();
     clay.configureElement(declaration.toClay());
@@ -342,24 +478,45 @@ pub fn lastFocusedId(self: *Ui) ?ElementId {
     return self.last_state.focusedId();
 }
 
+/// Get the offset data for a character within the only text element inside the element with the given id.
+pub fn getCharacterOffset(self: *Ui, id: ElementId, char_index: u32) ?CharacterOffset {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    return clay.getCharacterOffset(id, char_index);
+}
+
+pub fn getCharacterIndexAtOffset(self: *Ui, id: ElementId, offset: Vec2) ?u32 {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    return clay.getCharacterIndexAtOffset(id, vec2ToClay(offset));
+}
+
 // --- Structures ---
 
 pub const Event = struct {
-    element_id: ElementId,
-    bounding_box: BoundingBox,
-    user_data: ?*anyopaque,
+    info: Info,
     data: Data,
 
+    pub const Tag = std.meta.Tag(Data);
+
+    pub fn Payload(comptime tag: Tag) type {
+        return std.meta.TagPayload(Data, tag);
+    }
+
+    pub const Info = struct {
+        element_id: ElementId,
+        bounding_box: BoundingBox,
+        user_data: ?*anyopaque,
+    };
+
     pub const Data = union(enum) {
-        hover_begin: struct { mouse_position: Vec2 },
-        hovering: struct { mouse_position: Vec2 },
-        hover_end: struct { mouse_position: Vec2 },
+        hover_begin: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
+        hovering: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
+        hover_end: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
 
-        mouse_down: struct { mouse_position: Vec2 },
-        mouse_up: struct { mouse_position: Vec2, end_element: ?ElementId },
-        clicked: struct { mouse_position: Vec2 },
+        mouse_down: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
+        mouse_up: struct { mouse_position: Vec2, end_element: ?ElementId, modifiers: BindingState.Modifiers },
+        clicked: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
 
-        drag: struct { mouse_position: Vec2 },
+        drag: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
 
         text: union(enum) {
             chars: []const BindingState.Char,
@@ -369,7 +526,7 @@ pub const Event = struct {
             },
         },
 
-        wheel: struct { delta: Vec2 },
+        wheel: struct { delta: Vec2, modifiers: BindingState.Modifiers },
 
         focus_gained: void,
         focusing: void,
@@ -377,7 +534,7 @@ pub const Event = struct {
 
         activate_begin: void,
         activating: void,
-        activate_end: struct { end_element: ?ElementId },
+        activate_end: struct { end_element: ?ElementId, modifiers: BindingState.Modifiers },
 
         key_down: struct {
             key: BindingState.Key,
@@ -575,6 +732,8 @@ pub const LayoutAlignmentY = clay.LayoutAlignmentY;
 pub const ChildAlignment = clay.ChildAlignment;
 pub const BorderWidth = clay.BorderWidth;
 pub const LayoutConfig = clay.LayoutConfig;
+pub const CharacterOffset = clay.CharacterOffset;
+pub const RenderCommand = clay.RenderCommand;
 
 pub const AspectRatioElementConfig = f32;
 pub const ImageElementConfig = ?AssetCache.ImageId;
@@ -878,15 +1037,15 @@ fn handleStateSetup(self: *Ui, declaration: ElementDeclarationWithId) !void {
     // Add navigable elements to the map in the order they are declared
     if (declaration.state.event_flags.focus) {
         const index = self.navigable_elements.count();
-        try self.navigable_elements.put(self.allocator, index, .{ .id = declaration.id, .state = declaration.state });
-        try self.reverse_navigable_elements.put(self.allocator, declaration.id.id, index);
+        try self.navigable_elements.put(self.gpa, index, .{ .id = declaration.id, .state = declaration.state });
+        try self.reverse_navigable_elements.put(self.gpa, declaration.id.id, index);
     }
 
     // If the element is hovered, push it to our stack of hovered elements.
     if (clay.hovered()) {
         const hovered_data = clay.getElementData(declaration.id);
         if (hovered_data.found) {
-            try self.hovered_element_stack.append(self.allocator, .{
+            try self.hovered_element_stack.append(self.gpa, .{
                 .id = declaration.id,
                 .bounding_box = hovered_data.bounding_box,
                 .state = declaration.state,
@@ -899,7 +1058,7 @@ fn handleStateSetup(self: *Ui, declaration: ElementDeclarationWithId) !void {
         const offset = declaration.clip.child_offset;
         const scrolled_data = clay.getElementData(declaration.id);
         if (scrolled_data.found) {
-            try self.current_scroll_states.put(self.allocator, declaration.id.id, .{ .offset = offset, .elem_state = .{
+            try self.current_scroll_states.put(self.gpa, declaration.id.id, .{ .offset = offset, .elem_state = .{
                 .id = declaration.id,
                 .bounding_box = scrolled_data.bounding_box,
                 .state = declaration.state,
@@ -953,6 +1112,8 @@ fn generateEvents(self: *Ui) !void {
     const focus_next_action = self.bindings.getAction(.focus_next);
     const focus_prev_action = self.bindings.getAction(.focus_prev);
 
+    const modifiers = self.bindings.input_state.getModifiers();
+
     // The top-most element in the stack is the one we consider "hovered" for this frame.
     if (self.hovered_element_stack.items.len > 0) {
         self.state.hovered = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1];
@@ -965,10 +1126,12 @@ fn generateEvents(self: *Ui) !void {
         if (focused_elem.state.event_flags.text) {
             // Handle character input
             if (self.char_input.len > 0) {
-                try self.events.append(self.allocator, .{
-                    .element_id = focused_elem.id,
-                    .bounding_box = focused_elem.bounding_box,
-                    .user_data = focused_elem.state.getUserData(),
+                try self.events.append(self.gpa, .{
+                    .info = .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                    },
                     .data = .{ .text = .{ .chars = self.char_input } },
                 });
                 processed_text_input = true;
@@ -986,7 +1149,6 @@ fn generateEvents(self: *Ui) !void {
             const home_down = self.bindings.input_state.getKey(.home).isDown();
             const end_down = self.bindings.input_state.getKey(.end).isDown();
 
-            const modifiers = self.bindings.input_state.getModifiers();
             const copy_down = self.bindings.input_state.getKey(.c).isDown();
             const paste_down = self.bindings.input_state.getKey(.v).isDown();
 
@@ -1012,87 +1174,111 @@ fn generateEvents(self: *Ui) !void {
                 self.text_repeat.timer.reset();
 
                 if (delete_down) {
-                    try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .text = .{ .command = .{ .action = .delete, .modifiers = modifiers } } },
                     });
                 } else if (backspace_down) {
-                    try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .text = .{ .command = .{ .action = .backspace, .modifiers = modifiers } } },
                     });
                 } else if (enter_down) {
-                    try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .text = .{ .command = .{ .action = .newline, .modifiers = modifiers } } },
                     });
                 } else if (copy_down) {
-                    try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .text = .{ .command = .{ .action = .copy, .modifiers = modifiers } } },
                     });
                 } else if (paste_down) {
-                    try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .text = .{ .command = .{ .action = .paste, .modifiers = modifiers } } },
                     });
                 } else if (l_arrow_down) {
-                    try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .text = .{ .command = .{ .action = .move_left, .modifiers = modifiers } } },
                     });
                 } else if (r_arrow_down) {
-                    try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .text = .{ .command = .{ .action = .move_right, .modifiers = modifiers } } },
                     });
                 } else if (u_arrow_down) {
-                    try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .text = .{ .command = .{ .action = .move_up, .modifiers = modifiers } } },
                     });
                 } else if (d_arrow_down) {
-                    try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .text = .{ .command = .{ .action = .move_down, .modifiers = modifiers } } },
                     });
                 } else if (home_down) {
-                    try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .text = .{ .command = .{ .action = .home, .modifiers = modifiers } } },
                     });
                 } else if (end_down) {
-                    try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .text = .{ .command = .{ .action = .end, .modifiers = modifiers } } },
                     });
                 } else if (a_down) {
-                    try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .text = .{ .command = .{ .action = .select_all, .modifiers = modifiers } } },
                     });
                 }
@@ -1106,29 +1292,34 @@ fn generateEvents(self: *Ui) !void {
     // --- Handle Keyboard Events ---
     if (self.state.focused_id) |focused_elem| {
         if (focused_elem.state.event_flags.keyboard) {
-            const modifiers = self.bindings.input_state.getModifiers();
             inline for (comptime std.meta.fieldNames(BindingState.Key)) |field_name| {
                 const key: BindingState.Key = @field(BindingState.Key, field_name);
                 const key_state = self.bindings.input_state.getKey(key);
 
                 switch (key_state) {
                     .none => {},
-                    .pressed => try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    .pressed => try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .key_down = .{ .key = key, .modifiers = modifiers } },
                     }),
-                    .held => try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    .held => try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .key = .{ .key = key, .modifiers = modifiers } },
                     }),
-                    .released => try self.events.append(self.allocator, .{
-                        .element_id = focused_elem.id,
-                        .bounding_box = focused_elem.bounding_box,
-                        .user_data = focused_elem.state.getUserData(),
+                    .released => try self.events.append(self.gpa, .{
+                        .info = .{
+                            .element_id = focused_elem.id,
+                            .bounding_box = focused_elem.bounding_box,
+                            .user_data = focused_elem.state.getUserData(),
+                        },
                         .data = .{ .key_up = .{ .key = key, .modifiers = modifiers } },
                     }),
                 }
@@ -1141,18 +1332,22 @@ fn generateEvents(self: *Ui) !void {
     if (self.last_state.hovered) |last_hovered| {
         if (last_hovered.state.event_flags.hover) {
             if (last_hovered.id.id != self.state.hoveredIdValue()) { // Mouse moved out of the previously hovered element.
-                try self.events.append(self.allocator, .{
-                    .element_id = last_hovered.id,
-                    .bounding_box = last_hovered.bounding_box,
-                    .user_data = last_hovered.state.getUserData(),
-                    .data = .{ .hover_end = .{ .mouse_position = clampToBox(last_hovered.bounding_box, mouse_pos) } },
+                try self.events.append(self.gpa, .{
+                    .info = .{
+                        .element_id = last_hovered.id,
+                        .bounding_box = last_hovered.bounding_box,
+                        .user_data = last_hovered.state.getUserData(),
+                    },
+                    .data = .{ .hover_end = .{ .mouse_position = clampToBox(last_hovered.bounding_box, mouse_pos), .modifiers = modifiers } },
                 });
             } else { // Mouse remains over the previously hovered element.
-                try self.events.append(self.allocator, .{
-                    .element_id = last_hovered.id,
-                    .bounding_box = last_hovered.bounding_box,
-                    .user_data = last_hovered.state.getUserData(),
-                    .data = .{ .hovering = .{ .mouse_position = mouse_pos } },
+                try self.events.append(self.gpa, .{
+                    .info = .{
+                        .element_id = last_hovered.id,
+                        .bounding_box = last_hovered.bounding_box,
+                        .user_data = last_hovered.state.getUserData(),
+                    },
+                    .data = .{ .hovering = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
                 });
             }
         }
@@ -1161,11 +1356,13 @@ fn generateEvents(self: *Ui) !void {
     if (self.state.hoveredIdValue() != self.last_state.hoveredIdValue()) {
         if (self.state.hovered) |new_hovered| { // A new element is now hovered.
             if (new_hovered.state.event_flags.hover) {
-                try self.events.append(self.allocator, .{
-                    .element_id = new_hovered.id,
-                    .bounding_box = new_hovered.bounding_box,
-                    .user_data = new_hovered.state.getUserData(),
-                    .data = .{ .hover_begin = .{ .mouse_position = mouse_pos } },
+                try self.events.append(self.gpa, .{
+                    .info = .{
+                        .element_id = new_hovered.id,
+                        .bounding_box = new_hovered.bounding_box,
+                        .user_data = new_hovered.state.getUserData(),
+                    },
+                    .data = .{ .hover_begin = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
                 });
             }
         }
@@ -1219,11 +1416,13 @@ fn generateEvents(self: *Ui) !void {
     if (primary_mouse_action.isDown() and self.state.active_id != null) {
         const active_elem = self.state.active_id.?;
         if (active_elem.state.event_flags.drag) {
-            try self.events.append(self.allocator, .{
-                .element_id = active_elem.id,
-                .bounding_box = active_elem.bounding_box,
-                .user_data = active_elem.state.getUserData(),
-                .data = .{ .drag = .{ .mouse_position = mouse_pos } },
+            try self.events.append(self.gpa, .{
+                .info = .{
+                    .element_id = active_elem.id,
+                    .bounding_box = active_elem.bounding_box,
+                    .user_data = active_elem.state.getUserData(),
+                },
+                .data = .{ .drag = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
             });
         }
     }
@@ -1248,19 +1447,23 @@ fn generateEvents(self: *Ui) !void {
     if (primary_mouse_action == .released and self.last_state.active_id != null) {
         const last_active = self.last_state.active_id.?;
         if (last_active.state.event_flags.click) {
-            try self.events.append(self.allocator, .{
-                .element_id = last_active.id,
-                .bounding_box = last_active.bounding_box,
-                .user_data = last_active.state.getUserData(),
-                .data = .{ .mouse_up = .{ .mouse_position = mouse_pos, .end_element = self.state.hoveredId() } },
-            });
-
-            if (last_active.id.id == self.state.hoveredIdValue()) {
-                try self.events.append(self.allocator, .{
+            try self.events.append(self.gpa, .{
+                .info = .{
                     .element_id = last_active.id,
                     .bounding_box = last_active.bounding_box,
                     .user_data = last_active.state.getUserData(),
-                    .data = .{ .clicked = .{ .mouse_position = mouse_pos } },
+                },
+                .data = .{ .mouse_up = .{ .mouse_position = mouse_pos, .end_element = self.state.hoveredId(), .modifiers = modifiers } },
+            });
+
+            if (last_active.id.id == self.state.hoveredIdValue()) {
+                try self.events.append(self.gpa, .{
+                    .info = .{
+                        .element_id = last_active.id,
+                        .bounding_box = last_active.bounding_box,
+                        .user_data = last_active.state.getUserData(),
+                    },
+                    .data = .{ .clicked = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
                 });
             }
         }
@@ -1270,38 +1473,46 @@ fn generateEvents(self: *Ui) !void {
     if (self.state.activeIdValue() != self.last_state.activeIdValue()) {
         if (self.last_state.active_id) |last_active| {
             if (last_active.state.event_flags.activate) {
-                try self.events.append(self.allocator, .{
-                    .element_id = last_active.id,
-                    .bounding_box = last_active.bounding_box,
-                    .user_data = last_active.state.getUserData(),
-                    .data = .{ .activate_end = .{ .end_element = self.state.hoveredId() } },
+                try self.events.append(self.gpa, .{
+                    .info = .{
+                        .element_id = last_active.id,
+                        .bounding_box = last_active.bounding_box,
+                        .user_data = last_active.state.getUserData(),
+                    },
+                    .data = .{ .activate_end = .{ .end_element = self.state.hoveredId(), .modifiers = modifiers } },
                 });
             }
         }
         if (self.state.active_id) |new_active| {
             if (is_mouse_activating and new_active.state.event_flags.click) {
-                try self.events.append(self.allocator, .{
-                    .element_id = new_active.id,
-                    .bounding_box = new_active.bounding_box,
-                    .user_data = new_active.state.getUserData(),
-                    .data = .{ .mouse_down = .{ .mouse_position = mouse_pos } },
+                try self.events.append(self.gpa, .{
+                    .info = .{
+                        .element_id = new_active.id,
+                        .bounding_box = new_active.bounding_box,
+                        .user_data = new_active.state.getUserData(),
+                    },
+                    .data = .{ .mouse_down = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
                 });
             }
             if (new_active.state.event_flags.activate) {
-                try self.events.append(self.allocator, .{
-                    .element_id = new_active.id,
-                    .bounding_box = new_active.bounding_box,
-                    .user_data = new_active.state.getUserData(),
+                try self.events.append(self.gpa, .{
+                    .info = .{
+                        .element_id = new_active.id,
+                        .bounding_box = new_active.bounding_box,
+                        .user_data = new_active.state.getUserData(),
+                    },
                     .data = .activate_begin,
                 });
             }
         }
     } else if (self.state.active_id) |active_elem| {
         if (active_elem.state.event_flags.activate) {
-            try self.events.append(self.allocator, .{
-                .element_id = active_elem.id,
-                .bounding_box = active_elem.bounding_box,
-                .user_data = active_elem.state.getUserData(),
+            try self.events.append(self.gpa, .{
+                .info = .{
+                    .element_id = active_elem.id,
+                    .bounding_box = active_elem.bounding_box,
+                    .user_data = active_elem.state.getUserData(),
+                },
                 .data = .activating,
             });
         }
@@ -1351,28 +1562,34 @@ fn generateEvents(self: *Ui) !void {
     // --- Generate Focus Change Events ---
     if (self.state.focusedIdValue() != self.last_state.focusedIdValue()) {
         if (self.last_state.focused_id) |last_focused| {
-            try self.events.append(self.allocator, .{
-                .element_id = last_focused.id,
-                .bounding_box = last_focused.bounding_box,
-                .user_data = last_focused.state.getUserData(),
+            try self.events.append(self.gpa, .{
+                .info = .{
+                    .element_id = last_focused.id,
+                    .bounding_box = last_focused.bounding_box,
+                    .user_data = last_focused.state.getUserData(),
+                },
                 .data = .focus_lost,
             });
         }
         if (self.state.focused_id) |new_focused| {
-            try self.events.append(self.allocator, .{
-                .element_id = new_focused.id,
-                .bounding_box = new_focused.bounding_box,
-                .user_data = new_focused.state.getUserData(),
+            try self.events.append(self.gpa, .{
+                .info = .{
+                    .element_id = new_focused.id,
+                    .bounding_box = new_focused.bounding_box,
+                    .user_data = new_focused.state.getUserData(),
+                },
                 .data = .focus_gained,
             });
         }
     }
 
     if (self.state.focused_id) |focused_elem| {
-        try self.events.append(self.allocator, .{
-            .element_id = focused_elem.id,
-            .bounding_box = focused_elem.bounding_box,
-            .user_data = focused_elem.state.getUserData(),
+        try self.events.append(self.gpa, .{
+            .info = .{
+                .element_id = focused_elem.id,
+                .bounding_box = focused_elem.bounding_box,
+                .user_data = focused_elem.state.getUserData(),
+            },
             .data = .focusing,
         });
     }
@@ -1383,11 +1600,13 @@ fn generateEvents(self: *Ui) !void {
         for (self.hovered_element_stack.items, 0..) |_, i| {
             const hovered_state = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1 - i];
             if (hovered_state.state.event_flags.wheel) {
-                try self.events.append(self.allocator, .{
-                    .element_id = hovered_state.id,
-                    .bounding_box = hovered_state.bounding_box,
-                    .user_data = hovered_state.state.getUserData(),
-                    .data = .{ .wheel = .{ .delta = self.wheel_delta } },
+                try self.events.append(self.gpa, .{
+                    .info = .{
+                        .element_id = hovered_state.id,
+                        .bounding_box = hovered_state.bounding_box,
+                        .user_data = hovered_state.state.getUserData(),
+                    },
+                    .data = .{ .wheel = .{ .delta = self.wheel_delta, .modifiers = modifiers } },
                 });
                 // Once a wheel container is found, stop propagating the event.
                 break;
@@ -1402,10 +1621,12 @@ fn generateEvents(self: *Ui) !void {
         const last_state = self.last_scroll_states.get(entry.key_ptr.*) orelse continue;
         if (curr_state.offset.x != last_state.offset.x or curr_state.offset.y != last_state.offset.y) {
             if (curr_state.elem_state.state.event_flags.scroll) {
-                try self.events.append(self.allocator, .{
-                    .element_id = curr_state.elem_state.id,
-                    .bounding_box = curr_state.elem_state.bounding_box,
-                    .user_data = curr_state.elem_state.state.getUserData(),
+                try self.events.append(self.gpa, .{
+                    .info = .{
+                        .element_id = curr_state.elem_state.id,
+                        .bounding_box = curr_state.elem_state.bounding_box,
+                        .user_data = curr_state.elem_state.state.getUserData(),
+                    },
                     .data = .{ .scroll = .{ .old_offset = last_state.offset, .new_offset = curr_state.offset, .delta = .{
                         .x = curr_state.offset.x - last_state.offset.x,
                         .y = curr_state.offset.y - last_state.offset.y,
@@ -1418,6 +1639,9 @@ fn generateEvents(self: *Ui) !void {
 
 /// Processes the current array of RenderCommands from Clay and issues draw calls to Batch2D.
 fn draw(self: *Ui) !void {
+    clay.setCurrentContext(self.clay_context); // Needed for text measurement callbacks.
+    defer clay.setCurrentContext(null);
+
     const render_commands = self.render_commands orelse {
         log.debug("Ui.render called without any render commands (did you forget to call Ui.beginLayout/Ui.endLayout?)", .{});
         return;
