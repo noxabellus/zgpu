@@ -33,8 +33,8 @@ pub extern var Clay__debugViewWidth: u32;
 
 /// for direct calls to the clay C library
 pub const cdefs = struct {
-    pub extern fn Clay_GetCharacterIndexAtOffset(id: ElementId, offset: Vector2) CharacterIndexResult;
-    pub extern fn Clay_GetCharacterOffset(id: ElementId, char_index: u32) CharacterOffset;
+    pub extern fn Clay_GetCharacterIndexAtOffset(id: ElementId, offset: Vector2) cdefs.CharacterIndexResult;
+    pub extern fn Clay_GetCharacterOffset(id: ElementId, char_index: u32) cdefs.CharacterOffset;
     pub extern fn Clay_GetElementData(id: ElementId) ElementData;
     pub extern fn Clay_MinMemorySize() u32;
     pub extern fn Clay_CreateArenaWithCapacityAndMemory(capacity: usize, memory: ?*anyopaque) Arena;
@@ -74,25 +74,63 @@ pub const cdefs = struct {
     pub extern fn Clay__HashString(key: String, offset: u32, seed: u32) ElementId;
     pub extern fn Clay__OpenTextElement(text: String, textConfig: *TextElementConfig) void;
     pub extern fn Clay__GetParentElementId() u32;
+
+    pub const CharacterOffset = extern struct {
+        // The x,y offset of the character relative to the top-left corner of the text element's content area.
+        offset: Vector2,
+        // The height of the line the character is on. Useful for rendering a caret.
+        line_height: f32,
+        // Indicates whether a text element was found with the provided ID and the index was valid.
+        found: bool,
+    };
+
+    pub const CharacterIndexResult = extern struct {
+        // The zero-based index of the character in the original string that is closest to the provided offset.
+        index: u32,
+        // Indicates whether a text element was found and an index could be determined.
+        found: bool,
+    };
 };
 
 pub const EnumBackingType = u8;
 
-pub const CharacterOffset = extern struct {
+pub const CharacterOffset = struct {
     // The x,y offset of the character relative to the top-left corner of the text element's content area.
     offset: Vector2,
     // The height of the line the character is on. Useful for rendering a caret.
     line_height: f32,
-    // Indicates whether a text element was found with the provided ID and the index was valid.
-    found: bool,
 };
+// Calculates the relative offset of a character within a text element.
+//
+// This function is essential for implementing features like text input carets or selection highlighting.
+// It accounts for word wrapping, font metrics, and text alignment as calculated during the last layout pass.
+//
+// - elementId is the ID of the target text element.
+// - characterIndex is the zero-based index of the character within the original string. To get the position for a caret after the last character, use the string's length.
+// - returns a CharacterOffset struct containing the relative x,y position, and the line height; if it was found. The offset is relative to the top-left of the element's content area (inside padding).
 
-pub const CharacterIndexResult = extern struct {
-    // The zero-based index of the character in the original string that is closest to the provided offset.
-    index: u32,
-    // Indicates whether a text element was found and an index could be determined.
-    found: bool,
-};
+pub fn getCharacterOffset(id: ElementId, char_index: u32) ?CharacterOffset {
+    const result = cdefs.Clay_GetCharacterOffset(id, char_index);
+    if (!result.found) return null;
+    return CharacterOffset{
+        .offset = result.offset,
+        .line_height = result.line_height,
+    };
+}
+
+// Calculates the character index within a text element that is closest to a given x,y offset.
+//
+// This function is the inverse of Clay_GetCharacterOffset and is essential for mouse interaction,
+// such as clicking to position a text caret. It correctly handles word wrapping and text alignment.
+//
+// - elementId is the ID of the target text element.
+// - offset is the x,y offset from the top-left corner of the text element's content area (inside padding).
+// - returns a Clay_CharacterIndexResult struct containing the closest character index and a 'found' flag.
+pub fn getCharacterIndexAtOffset(id: ElementId, offset: Vector2) ?u32 {
+    const result = cdefs.Clay_GetCharacterIndexAtOffset(id, offset);
+    if (!result.found) return null;
+    return result.index;
+}
 
 /// Clay String representation, not guaranteed to be null terminated
 pub const String = extern struct {
@@ -833,26 +871,6 @@ pub fn elem(config: ElementDeclaration) void {
     openElement(config);
     closeElement();
 }
-
-// Calculates the relative offset of a character within a text element.
-//
-// This function is essential for implementing features like text input carets or selection highlighting.
-// It accounts for word wrapping, font metrics, and text alignment as calculated during the last layout pass.
-//
-// - elementId is the ID of the target text element.
-// - characterIndex is the zero-based index of the character within the original string. To get the position for a caret after the last character, use the string's length.
-// - returns a Clay_CharacterOffset struct containing the relative x,y position, the line height, and a 'found' flag. The offset is relative to the top-left of the element's content area (inside padding).
-pub const getCharacterOffset = cdefs.Clay_GetCharacterOffset;
-
-// Calculates the character index within a text element that is closest to a given x,y offset.
-//
-// This function is the inverse of Clay_GetCharacterOffset and is essential for mouse interaction,
-// such as clicking to position a text caret. It correctly handles word wrapping and text alignment.
-//
-// - elementId is the ID of the target text element.
-// - offset is the x,y offset from the top-left corner of the text element's content area (inside padding).
-// - returns a Clay_CharacterIndexResult struct containing the closest character index and a 'found' flag.
-pub const getCharacterIndexAtOffset = cdefs.Clay_GetCharacterIndexAtOffset;
 
 /// Returns layout data for an element with the given ID
 /// The returned data includes the element's position and size
