@@ -1,4 +1,4 @@
-//! An example of the new UI wrapper over Ui.
+//! An example of the new UI wrapper over clay.
 
 const std = @import("std");
 const log = std.log.scoped(.main);
