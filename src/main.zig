@@ -47,18 +47,18 @@ var FONT_ID_MONO: AssetCache.FontId = undefined;
 var zig_logo_image_id: AssetCache.ImageId = undefined;
 var wgpu_logo_image_id: AssetCache.ImageId = undefined;
 
-const COLOR_LIGHT = Ui.Color.init(244, 235, 230, 255);
-const COLOR_LIGHT_HOVER = Ui.Color.init(224, 215, 210, 255);
-const COLOR_BUTTON_HOVER = Ui.Color.init(238, 227, 225, 255);
-const COLOR_BROWN = Ui.Color.init(61, 26, 5, 255);
-const COLOR_RED = Ui.Color.init(168, 66, 28, 255);
-const COLOR_RED_HOVER = Ui.Color.init(148, 46, 8, 255);
-const COLOR_ORANGE = Ui.Color.init(225, 138, 50, 255);
-const COLOR_BLUE = Ui.Color.init(111, 173, 162, 255);
-const COLOR_TEAL = Ui.Color.init(111, 173, 162, 255);
-const COLOR_BLUE_DARK = Ui.Color.init(2, 32, 82, 255);
-const COLOR_NONE = Ui.Color.init(0, 0, 0, 255);
-const COLOR_WHITE = Ui.Color.init(255, 255, 255, 255);
+const COLOR_LIGHT = Ui.Color.fromLinearU8(244, 235, 230, 255);
+const COLOR_LIGHT_HOVER = Ui.Color.fromLinearU8(224, 215, 210, 255);
+const COLOR_BUTTON_HOVER = Ui.Color.fromLinearU8(238, 227, 225, 255);
+const COLOR_BROWN = Ui.Color.fromLinearU8(61, 26, 5, 255);
+const COLOR_RED = Ui.Color.fromLinearU8(168, 66, 28, 255);
+const COLOR_RED_HOVER = Ui.Color.fromLinearU8(148, 46, 8, 255);
+const COLOR_ORANGE = Ui.Color.fromLinearU8(225, 138, 50, 255);
+const COLOR_BLUE = Ui.Color.fromLinearU8(111, 173, 162, 255);
+const COLOR_TEAL = Ui.Color.fromLinearU8(111, 173, 162, 255);
+const COLOR_BLUE_DARK = Ui.Color.fromLinearU8(2, 32, 82, 255);
+const COLOR_NONE = Ui.Color.fromLinearU8(0, 0, 0, 255);
+const COLOR_WHITE = Ui.Color.fromLinearU8(255, 255, 255, 255);
 
 const test_text_default = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla feugiat convallis viverra.\nNulla luctus odio arcu. Cras pellentesque vitae lorem vel egestas.\n";
 
@@ -69,6 +69,7 @@ fn createLayout(ui: *Ui) !void {
             .sizing = .grow,
             .direction = .top_to_bottom,
             .child_alignment = .center,
+            .child_gap = 10,
         },
         .background_color = COLOR_LIGHT,
     });
@@ -108,6 +109,30 @@ fn createLayout(ui: *Ui) !void {
             .font_size = 16,
             .color = COLOR_BLUE,
             .line_height = 20,
+        });
+    }
+
+    {
+        try ui.beginElement(.fromSlice("SliderTest"));
+        defer ui.closeElement();
+
+        try ui.configureElement(.{
+            .layout = .{
+                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+            },
+            .widget = true,
+            .state = .flags(.{
+                .click = true,
+                .drag = true,
+            }),
+        });
+
+        try ui.bindSliderF32(.{
+            .min = 0.0,
+            .max = 1.0,
+            .default = 0.5,
+            .track_color = COLOR_LIGHT_HOVER,
+            .handle_color = COLOR_ORANGE,
         });
     }
 }
@@ -268,6 +293,18 @@ pub fn main() !void {
                 log.info("TextInput text changed: {s}", .{new_text});
             }
         }.text_change_listener,
+        undefined,
+    );
+
+    try ui.addListener(
+        .fromSlice("SliderTest"),
+        .f32_change,
+        anyopaque, // The type of our user_data pointer
+        &struct {
+            pub fn slider_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.f32_change)) anyerror!void {
+                log.info("Slider value changed: {d}", .{new_value});
+            }
+        }.slider_value_listener,
         undefined,
     );
 

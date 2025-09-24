@@ -281,7 +281,7 @@ fn findPrevWordBreak(text: []const u8, start_index: u32) u32 {
     return idx;
 }
 
-pub fn renderTextInput(self: *TextInputWidget, ui: *Ui, command: Ui.RenderCommand) !void {
+pub fn render(self: *TextInputWidget, ui: *Ui, command: Ui.RenderCommand) !void {
     const caret_list = self.selection_render_data.carets;
 
     const selection_color = Ui.Color.init(0.75, 0, 0.75, 0.5);

@@ -48,12 +48,30 @@ pub const Color = struct {
     pub const magenta = Color{ .r = 1.0, .g = 0.0, .b = 1.0, .a = 1.0 };
     pub const yellow = Color{ .r = 1.0, .g = 1.0, .b = 0.0, .a = 1.0 };
 
+    fn convertLinear(c: f32) f32 {
+        if (c <= 0.04045) {
+            return c / 12.92;
+        } else {
+            return std.math.pow(f32, (c + 0.055) / 1.055, 2.4);
+        }
+    }
+
     pub fn withAlpha(self: Color, new_alpha: f32) Color {
         return Color{ .r = self.r, .g = self.g, .b = self.b, .a = new_alpha };
     }
 
     pub fn init(r: f32, g: f32, b: f32, a: f32) Color {
         return Color{ .r = r, .g = g, .b = b, .a = a };
+    }
+
+    pub fn fromLinearU8(r: u8, g: u8, b: u8, a: u8) Color {
+        const inv_255 = 1.0 / 255.0;
+        return Color{
+            .r = convertLinear(@as(f32, @floatFromInt(r)) * inv_255),
+            .g = convertLinear(@as(f32, @floatFromInt(g)) * inv_255),
+            .b = convertLinear(@as(f32, @floatFromInt(b)) * inv_255),
+            .a = convertLinear(@as(f32, @floatFromInt(a)) * inv_255),
+        };
     }
 
     pub fn lerp(a: Color, b: Color, amount: f32) Color {

@@ -23,6 +23,7 @@ pub const Widget = struct {
     deinit: *const fn (*anyopaque, *Ui) void,
 
     pub const TextInput = @import("widgets/TextInput.zig");
+    pub const SliderF32 = @import("widgets/SliderF32.zig");
 
     test {
         log.debug("semantic analysis for Ui.Widgets", .{});
@@ -359,7 +360,7 @@ pub fn beginElement(self: *Ui, id: ElementId) !void {
 
 /// Configure the current element opened with `Ui.beginElement`.
 /// * See also `Ui.openElement`, `Ui.elem`.
-pub fn configureElement(self: *Ui, declaration: Headless(ElementDeclaration)) !void {
+pub fn configureElement(self: *Ui, declaration: HeadlessElementDeclaration) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     const id = self.open_ids.items[self.open_ids.items.len - 1];
@@ -426,7 +427,7 @@ pub fn bindTextInput(self: *Ui, default_value: []const u8, config: Widget.TextIn
         const ptr = try Widget.TextInput.init(self, id, default_value);
         gop.value_ptr.* = Widget{
             .user_data = ptr,
-            .render = @ptrCast(&Widget.TextInput.renderTextInput),
+            .render = @ptrCast(&Widget.TextInput.render),
             .unbind = @ptrCast(&Widget.TextInput.unbindEvents),
             .deinit = @ptrCast(&Widget.TextInput.deinit),
         };
@@ -443,6 +444,44 @@ pub fn bindTextInput(self: *Ui, default_value: []const u8, config: Widget.TextIn
     try self.widgets_seen.put(self.gpa, id.id, {});
 
     try self.text(widget.currentText(), config.toFull());
+}
+
+/// Configure an open element as a slider widget, for f32 floats.
+pub fn bindSliderF32(self: *Ui, config: Widget.SliderF32.Config) !void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
+    const id = self.open_ids.items[self.open_ids.items.len - 1];
+    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
+    const widget: *Widget.SliderF32 = if (!gop.found_existing) create_new: {
+        const ptr = try Widget.SliderF32.init(self, id, config);
+        gop.value_ptr.* = Widget{
+            .user_data = ptr,
+            .render = @ptrCast(&Widget.SliderF32.render),
+            .unbind = @ptrCast(&Widget.SliderF32.unbindEvents),
+            .deinit = @ptrCast(&Widget.SliderF32.deinit),
+        };
+
+        try ptr.bindEvents(self);
+
+        break :create_new ptr;
+    } else reuse_existing: {
+        const ptr: *Widget.SliderF32 = @ptrCast(@alignCast(gop.value_ptr.user_data));
+
+        // Update config properties in case they change frame-to-frame.
+        ptr.min = config.min;
+        ptr.max = config.max;
+        ptr.track_color = config.track_color;
+        ptr.handle_color = config.handle_color;
+        ptr.handle_size = config.handle_size;
+
+        break :reuse_existing ptr;
+    };
+
+    try self.widgets_seen.put(self.gpa, id.id, {});
+
+    // Slider handles its own rendering, so no further action is needed here.
+    _ = widget;
 }
 
 /// Get the current text value of the open text input widget
@@ -661,6 +700,7 @@ pub const Event = struct {
         },
 
         text_change: []const u8,
+        f32_change: f32,
     };
 };
 
@@ -1073,22 +1113,6 @@ fn imageToClay(image: ImageElementConfig) clay.ImageElementConfig {
     };
 }
 
-fn srgbToLinear(c: f32) f32 {
-    if (c <= 0.04045) {
-        return c / 12.92;
-    } else {
-        return std.math.pow(f32, (c + 0.055) / 1.055, 2.4);
-    }
-}
-
-fn linearToSrgb(c: f32) f32 {
-    if (c <= 0.0031308) {
-        return c * 12.92;
-    } else {
-        return 1.055 * std.math.pow(f32, c, 1.0 / 2.4) - 0.055;
-    }
-}
-
 fn decodeImageId(id: usize) AssetCache.ImageId {
     return @intCast(id - 1);
 }
@@ -1134,10 +1158,10 @@ fn clayColorToBatchColor(c: clay.Color) Batch2D.Color {
     // zig fmt: on
 
     return .{
-        .r = srgbToLinear(c[0] / 255.0),
-        .g = srgbToLinear(c[1] / 255.0),
-        .b = srgbToLinear(c[2] / 255.0),
-        .a = srgbToLinear(c[3] / 255.0),
+        .r = c[0],
+        .g = c[1],
+        .b = c[2],
+        .a = c[3],
     };
 }
 
