@@ -446,7 +446,7 @@ pub fn bindTextInput(self: *Ui, default_value: []const u8, config: Widget.TextIn
     try self.text(widget.currentText(), config.toFull());
 }
 
-/// Configure an open element as a slider widget; works with floats and integers of all sizes and signs.
+/// Configure an open element as a slider widget; works with floats and integers of all signs and sizes up to 64 bits.
 pub fn bindSlider(self: *Ui, comptime T: type, config: Widget.Slider.For(T).Config) !void {
     const Slider = Widget.Slider.For(T);
 
@@ -695,10 +695,9 @@ pub const Event = struct {
         },
 
         text_change: []const u8,
-        f32_change: f32,
-        f64_change: f64,
-        int_change: isize,
-        uint_change: usize,
+        float_change: f64,
+        int_change: i64,
+        uint_change: u64,
     };
 };
 

@@ -15,8 +15,12 @@ test {
 pub fn For(comptime T: type) type {
     const TInfo = @typeInfo(T);
 
+    if ((TInfo == .int and TInfo.int.bits > 64) or (TInfo == .float and TInfo.float.bits > 64)) {
+        @compileError("SliderWidget supports a maximum of 64-bits on operand types");
+    }
+
     return switch (TInfo) {
-        .float => |float_info| struct {
+        .float => struct {
             const Self = @This();
 
             id: Ui.ElementId,
@@ -104,7 +108,7 @@ pub fn For(comptime T: type) type {
                     self.current_value = new_value;
                     // Push a value_change event to notify the application.
 
-                    try ui.pushEvent(self.id, if (float_info.bits == 64) Ui.Event.Data{ .f64_change = self.current_value } else Ui.Event.Data{ .f32_change = self.current_value }, self);
+                    try ui.pushEvent(self.id, .{ .float_change = self.current_value }, self);
                 }
             }
 

@@ -370,10 +370,10 @@ pub fn main() !void {
 
     try ui.addListener(
         .fromSlice("F32SliderTest"),
-        .f32_change,
+        .float_change,
         anyopaque,
         &struct {
-            pub fn slider_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.f32_change)) anyerror!void {
+            pub fn slider_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.float_change)) anyerror!void {
                 log.info("Slider value changed: {d}", .{new_value});
             }
         }.slider_value_listener,
@@ -382,10 +382,10 @@ pub fn main() !void {
 
     try ui.addListener(
         .fromSlice("F64SliderTest"),
-        .f64_change,
+        .float_change,
         anyopaque,
         &struct {
-            pub fn slider_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.f64_change)) anyerror!void {
+            pub fn slider_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.float_change)) anyerror!void {
                 log.info("Slider value changed: {d}", .{new_value});
             }
         }.slider_value_listener,
