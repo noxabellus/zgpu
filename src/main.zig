@@ -279,6 +279,7 @@ fn createLayout(ui: *Ui) !void {
                 .text = true,
                 .keyboard = true,
                 .drag = true,
+                .scroll = true,
             }),
         });
 
@@ -651,6 +652,9 @@ pub fn main() !void {
                     },
                     .wheel => |wheel_data| {
                         log.info("wheel id={any} delta={f}", .{ event.element_id, wheel_data.delta });
+                    },
+                    .scroll => |scroll_data| {
+                        log.info("scroll id={any} delta={f}, old_offset={f}, new_offset={f}", .{ event.element_id, scroll_data.delta, scroll_data.old_offset, scroll_data.new_offset });
                     },
                     .focus_gained => {
                         log.info("focus_gained id={any}", .{event.element_id});

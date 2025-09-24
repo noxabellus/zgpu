@@ -55,6 +55,11 @@ reverse_navigable_elements: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 // Stack of currently open element's user-provided stable IDs
 open_ids: std.ArrayList(ElementId) = .empty,
 
+// Scroll states for the current frame
+current_scroll_states: std.AutoHashMapUnmanaged(u32, ScrollState) = .empty,
+// Scroll states from the last frame
+last_scroll_states: std.AutoHashMapUnmanaged(u32, ScrollState) = .empty,
+
 text_repeat: struct {
     timer: std.time.Timer = undefined,
     initial_delay: u64 = 350 * std.time.ns_per_ms,
@@ -151,6 +156,11 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) void {
 
     self.wheel_delta = self.bindings.consumeScrollDelta();
     self.char_input = self.bindings.consumeCharInput();
+
+    const last_scrolls = self.last_scroll_states;
+    self.last_scroll_states = self.current_scroll_states;
+    self.current_scroll_states = last_scrolls;
+    self.current_scroll_states.clearRetainingCapacity();
 
     clay.setCurrentContext(self.clay_context);
 
@@ -381,6 +391,12 @@ pub const Event = struct {
             key: BindingState.Key,
             modifiers: BindingState.Modifiers,
         },
+
+        scroll: struct {
+            old_offset: Vec2,
+            new_offset: Vec2,
+            delta: Vec2,
+        },
     };
 };
 
@@ -420,6 +436,11 @@ pub const StateElement = struct {
     state: ElementState,
 };
 
+pub const ScrollState = struct {
+    offset: Vec2,
+    elem_state: StateElement,
+};
+
 pub const ElementState = packed struct(usize) {
     event_flags: Flags,
     user_data: u48 = 0,
@@ -433,8 +454,9 @@ pub const ElementState = packed struct(usize) {
         activate: bool = false,
         text: bool = false,
         keyboard: bool = false,
+        scroll: bool = false,
 
-        _reserved: u8 = 0,
+        _reserved: u7 = 0,
 
         pub const none = Flags{};
         pub const hoverFlag = Flags{ .hover = true };
@@ -442,9 +464,10 @@ pub const ElementState = packed struct(usize) {
         pub const clickFlag = Flags{ .click = true };
         pub const dragFlag = Flags{ .drag = true };
         pub const focusFlag = Flags{ .focus = true };
-        pub const activatFlag = Flags{ .activate = true };
+        pub const activateFlag = Flags{ .activate = true };
         pub const textFlag = Flags{ .text = true };
         pub const keyboardFlag = Flags{ .keyboard = true };
+        pub const scrollFlag = Flags{ .scroll = true };
         pub const all = Flags{
             .hover = true,
             .wheel = true,
@@ -454,6 +477,7 @@ pub const ElementState = packed struct(usize) {
             .activate = true,
             .text = true,
             .keyboard = true,
+            .scroll = true,
         };
 
         pub fn merge(a: Flags, b: Flags) Flags {
@@ -466,15 +490,16 @@ pub const ElementState = packed struct(usize) {
                 .activate = a.activate or b.activate,
                 .text = a.text or b.text,
                 .keyboard = a.keyboard or b.keyboard,
+                .scroll = a.scroll or b.scroll,
             };
         }
 
         pub fn takesInput(self: Flags) bool {
-            return self.hover or self.wheel or self.click or self.drag or self.focus or self.activate or self.text or self.keyboard;
+            return self.hover or self.wheel or self.click or self.drag or self.focus or self.activate or self.text or self.keyboard or self.scroll;
         }
 
         pub fn usesMouse(self: Flags) bool {
-            return self.hover or self.wheel or self.click or self.drag;
+            return self.hover or self.wheel or self.click or self.drag or self.scroll;
         }
     };
 
@@ -484,7 +509,7 @@ pub const ElementState = packed struct(usize) {
     pub const clickFlag = ElementState{ .event_flags = .clickFlag };
     pub const dragFlag = ElementState{ .event_flags = .dragFlag };
     pub const focusFlag = ElementState{ .event_flags = .focusFlag };
-    pub const activatFlag = ElementState{ .event_flags = .activatFlag };
+    pub const activateFlag = ElementState{ .event_flags = .activateFlag };
     pub const textFlag = ElementState{ .event_flags = .textFlag };
     pub const keyboardFlag = ElementState{ .event_flags = .keyboardFlag };
     pub const all = ElementState{ .event_flags = .all };
@@ -866,6 +891,19 @@ fn handleStateSetup(self: *Ui, declaration: ElementDeclarationWithId) !void {
                 .bounding_box = hovered_data.bounding_box,
                 .state = declaration.state,
             });
+        }
+    }
+
+    // If the element supports scrolling, save its scroll state for the current frame, bound by its id.
+    if (declaration.state.event_flags.scroll) {
+        const offset = declaration.clip.child_offset;
+        const scrolled_data = clay.getElementData(declaration.id);
+        if (scrolled_data.found) {
+            try self.current_scroll_states.put(self.allocator, declaration.id.id, .{ .offset = offset, .elem_state = .{
+                .id = declaration.id,
+                .bounding_box = scrolled_data.bounding_box,
+                .state = declaration.state,
+            } });
         }
     }
 }
@@ -1353,6 +1391,26 @@ fn generateEvents(self: *Ui) !void {
                 });
                 // Once a wheel container is found, stop propagating the event.
                 break;
+            }
+        }
+    }
+
+    // Handle Scroll Events
+    var scroll_it = self.current_scroll_states.iterator();
+    while (scroll_it.next()) |entry| {
+        const curr_state = entry.value_ptr.*;
+        const last_state = self.last_scroll_states.get(entry.key_ptr.*) orelse continue;
+        if (curr_state.offset.x != last_state.offset.x or curr_state.offset.y != last_state.offset.y) {
+            if (curr_state.elem_state.state.event_flags.scroll) {
+                try self.events.append(self.allocator, .{
+                    .element_id = curr_state.elem_state.id,
+                    .bounding_box = curr_state.elem_state.bounding_box,
+                    .user_data = curr_state.elem_state.state.getUserData(),
+                    .data = .{ .scroll = .{ .old_offset = last_state.offset, .new_offset = curr_state.offset, .delta = .{
+                        .x = curr_state.offset.x - last_state.offset.x,
+                        .y = curr_state.offset.y - last_state.offset.y,
+                    } } },
+                });
             }
         }
     }
