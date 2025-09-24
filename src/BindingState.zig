@@ -79,6 +79,21 @@ pub fn consumeCharInput(self: *BindingState) []const Char {
     return self.input_state.consumeCharInput();
 }
 
+/// Get the current state of modifier keys from the underlying InputState.
+pub fn getModifiers(self: *const BindingState) Modifiers {
+    return self.input_state.getModifiers();
+}
+
+/// Get the current clipboard state from the underlying InputState.
+pub fn getClipboard(self: *const BindingState) []const u8 {
+    return self.input_state.getClipboard();
+}
+
+/// Set the current clipboard state in the underlying InputState.
+pub fn setClipboard(self: *BindingState, text: []const u8) !void {
+    try self.input_state.setClipboard(text);
+}
+
 /// Represents a specific input configuration that can be bound to an action.
 pub const InputBinding = union(enum) {
     key: KeyBinding,
