@@ -277,8 +277,8 @@ fn createLayout(ui: *Ui) !void {
                 .click = true,
                 .focus = true,
                 .text = true,
-                .hover = true,
-                .drag = true, // Enable drag events for text selection
+                .keyboard = true,
+                .drag = true,
             }),
         });
 
@@ -590,7 +590,7 @@ pub fn main() !void {
                     },
                     .hovering => |hovering_data| {
                         _ = hovering_data;
-                        // Text selection logic has moved to the .drag event for better behavior.
+                        // log.info("hovering id={any} loc={f}", .{ event.element_id, hovering_data.mouse_position });
                     },
                     .mouse_down => |mouse_down_data| {
                         log.info("mouse_down id={any} loc={f}", .{ event.element_id, mouse_down_data.mouse_position });
@@ -665,6 +665,17 @@ pub fn main() !void {
                     .activating => {},
                     .activate_end => |activate_end_data| {
                         log.info("activate_end id={any} end_element={any}", .{ event.element_id, activate_end_data.end_element });
+                    },
+
+                    .key_up => |key_data| {
+                        log.info("key_up id={any} key={s} mods={any}", .{ event.element_id, @tagName(key_data.key), key_data.modifiers });
+                    },
+                    .key => |key_data| {
+                        _ = key_data;
+                        // log.info("key id={any} key={s} mods={any}", .{ event.element_id, @tagName(key_data.key), key_data.modifiers });
+                    },
+                    .key_down => |key_data| {
+                        log.info("key_down id={any} key={s} mods={any}", .{ event.element_id, @tagName(key_data.key), key_data.modifiers });
                     },
                     .text => |text_data| {
                         log.info("text id={any} cmds={any}", .{ event.element_id, text_data });

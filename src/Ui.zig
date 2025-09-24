@@ -4,8 +4,6 @@ const Ui = @This();
 
 const std = @import("std");
 const clay = @import("clay");
-const glfw = @import("glfw");
-const stbtt = @import("stbtt");
 
 const Batch2D = @import("Batch2D.zig");
 const AssetCache = @import("AssetCache.zig");
@@ -370,6 +368,19 @@ pub const Event = struct {
         activate_begin: void,
         activating: void,
         activate_end: struct { end_element: ?ElementId },
+
+        key_down: struct {
+            key: BindingState.Key,
+            modifiers: BindingState.Modifiers,
+        },
+        key: struct {
+            key: BindingState.Key,
+            modifiers: BindingState.Modifiers,
+        },
+        key_up: struct {
+            key: BindingState.Key,
+            modifiers: BindingState.Modifiers,
+        },
     };
 };
 
@@ -421,8 +432,9 @@ pub const ElementState = packed struct(usize) {
         focus: bool = false,
         activate: bool = false,
         text: bool = false,
+        keyboard: bool = false,
 
-        _reserved: u9 = 0,
+        _reserved: u8 = 0,
 
         pub const none = Flags{};
         pub const hoverFlag = Flags{ .hover = true };
@@ -432,6 +444,7 @@ pub const ElementState = packed struct(usize) {
         pub const focusFlag = Flags{ .focus = true };
         pub const activatFlag = Flags{ .activate = true };
         pub const textFlag = Flags{ .text = true };
+        pub const keyboardFlag = Flags{ .keyboard = true };
         pub const all = Flags{
             .hover = true,
             .wheel = true,
@@ -440,6 +453,7 @@ pub const ElementState = packed struct(usize) {
             .focus = true,
             .activate = true,
             .text = true,
+            .keyboard = true,
         };
 
         pub fn merge(a: Flags, b: Flags) Flags {
@@ -451,11 +465,12 @@ pub const ElementState = packed struct(usize) {
                 .focus = a.focus or b.focus,
                 .activate = a.activate or b.activate,
                 .text = a.text or b.text,
+                .keyboard = a.keyboard or b.keyboard,
             };
         }
 
         pub fn takesInput(self: Flags) bool {
-            return self.hover or self.wheel or self.click or self.drag or self.focus or self.activate or self.text;
+            return self.hover or self.wheel or self.click or self.drag or self.focus or self.activate or self.text or self.keyboard;
         }
 
         pub fn usesMouse(self: Flags) bool {
@@ -471,6 +486,7 @@ pub const ElementState = packed struct(usize) {
     pub const focusFlag = ElementState{ .event_flags = .focusFlag };
     pub const activatFlag = ElementState{ .event_flags = .activatFlag };
     pub const textFlag = ElementState{ .event_flags = .textFlag };
+    pub const keyboardFlag = ElementState{ .event_flags = .keyboardFlag };
     pub const all = ElementState{ .event_flags = .all };
 
     pub fn flags(f: Flags) ElementState {
@@ -1045,6 +1061,39 @@ fn generateEvents(self: *Ui) !void {
             } else {
                 // No special event, so reset the repeat state.
                 self.text_repeat.state = .none;
+            }
+        }
+    }
+
+    // --- Handle Keyboard Events ---
+    if (self.state.focused_id) |focused_elem| {
+        if (focused_elem.state.event_flags.keyboard) {
+            const modifiers = self.bindings.input_state.getModifiers();
+            inline for (comptime std.meta.fieldNames(BindingState.Key)) |field_name| {
+                const key: BindingState.Key = @field(BindingState.Key, field_name);
+                const key_state = self.bindings.input_state.getKey(key);
+
+                switch (key_state) {
+                    .none => {},
+                    .pressed => try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .key_down = .{ .key = key, .modifiers = modifiers } },
+                    }),
+                    .held => try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .key = .{ .key = key, .modifiers = modifiers } },
+                    }),
+                    .released => try self.events.append(self.allocator, .{
+                        .element_id = focused_elem.id,
+                        .bounding_box = focused_elem.bounding_box,
+                        .user_data = focused_elem.state.getUserData(),
+                        .data = .{ .key_up = .{ .key = key, .modifiers = modifiers } },
+                    }),
+                }
             }
         }
     }

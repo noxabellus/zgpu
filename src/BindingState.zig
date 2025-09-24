@@ -96,6 +96,20 @@ pub const InputBinding = union(enum) {
         modifiers: ?InputState.Modifiers = null,
     };
 
+    pub fn keyBinding(self: InputBinding) ?Key {
+        return switch (self) {
+            .key => |kb| kb.bind_point,
+            .mouse => null,
+        };
+    }
+
+    pub fn mouseBinding(self: InputBinding) ?MouseButton {
+        return switch (self) {
+            .key => null,
+            .mouse => |mb| mb.bind_point,
+        };
+    }
+
     pub fn getAction(self: InputBinding, input_state: *InputState) Action {
         return switch (self) {
             .key => |kb| input_state.getKey(kb.bind_point),
