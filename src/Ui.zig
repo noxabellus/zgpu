@@ -23,7 +23,7 @@ pub const Widget = struct {
     deinit: *const fn (*anyopaque, *Ui) void,
 
     pub const TextInput = @import("widgets/TextInput.zig");
-    pub const SliderF32 = @import("widgets/SliderF32.zig");
+    pub const Slider = @import("widgets/Slider.zig");
 
     test {
         log.debug("semantic analysis for Ui.Widgets", .{});
@@ -446,27 +446,27 @@ pub fn bindTextInput(self: *Ui, default_value: []const u8, config: Widget.TextIn
     try self.text(widget.currentText(), config.toFull());
 }
 
-/// Configure an open element as a slider widget, for f32 floats.
-pub fn bindSliderF32(self: *Ui, config: Widget.SliderF32.Config) !void {
+/// Configure an open element as a slider widget; works with floats and integers of all sizes and signs.
+pub fn bindSlider(self: *Ui, comptime T: type, config: Widget.Slider.For(T).Config) !void {
+    const Slider = Widget.Slider.For(T);
+
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
     std.debug.assert(self.open_ids.items.len > 0);
 
     const id = self.open_ids.items[self.open_ids.items.len - 1];
     const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-    const widget: *Widget.SliderF32 = if (!gop.found_existing) create_new: {
-        const ptr = try Widget.SliderF32.init(self, id, config);
+    if (!gop.found_existing) {
+        const ptr = try Slider.init(self, id, config);
         gop.value_ptr.* = Widget{
             .user_data = ptr,
-            .render = @ptrCast(&Widget.SliderF32.render),
-            .unbind = @ptrCast(&Widget.SliderF32.unbindEvents),
-            .deinit = @ptrCast(&Widget.SliderF32.deinit),
+            .render = @ptrCast(&Slider.render),
+            .unbind = @ptrCast(&Slider.unbindEvents),
+            .deinit = @ptrCast(&Slider.deinit),
         };
 
         try ptr.bindEvents(self);
-
-        break :create_new ptr;
-    } else reuse_existing: {
-        const ptr: *Widget.SliderF32 = @ptrCast(@alignCast(gop.value_ptr.user_data));
+    } else {
+        const ptr: *Slider = @ptrCast(@alignCast(gop.value_ptr.user_data));
 
         // Update config properties in case they change frame-to-frame.
         ptr.min = config.min;
@@ -474,14 +474,9 @@ pub fn bindSliderF32(self: *Ui, config: Widget.SliderF32.Config) !void {
         ptr.track_color = config.track_color;
         ptr.handle_color = config.handle_color;
         ptr.handle_size = config.handle_size;
-
-        break :reuse_existing ptr;
-    };
+    }
 
     try self.widgets_seen.put(self.gpa, id.id, {});
-
-    // Slider handles its own rendering, so no further action is needed here.
-    _ = widget;
 }
 
 /// Get the current text value of the open text input widget
@@ -701,6 +696,9 @@ pub const Event = struct {
 
         text_change: []const u8,
         f32_change: f32,
+        f64_change: f64,
+        int_change: isize,
+        uint_change: usize,
     };
 };
 

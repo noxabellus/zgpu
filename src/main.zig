@@ -113,7 +113,7 @@ fn createLayout(ui: *Ui) !void {
     }
 
     {
-        try ui.beginElement(.fromSlice("SliderTest"));
+        try ui.beginElement(.fromSlice("F32SliderTest"));
         defer ui.closeElement();
 
         try ui.configureElement(.{
@@ -127,12 +127,84 @@ fn createLayout(ui: *Ui) !void {
             }),
         });
 
-        try ui.bindSliderF32(.{
+        try ui.bindSlider(f32, .{
             .min = 0.0,
             .max = 1.0,
             .default = 0.5,
             .track_color = COLOR_LIGHT_HOVER,
             .handle_color = COLOR_ORANGE,
+        });
+    }
+
+    {
+        try ui.beginElement(.fromSlice("F64SliderTest"));
+        defer ui.closeElement();
+
+        try ui.configureElement(.{
+            .layout = .{
+                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+            },
+            .widget = true,
+            .state = .flags(.{
+                .click = true,
+                .drag = true,
+            }),
+        });
+
+        try ui.bindSlider(f64, .{
+            .min = -100.0,
+            .max = 100.0,
+            .default = 0.0,
+            .track_color = COLOR_LIGHT_HOVER,
+            .handle_color = COLOR_BLUE,
+        });
+    }
+
+    {
+        try ui.beginElement(.fromSlice("ISizeSliderTest"));
+        defer ui.closeElement();
+
+        try ui.configureElement(.{
+            .layout = .{
+                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+            },
+            .widget = true,
+            .state = .flags(.{
+                .click = true,
+                .drag = true,
+            }),
+        });
+
+        try ui.bindSlider(isize, .{
+            .min = -50,
+            .max = 50,
+            .default = 0,
+            .track_color = COLOR_LIGHT_HOVER,
+            .handle_color = COLOR_RED,
+        });
+    }
+
+    {
+        try ui.beginElement(.fromSlice("USizeSliderTest"));
+        defer ui.closeElement();
+
+        try ui.configureElement(.{
+            .layout = .{
+                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+            },
+            .widget = true,
+            .state = .flags(.{
+                .click = true,
+                .drag = true,
+            }),
+        });
+
+        try ui.bindSlider(usize, .{
+            .min = 0,
+            .max = 100,
+            .default = 50,
+            .track_color = COLOR_LIGHT_HOVER,
+            .handle_color = COLOR_TEAL,
         });
     }
 }
@@ -297,11 +369,47 @@ pub fn main() !void {
     );
 
     try ui.addListener(
-        .fromSlice("SliderTest"),
+        .fromSlice("F32SliderTest"),
         .f32_change,
-        anyopaque, // The type of our user_data pointer
+        anyopaque,
         &struct {
             pub fn slider_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.f32_change)) anyerror!void {
+                log.info("Slider value changed: {d}", .{new_value});
+            }
+        }.slider_value_listener,
+        undefined,
+    );
+
+    try ui.addListener(
+        .fromSlice("F64SliderTest"),
+        .f64_change,
+        anyopaque,
+        &struct {
+            pub fn slider_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.f64_change)) anyerror!void {
+                log.info("Slider value changed: {d}", .{new_value});
+            }
+        }.slider_value_listener,
+        undefined,
+    );
+
+    try ui.addListener(
+        .fromSlice("ISizeSliderTest"),
+        .int_change,
+        anyopaque,
+        &struct {
+            pub fn slider_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.int_change)) anyerror!void {
+                log.info("Slider value changed: {d}", .{new_value});
+            }
+        }.slider_value_listener,
+        undefined,
+    );
+
+    try ui.addListener(
+        .fromSlice("USizeSliderTest"),
+        .uint_change,
+        anyopaque,
+        &struct {
+            pub fn slider_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.uint_change)) anyerror!void {
                 log.info("Slider value changed: {d}", .{new_value});
             }
         }.slider_value_listener,
