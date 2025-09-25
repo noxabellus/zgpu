@@ -39,6 +39,7 @@ pub const Color = struct {
     b: f32 = 0.0,
     a: f32 = 0.0,
 
+    pub const transparent = Color{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 0.0 };
     pub const black = Color{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 };
     pub const white = Color{ .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 };
     pub const red = Color{ .r = 1.0, .g = 0.0, .b = 0.0, .a = 1.0 };
@@ -65,6 +66,7 @@ pub const Color = struct {
     }
 
     pub fn fromLinearU8(r: u8, g: u8, b: u8, a: u8) Color {
+        @setEvalBranchQuota(10_000);
         const inv_255 = 1.0 / 255.0;
         return Color{
             .r = convertLinear(@as(f32, @floatFromInt(r)) * inv_255),
