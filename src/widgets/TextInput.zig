@@ -24,6 +24,8 @@ column_select_start_pos: ?u32 = null,
 drag_additive: u32 = 0,
 
 pub const Config = struct {
+    /// The default value the text input will be initialized to.
+    default_text: []const u8 = "[Type here]",
     /// The RGBA color of the font to render, conventionally specified as 0-255.
     color: Ui.Color = .{ .r = 0, .g = 0, .b = 0, .a = 255 },
     /// Identifies the font to use.
@@ -53,7 +55,7 @@ pub const Config = struct {
     }
 };
 
-pub fn init(ui: *Ui, id: Ui.ElementId, initial_text: []const u8) !*TextInputWidget {
+pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*TextInputWidget {
     const self = try ui.gpa.create(TextInputWidget);
     errdefer ui.gpa.destroy(self);
 
@@ -62,8 +64,8 @@ pub fn init(ui: *Ui, id: Ui.ElementId, initial_text: []const u8) !*TextInputWidg
         .selection_render_data = .{ .carets = &self.carets },
     };
 
-    self.text_buffers[0] = try std.ArrayList(u8).initCapacity(ui.gpa, initial_text.len);
-    self.text_buffers[0].appendSliceAssumeCapacity(initial_text);
+    self.text_buffers[0] = try std.ArrayList(u8).initCapacity(ui.gpa, config.default_text.len);
+    self.text_buffers[0].appendSliceAssumeCapacity(config.default_text);
     errdefer self.text_buffers[0].deinit(ui.gpa);
 
     self.text_buffers[1] = try self.text_buffers[0].clone(ui.gpa);

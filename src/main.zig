@@ -103,7 +103,7 @@ fn createLayout(ui: *Ui) !void {
             }),
         });
 
-        try ui.bindTextInput("[Type here]", .{
+        try ui.bindTextInput(.{
             .alignment = .left,
             .font_id = FONT_ID_MONO,
             .font_size = 16,

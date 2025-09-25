@@ -474,14 +474,14 @@ pub fn text(self: *Ui, str: []const u8, config: TextElementConfig) !void {
 }
 
 /// Configure an open element as a text input widget
-pub fn bindTextInput(self: *Ui, default_value: []const u8, config: Widget.TextInput.Config) !void {
+pub fn bindTextInput(self: *Ui, config: Widget.TextInput.Config) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
     std.debug.assert(self.open_ids.items.len > 0);
 
     const id = self.open_ids.items[self.open_ids.items.len - 1];
     const gop = try self.widget_states.getOrPut(self.gpa, id.id);
     const widget = if (!gop.found_existing) create_new: {
-        const ptr = try Widget.TextInput.init(self, id, default_value);
+        const ptr = try Widget.TextInput.init(self, id, config);
         gop.value_ptr.* = Widget{
             .user_data = ptr,
             .render = @ptrCast(&Widget.TextInput.render),
