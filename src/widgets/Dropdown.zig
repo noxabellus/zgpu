@@ -95,6 +95,7 @@ pub fn For(comptime T: type) type {
             try ui.addListener(self.id, .key_down, Self, EventHandler.onKeyDown, self);
             try ui.addListener(self.id, .focus_lost, Self, EventHandler.onFocusLost, self);
             try ui.addListener(self.id, .scoped_focus_change, Self, EventHandler.onScopedFocusChange, self);
+            try ui.addListener(self.id, .scoped_focus_close, Self, EventHandler.onCloseScope, self);
 
             inline for (field_names) |field_name| {
                 const field_value = comptime @field(T, field_name);
@@ -108,6 +109,7 @@ pub fn For(comptime T: type) type {
             ui.removeListener(self.id, .key_down, Self, EventHandler.onKeyDown);
             ui.removeListener(self.id, .focus_lost, Self, EventHandler.onFocusLost);
             ui.removeListener(self.id, .scoped_focus_change, Self, EventHandler.onScopedFocusChange);
+            ui.removeListener(self.id, .scoped_focus_close, Self, EventHandler.onCloseScope);
 
             inline for (field_names) |field_name| {
                 if (optionId(self, ui, field_name)) |option_id| {
@@ -263,6 +265,16 @@ pub fn For(comptime T: type) type {
                 }
             }
 
+            pub fn onCloseScope(self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.scoped_focus_close)) !void {
+                // This handler is only called if this widget owns the scope.
+                // It should close the dropdown.
+                if (self.is_open) {
+                    self.is_open = false;
+                    self.highlighted_index = null;
+                    ui.popFocusScope();
+                }
+            }
+
             pub fn onFocusLost(self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.focus_lost)) !void {
                 // When the dropdown loses focus, always close the panel and pop the scope.
                 if (self.is_open) {
@@ -297,12 +309,6 @@ pub fn For(comptime T: type) type {
                 if (!self.is_open) return;
 
                 switch (key_data.key) {
-                    .escape => {
-                        self.is_open = false;
-                        self.highlighted_index = null;
-                        // Pop focus scope on escape.
-                        ui.popFocusScope();
-                    },
                     .up => {
                         if (self.highlighted_index) |idx| {
                             self.highlighted_index = (idx + num_options - 1) % num_options;

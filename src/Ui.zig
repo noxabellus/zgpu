@@ -54,6 +54,7 @@ pub const default_bindings = .{
     .focus_next = BindingState.InputBinding{ .key = .{ .bind_point = .tab } },
     .focus_prev = BindingState.InputBinding{ .key = .{ .bind_point = .tab, .modifiers = .shiftMod } },
     .activate_focused = BindingState.InputBinding{ .key = .{ .bind_point = .enter } },
+    .close_focus_scope = BindingState.InputBinding{ .key = .{ .bind_point = .escape } },
 };
 
 gpa: std.mem.Allocator,
@@ -195,6 +196,7 @@ pub fn init(gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *B
     if (!bindings.hasBinding(.focus_next)) try bindings.bind(.focus_next, default_bindings.focus_next);
     if (!bindings.hasBinding(.focus_prev)) try bindings.bind(.focus_prev, default_bindings.focus_prev);
     if (!bindings.hasBinding(.activate_focused)) try bindings.bind(.activate_focused, default_bindings.activate_focused);
+    if (!bindings.hasBinding(.close_focus_scope)) try bindings.bind(.close_focus_scope, default_bindings.close_focus_scope);
 
     return self;
 }
@@ -1067,6 +1069,7 @@ pub const Event = struct {
         },
 
         scoped_focus_change: enum { next, prev },
+        scoped_focus_close: void,
 
         text_change: []const u8,
         bool_change: bool,
@@ -1618,6 +1621,7 @@ fn generateEvents(self: *Ui) !void {
     const activate_action = self.bindings.getAction(.activate_focused);
     const focus_next_action = self.bindings.getAction(.focus_next);
     const focus_prev_action = self.bindings.getAction(.focus_prev);
+    const close_scope_action = self.bindings.getAction(.close_focus_scope);
 
     const modifiers = self.bindings.input_state.getModifiers();
 
@@ -2087,6 +2091,36 @@ fn generateEvents(self: *Ui) !void {
         }
     }
 
+    // --- Handle Focus Scope Closing ---
+    if (close_scope_action == .released) {
+        if (self.focus_scope_stack.items.len > 0) {
+            // A scope is active. Send the close event to the owner.
+            const scope_owner_id = self.focus_scope_stack.items[self.focus_scope_stack.items.len - 1];
+
+            const bounding_box = clay.getElementData(scope_owner_id).bounding_box;
+            var user_data: ?*anyopaque = null;
+            if (self.reverse_navigable_elements.get(scope_owner_id.id)) |nav_index| {
+                if (self.navigable_elements.get(nav_index)) |nav_entry| {
+                    user_data = nav_entry.state.getUserData();
+                }
+            }
+
+            try self.events.append(self.gpa, .{
+                .info = .{
+                    .element_id = scope_owner_id,
+                    .bounding_box = bounding_box,
+                    .user_data = user_data,
+                },
+                .data = .scoped_focus_close,
+            });
+        } else {
+            // No scope active. Clear global focus.
+            if (self.state.focused_id != null) {
+                self.state.focused_id = null;
+            }
+        }
+    }
+
     // --- Handle Keyboard Focus Events ---
     if (self.focus_scope_stack.items.len > 0) {
         // A scope is active. Send a special event to that widget instead of doing global navigation.
@@ -2108,10 +2142,11 @@ fn generateEvents(self: *Ui) !void {
                 }
             }
 
-            const event_data: Event.Data = if (focus_next_action == .released)
-                .{ .scoped_focus_change = .next }
+            // Prioritize 'prev' over 'next' in case of ambiguity from the binding system.
+            const event_data: Event.Data = if (focus_prev_action == .released)
+                .{ .scoped_focus_change = .prev }
             else
-                .{ .scoped_focus_change = .prev };
+                .{ .scoped_focus_change = .next };
 
             try self.events.append(self.gpa, .{
                 .info = .{
