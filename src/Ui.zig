@@ -30,6 +30,7 @@ pub const Widget = struct {
     pub const Slider = @import("widgets/Slider.zig");
     pub const TextInput = @import("widgets/TextInput.zig");
     pub const RadioButton = @import("widgets/RadioButton.zig");
+    pub const Dropdown = @import("widgets/Dropdown.zig");
 
     test {
         log.debug("semantic analysis for Ui.Widgets", .{});
@@ -619,6 +620,56 @@ pub fn bindCheckbox(self: *Ui, config: Widget.Checkbox.Config) !void {
     }
 }
 
+/// Configure an open element as a dropdown selection widget for enum values.
+pub fn bindDropdown(self: *Ui, comptime T: type, config: Widget.Dropdown.For(T).Config) !void {
+    const Dropdown = Widget.Dropdown.For(T);
+
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
+    const id = self.open_ids.items[self.open_ids.items.len - 1];
+    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
+    const widget = if (!gop.found_existing) create_new: {
+        const ptr = try Dropdown.init(self, id, config);
+        gop.value_ptr.* = Widget{
+            .user_data = ptr,
+            .get = @ptrCast(&Dropdown.onGet),
+            .set = @ptrCast(&Dropdown.onSet),
+            .state_type = @typeName(T),
+            .render = @ptrCast(&Dropdown.render),
+            .unbind = @ptrCast(&Dropdown.unbindEvents),
+            .deinit = @ptrCast(&Dropdown.deinit),
+            .seen_this_frame = true,
+        };
+
+        try ptr.bindEvents(self);
+
+        break :create_new ptr;
+    } else reuse_existing: {
+        gop.value_ptr.seen_this_frame = true;
+
+        const ptr: *Dropdown = @ptrCast(@alignCast(gop.value_ptr.user_data));
+
+        // Update config properties in case they change frame-to-frame.
+        ptr.box_color = config.box_color;
+        ptr.box_color_hover = config.box_color_hover;
+        ptr.text_color = config.text_color;
+        ptr.font_id = config.font_id;
+        ptr.font_size = config.font_size;
+        ptr.panel_color = config.panel_color;
+        ptr.option_color_hover = config.option_color_hover;
+
+        break :reuse_existing ptr;
+    };
+
+    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
+        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
+    }
+
+    // Crucially, the widget declares its own elements, including the floating panel if open.
+    try widget.declare(self);
+}
+
 /// Configure an open element as a radio button widget for enum values.
 /// All radio buttons sharing the same `group_id` in the config will be linked.
 pub fn bindRadioButton(self: *Ui, comptime T: type, config: Widget.RadioButton.For(T).Config) !void {
@@ -757,6 +808,12 @@ pub fn getCharacterIndexAtOffset(self: *Ui, id: ElementId, offset: Vec2) ?u32 {
 pub fn getCharacterOffsetAtPoint(self: *Ui, id: ElementId, point: Vec2) ?CharacterOffset {
     const index = self.getCharacterIndexAtOffset(id, point) orelse return null;
     return self.getCharacterOffset(id, index);
+}
+
+pub fn getElementBounds(self: *Ui, id: ElementId) ?BoundingBox {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    const data = clay.getElementData(id);
+    return if (data.found) data.bounding_box else null;
 }
 
 pub fn pushEvent(self: *Ui, id: ElementId, data: Event.Data, user_data: ?*anyopaque) !void {
@@ -2186,7 +2243,10 @@ fn draw(self: *Ui) !void {
             .scissor_start => try self.renderer.scissorStart(pos, size),
             .scissor_end => try self.renderer.scissorEnd(),
             .custom => {
-                const widget = self.widget_states.get(cmd.id).?;
+                const widget = self.widget_states.get(cmd.id) orelse {
+                    log.warn("No widget state found for custom render command with id {x}", .{cmd.id});
+                    continue;
+                };
 
                 try widget.render(widget.user_data, self, cmd);
             },

@@ -81,196 +81,206 @@ fn createLayout(ui: *Ui) !void {
     });
     defer ui.closeElement();
 
+    // {
+    //     try ui.beginElement(.fromSlice("TextInputTest"));
+    //     defer ui.closeElement();
+
+    //     try ui.configureElement(.{
+    //         .layout = .{
+    //             .sizing = .{ .w = .fixed(300 + 5 * 2 + 2 * 2), .h = .fixed(16 * 6 + 5 * 2 + 2 * 2) },
+    //             .padding = .all(5),
+    //         },
+    //         .background_color = COLOR_WHITE,
+    //         .border = .{
+    //             .width = .all(2),
+    //             .color = COLOR_BROWN,
+    //         },
+    //         .corner_radius = .all(5),
+    //         .clip = .{
+    //             .vertical = true,
+    //             .child_offset = ui.scrollOffset(),
+    //         },
+    //         .widget = true,
+    //         .state = .flags(.{
+    //             .click = true,
+    //             .focus = true,
+    //             .text = true,
+    //             .drag = true,
+    //         }),
+    //     });
+
+    //     try ui.bindTextInput(.{
+    //         .alignment = .left,
+    //         .font_id = FONT_ID_MONO,
+    //         .font_size = 16,
+    //         .color = COLOR_BLUE,
+    //         .line_height = 20,
+    //     });
+    // }
+
+    // {
+    //     try ui.beginElement(.fromSlice("F32SliderTest"));
+    //     defer ui.closeElement();
+
+    //     try ui.configureElement(.{
+    //         .layout = .{
+    //             .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+    //         },
+    //         .widget = true,
+    //         .state = .flags(.{
+    //             .click = true,
+    //             .drag = true,
+    //             .focus = true,
+    //             .keyboard = true,
+    //         }),
+    //     });
+
+    //     try ui.bindSlider(f32, .{
+    //         .min = 0.0,
+    //         .max = 1.0,
+    //         .default = 0.5,
+    //         .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
+    //         .handle_color = COLOR_ORANGE,
+    //     });
+    // }
+
+    // {
+    //     try ui.beginElement(.fromSlice("F64SliderTest"));
+    //     defer ui.closeElement();
+
+    //     try ui.configureElement(.{
+    //         .layout = .{
+    //             .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+    //         },
+    //         .widget = true,
+    //         .state = .flags(.{
+    //             .click = true,
+    //             .drag = true,
+    //             .focus = true,
+    //             .keyboard = true,
+    //         }),
+    //     });
+
+    //     try ui.bindSlider(f64, .{
+    //         .min = -100.0,
+    //         .max = 100.0,
+    //         .default = 0.0,
+    //         .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
+    //         .handle_color = COLOR_BLUE,
+    //     });
+    // }
+
+    // {
+    //     try ui.beginElement(.fromSlice("ISizeSliderTest"));
+    //     defer ui.closeElement();
+
+    //     try ui.configureElement(.{
+    //         .layout = .{
+    //             .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+    //         },
+    //         .widget = true,
+    //         .state = .flags(.{
+    //             .click = true,
+    //             .drag = true,
+    //             .focus = true,
+    //             .keyboard = true,
+    //         }),
+    //     });
+
+    //     try ui.bindSlider(isize, .{
+    //         .min = -50,
+    //         .max = 50,
+    //         .default = 0,
+    //         .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
+    //         .handle_color = COLOR_RED,
+    //     });
+    // }
+
+    // {
+    //     try ui.beginElement(.fromSlice("USizeSliderTest"));
+    //     defer ui.closeElement();
+
+    //     try ui.configureElement(.{
+    //         .layout = .{
+    //             .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+    //         },
+    //         .widget = true,
+    //         .state = .flags(.{
+    //             .click = true,
+    //             .drag = true,
+    //             .focus = true,
+    //             .keyboard = true,
+    //         }),
+    //     });
+
+    //     try ui.bindSlider(usize, .{
+    //         .min = 0,
+    //         .max = 100,
+    //         .default = 50,
+    //         .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
+    //         .handle_color = COLOR_TEAL,
+    //     });
+    // }
+
+    // {
+    //     try ui.beginElement(.fromSlice("CheckboxTest"));
+    //     defer ui.closeElement();
+
+    //     try ui.configureElement(.{ .layout = .{
+    //         .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
+    //     }, .widget = true, .state = .flags(.{
+    //         .activate = true,
+    //         .focus = true,
+    //     }), .border = .{ .width = .all(1), .color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK } });
+
+    //     try ui.bindCheckbox(.{
+    //         .default = true,
+    //         .box_color = COLOR_LIGHT_HOVER,
+    //         .check_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK,
+    //         .size = 16.0,
+    //     });
+    // }
+
+    // {
+    //     const radio_group_id = Ui.ElementId.fromSlice("ThemeSelector");
+
+    //     try ui.openElement(.{
+    //         .id = .fromSlice("RadioContainer"),
+    //         .layout = .{ .direction = .left_to_right, .child_gap = 10 },
+    //     });
+    //     defer ui.closeElement();
+
+    //     {
+    //         // Light Theme Button
+    //         try ui.beginElement(.fromSlice("RadioLight"));
+    //         defer ui.closeElement();
+    //         try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
+    //         try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .light, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
+    //     }
+    //     {
+    //         // Dark Theme Button
+    //         try ui.beginElement(.fromSlice("RadioDark"));
+    //         defer ui.closeElement();
+    //         try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
+    //         try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .dark, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
+    //     }
+    //     {
+    //         // System Theme Button
+    //         try ui.beginElement(.fromSlice("RadioSystem"));
+    //         defer ui.closeElement();
+    //         try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
+    //         try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .system, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
+    //     }
+    // }
+
     {
-        try ui.beginElement(.fromSlice("TextInputTest"));
+        try ui.beginElement(.fromSlice("ThemeDropdown"));
         defer ui.closeElement();
 
-        try ui.configureElement(.{
-            .layout = .{
-                .sizing = .{ .w = .fixed(300 + 5 * 2 + 2 * 2), .h = .fixed(16 * 6 + 5 * 2 + 2 * 2) },
-                .padding = .all(5),
-            },
-            .background_color = COLOR_WHITE,
-            .border = .{
-                .width = .all(2),
-                .color = COLOR_BROWN,
-            },
-            .corner_radius = .all(5),
-            .clip = .{
-                .vertical = true,
-                .child_offset = ui.scrollOffset(),
-            },
-            .widget = true,
-            .state = .flags(.{
-                .click = true,
-                .focus = true,
-                .text = true,
-                .drag = true,
-            }),
+        try ui.bindDropdown(Theme, .{
+            .default = .light,
+            .font_id = FONT_ID_BODY,
         });
-
-        try ui.bindTextInput(.{
-            .alignment = .left,
-            .font_id = FONT_ID_MONO,
-            .font_size = 16,
-            .color = COLOR_BLUE,
-            .line_height = 20,
-        });
-    }
-
-    {
-        try ui.beginElement(.fromSlice("F32SliderTest"));
-        defer ui.closeElement();
-
-        try ui.configureElement(.{
-            .layout = .{
-                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
-            },
-            .widget = true,
-            .state = .flags(.{
-                .click = true,
-                .drag = true,
-                .focus = true,
-                .keyboard = true,
-            }),
-        });
-
-        try ui.bindSlider(f32, .{
-            .min = 0.0,
-            .max = 1.0,
-            .default = 0.5,
-            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-            .handle_color = COLOR_ORANGE,
-        });
-    }
-
-    {
-        try ui.beginElement(.fromSlice("F64SliderTest"));
-        defer ui.closeElement();
-
-        try ui.configureElement(.{
-            .layout = .{
-                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
-            },
-            .widget = true,
-            .state = .flags(.{
-                .click = true,
-                .drag = true,
-                .focus = true,
-                .keyboard = true,
-            }),
-        });
-
-        try ui.bindSlider(f64, .{
-            .min = -100.0,
-            .max = 100.0,
-            .default = 0.0,
-            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-            .handle_color = COLOR_BLUE,
-        });
-    }
-
-    {
-        try ui.beginElement(.fromSlice("ISizeSliderTest"));
-        defer ui.closeElement();
-
-        try ui.configureElement(.{
-            .layout = .{
-                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
-            },
-            .widget = true,
-            .state = .flags(.{
-                .click = true,
-                .drag = true,
-                .focus = true,
-                .keyboard = true,
-            }),
-        });
-
-        try ui.bindSlider(isize, .{
-            .min = -50,
-            .max = 50,
-            .default = 0,
-            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-            .handle_color = COLOR_RED,
-        });
-    }
-
-    {
-        try ui.beginElement(.fromSlice("USizeSliderTest"));
-        defer ui.closeElement();
-
-        try ui.configureElement(.{
-            .layout = .{
-                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
-            },
-            .widget = true,
-            .state = .flags(.{
-                .click = true,
-                .drag = true,
-                .focus = true,
-                .keyboard = true,
-            }),
-        });
-
-        try ui.bindSlider(usize, .{
-            .min = 0,
-            .max = 100,
-            .default = 50,
-            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-            .handle_color = COLOR_TEAL,
-        });
-    }
-
-    {
-        try ui.beginElement(.fromSlice("CheckboxTest"));
-        defer ui.closeElement();
-
-        try ui.configureElement(.{ .layout = .{
-            .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
-        }, .widget = true, .state = .flags(.{
-            .activate = true,
-            .focus = true,
-        }), .border = .{ .width = .all(1), .color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK } });
-
-        try ui.bindCheckbox(.{
-            .default = true,
-            .box_color = COLOR_LIGHT_HOVER,
-            .check_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK,
-            .size = 16.0,
-        });
-    }
-
-    {
-        const radio_group_id = Ui.ElementId.fromSlice("ThemeSelector");
-
-        try ui.openElement(.{
-            .id = .fromSlice("RadioContainer"),
-            .layout = .{ .direction = .left_to_right, .child_gap = 10 },
-        });
-        defer ui.closeElement();
-
-        {
-            // Light Theme Button
-            try ui.beginElement(.fromSlice("RadioLight"));
-            defer ui.closeElement();
-            try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
-            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .light, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
-        }
-        {
-            // Dark Theme Button
-            try ui.beginElement(.fromSlice("RadioDark"));
-            defer ui.closeElement();
-            try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
-            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .dark, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
-        }
-        {
-            // System Theme Button
-            try ui.beginElement(.fromSlice("RadioSystem"));
-            defer ui.closeElement();
-            try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
-            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .system, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
-        }
     }
 }
 
@@ -503,11 +513,29 @@ pub fn main() !void {
         .uint_change,
         anyopaque,
         &struct {
-            pub fn radio_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.uint_change)) anyerror!void {
+            pub fn radio_value_listener(_: *anyopaque, g: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.uint_change)) anyerror!void {
                 const theme: Theme = @enumFromInt(new_value);
                 log.info("RadioButton value changed: {any}", .{theme});
+
+                // Also update the dropdown when the radio changes
+                try g.setWidgetState(.fromSlice("ThemeDropdown"), Theme, theme);
             }
         }.radio_value_listener,
+        undefined,
+    );
+
+    try ui.addListener(
+        .fromSlice("ThemeDropdown"),
+        .uint_change,
+        anyopaque,
+        &struct {
+            pub fn dropdown_value_listener(_: *anyopaque, g: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.uint_change)) anyerror!void {
+                const theme: Theme = @enumFromInt(new_value);
+                log.info("Dropdown value changed: {any}", .{theme});
+                // Also update the radio group when the dropdown changes
+                try g.setWidgetState(.fromSlice("ThemeSelector"), Theme, theme);
+            }
+        }.dropdown_value_listener,
         undefined,
     );
 
