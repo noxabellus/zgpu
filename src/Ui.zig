@@ -1003,6 +1003,12 @@ pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemCon
 
     if (self.hovered()) {
         self.menu_state.setHighlighted(self.gpa, level, id);
+        // If we hover a menu item, it should take precedence over any focused widget inside the menu.
+        if (self.state.focused_id != null) {
+            // A more complex check could verify the focused element is a child of the current menu,
+            // but for now, simply clearing focus when hovering any menu item is effective and intuitive.
+            self.state.focused_id = null;
+        }
     }
 
     try self.text(label, .{
@@ -1054,6 +1060,11 @@ pub fn subMenu(self: *Ui, self_id: ElementId, label: []const u8, child_menu_id: 
 
     if (self.hovered()) {
         self.menu_state.setHighlighted(self.gpa, level, self_id);
+        // Also clear widget focus when hovering a submenu trigger.
+        if (self.state.focused_id != null) {
+            self.state.focused_id = null;
+        }
+
         if (self.menu_state.hovered_submenu_candidate) |candidate| {
             if (candidate.id != self_id.id) {
                 self.menu_state.hovered_submenu_candidate = self_id;
@@ -2018,10 +2029,15 @@ fn navigateMenu(self: *Ui, menu_id: ElementId, direction: enum { next, prev, up,
     const items_list = self.menu_state.navigable_items.get(menu_id.id) orelse return;
     if (items_list.items.len == 0) return;
 
-    // Find the index of the currently active item.
+    // --- Step 1: Find the index of the currently active item. ---
     var current_idx: ?usize = null;
+
+    // First, check if a specific WIDGET inside the menu has focus. This takes precedence.
     if (self.state.focusedId()) |focused_id| {
-        // A widget inside the menu is focused. Find its navigable ancestor in the list.
+        // We walk up the parent tree from the focused widget to find which of our
+        // navigable items is its ancestor. This handles cases like a slider inside a menu.
+        // Crucially, this check will FAIL if the focused element is just the menu panel itself,
+        // because the panel is not in the `items_list`. This is the key to solving the bug.
         for (items_list.items, 0..) |navigable_item_id, i| {
             var is_match = false;
             var walker_id: ?ElementId = focused_id;
@@ -2030,17 +2046,22 @@ fn navigateMenu(self: *Ui, menu_id: ElementId, direction: enum { next, prev, up,
                     is_match = true;
                     break;
                 }
+                // Stop walking if we hit the menu panel itself without a match.
+                if (current_id.id == menu_id.id) break;
+
                 const info = self.frame_element_info.get(current_id.id) orelse break;
                 walker_id = info.parent_id;
             }
-
             if (is_match) {
                 current_idx = i;
                 break;
             }
         }
-    } else if (self.menu_state.highlighted_path.items.len > level) {
-        // A standard menu item is highlighted. Find it.
+    }
+
+    // If no specific widget was focused, we fall back to using the visual highlight as our starting point.
+    // This will be the case when the menu is first opened.
+    if (current_idx == null and self.menu_state.highlighted_path.items.len > level) {
         const highlighted_id = self.menu_state.highlighted_path.items[level];
         for (items_list.items, 0..) |item_id, i| {
             if (item_id.id == highlighted_id.id) {
@@ -2050,7 +2071,9 @@ fn navigateMenu(self: *Ui, menu_id: ElementId, direction: enum { next, prev, up,
         }
     }
 
-    // Calculate the next index based on direction.
+    // --- Step 2: Calculate the next index based on direction. ---
+    // This calculation now works correctly on the first press because `current_idx`
+    // will be `0` (from the highlighted path), not `null`.
     const new_idx: usize = switch (direction) {
         .next, .down => if (current_idx) |idx| (idx + 1) % items_list.items.len else 0,
         .prev, .up => if (current_idx) |idx| (idx + items_list.items.len - 1) % items_list.items.len else items_list.items.len - 1,
@@ -2058,12 +2081,14 @@ fn navigateMenu(self: *Ui, menu_id: ElementId, direction: enum { next, prev, up,
 
     const new_target_id = items_list.items[new_idx];
 
-    // Now, activate the new target appropriately.
+    // --- Step 3: Activate the new target appropriately (unchanged from before). ---
     if (self.isWidgetNavigable(new_target_id)) {
-        // It's a widget. Give it global focus.
-        self.menu_state.highlighted_path.shrinkRetainingCapacity(level); // Clear highlight
+        // The new target is a widget that requires true focus.
+        // 1. Clear the visual menu item highlight.
+        self.menu_state.highlighted_path.shrinkRetainingCapacity(level);
+        // 2. Give the widget global focus.
         const info = self.frame_element_info.get(new_target_id.id).?;
-        const element_data = clay.getElementData(new_target_id); // Still use this for bbox
+        const element_data = clay.getElementData(new_target_id);
         if (element_data.found) {
             self.state.focused_id = .{
                 .id = new_target_id,
@@ -2072,8 +2097,10 @@ fn navigateMenu(self: *Ui, menu_id: ElementId, direction: enum { next, prev, up,
             };
         }
     } else {
-        // It's a standard menu item. Highlight it.
-        if (self.state.focusedId() != null) self.state.focused_id = null; // Clear focus
+        // The new target is a standard menu item.
+        // 1. Clear global focus in case we just navigated off a widget.
+        self.state.focused_id = null;
+        // 2. Set the visual highlight on the new menu item.
         self.menu_state.setHighlighted(self.gpa, level, new_target_id);
     }
 }
