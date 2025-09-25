@@ -112,6 +112,9 @@ shared_widget_states: std.AutoHashMapUnmanaged(u32, SharedWidgetState) = .empty,
 
 // --- Menu System State ---
 menu_state: MenuState = .{},
+// A map from a menu item's ID to the ID of the submenu it opens.
+// This is rebuilt every frame during layout.
+menu_item_to_submenu_map: std.AutoHashMapUnmanaged(u32, ElementId) = .empty,
 
 // --- Interaction State ---
 focus_scope_stack: std.ArrayList(ElementId) = .empty,
@@ -230,6 +233,7 @@ pub fn deinit(self: *Ui) void {
     self.last_scroll_states.deinit(self.gpa);
     self.focus_scope_stack.deinit(self.gpa);
     self.menu_state.deinit(self.gpa);
+    self.menu_item_to_submenu_map.deinit(self.gpa);
 
     self.widget_states.deinit(self.gpa);
     self.deferred_widget_states_current.deinit(self.gpa);
@@ -255,8 +259,9 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) !void {
     self.navigable_elements.clearRetainingCapacity();
     self.reverse_navigable_elements.clearRetainingCapacity();
     self.open_ids.clearRetainingCapacity();
-    self.menu_state.navigable_items_current_menu.clearRetainingCapacity();
     self.menu_state.hovered_submenu_candidate = null;
+    // This map is declarative and needs to be rebuilt each frame.
+    self.menu_item_to_submenu_map.clearRetainingCapacity();
 
     self.last_state = self.state; // Save the last frame's state for event generation
     self.state = .{}; // Reset current state; will be populated during layout and event generation
@@ -928,26 +933,31 @@ pub fn beginMenu(self: *Ui, id: ElementId, config: MenuConfig) !bool {
         .background_color = config.background_color,
         .border = .{ .width = config.border_width, .color = config.border_color },
         .corner_radius = config.corner_radius,
-        .state = .flags(.{ .focus = true, .keyboard = true }),
+        .state = .flags(.{ .focus = true, .keyboard = true, .activate = true }),
     });
 
-    try self.addListener(id, .key_down, @This(), @ptrCast(&onMenuKeyDown), self);
-    try self.addListener(id, .scoped_focus_close, @This(), @ptrCast(&onMenuCloseScope), self);
-
-    self.menu_state.navigable_items_current_menu.clearRetainingCapacity();
+    // Get (or create) and clear the navigable item list for this specific menu.
+    var gop = try self.menu_state.navigable_items.getOrPut(self.gpa, id.id);
+    if (!gop.found_existing) {
+        gop.value_ptr.* = .empty;
+    }
+    gop.value_ptr.clearRetainingCapacity();
 
     return true;
 }
 
 pub fn endMenu(self: *Ui) void {
-    self.removeListener(self.open_ids.items[self.open_ids.items.len - 1], .key_down, @This(), @ptrCast(&onMenuKeyDown));
-    self.removeListener(self.open_ids.items[self.open_ids.items.len - 1], .scoped_focus_close, @This(), @ptrCast(&onMenuCloseScope));
     self.closeElement();
 }
 
 /// Creates a menu item. Application logic should be handled by listening for the `.activate_end` or `.clicked` event on the provided `id`.
 pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemConfig) !void {
-    try self.menu_state.navigable_items_current_menu.append(self.gpa, id);
+    // Get the current menu's ID from the open_ids stack.
+    const menu_id = self.open_ids.items[self.open_ids.items.len - 1];
+    // Add this item to its parent menu's navigable list.
+    if (self.menu_state.navigable_items.getPtr(menu_id.id)) |list| {
+        try list.append(self.gpa, id);
+    }
 
     const level = self.menu_state.stack.items.len - 1;
     const is_highlighted = self.menu_state.highlighted_path.items.len > level and self.menu_state.highlighted_path.items[level].id == id.id;
@@ -981,7 +991,13 @@ pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemCon
 /// * The return value indicating whether the menu is open is for styling the current menu.
 pub fn subMenu(self: *Ui, self_id: ElementId, label: []const u8, child_menu_id: ElementId, config: MenuItemConfig) !bool {
     const parent_menu_id = self.open_ids.items[self.open_ids.items.len - 1];
-    try self.menu_state.navigable_items_current_menu.append(self.gpa, self_id);
+    // Add this item to its parent menu's navigable list.
+    if (self.menu_state.navigable_items.getPtr(parent_menu_id.id)) |list| {
+        try list.append(self.gpa, self_id);
+    }
+
+    // Register the relationship between this item and the submenu it opens.
+    try self.menu_item_to_submenu_map.put(self.gpa, self_id.id, child_menu_id);
 
     const level = self.menu_state.stack.items.len - 1;
     const is_highlighted = self.menu_state.highlighted_path.items.len > level and self.menu_state.highlighted_path.items[level].id == self_id.id;
@@ -1322,6 +1338,9 @@ pub const Event = struct {
         float_change: f64,
         int_change: i64,
         uint_change: u64,
+
+        menu_opened: void,
+        menu_closed: struct { level: u32 },
     };
 };
 
@@ -1375,7 +1394,8 @@ pub const MenuState = struct {
 
     stack: std.ArrayList(OpenMenuInfo) = .empty,
     highlighted_path: std.ArrayList(ElementId) = .empty,
-    navigable_items_current_menu: std.ArrayList(ElementId) = .empty,
+    // A map from a menu panel's ID to a list of its navigable item IDs.
+    navigable_items: std.AutoHashMapUnmanaged(u32, std.ArrayList(ElementId)) = .empty,
 
     open_request: ?OpenMenuInfo = null,
     close_request_level: ?usize = null,
@@ -1386,7 +1406,13 @@ pub const MenuState = struct {
     fn deinit(self: *MenuState, gpa: std.mem.Allocator) void {
         self.stack.deinit(gpa);
         self.highlighted_path.deinit(gpa);
-        self.navigable_items_current_menu.deinit(gpa);
+        // Deinitialize the hash map and all the lists it contains.
+        var it = self.navigable_items.iterator();
+        while (it.next()) |entry| {
+            var mutable_list = entry.value_ptr.*;
+            mutable_list.deinit(gpa);
+        }
+        self.navigable_items.deinit(gpa);
     }
 
     fn setHighlighted(self: *MenuState, allocator: std.mem.Allocator, level: usize, id: ElementId) void {
@@ -1910,21 +1936,65 @@ fn measureTextCallback(
     }
 }
 
-fn onMenuCloseScope(self: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.scoped_focus_close)) !void {
+fn onMenuCloseScope(_: *anyopaque, self: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.scoped_focus_close)) !void {
     // This event is sent when 'Escape' is pressed and a focus scope is active.
     // For a menu, this should close the current sub-menu level.
     self.closeTopMenu();
 }
 
-fn onMenuKeyDown(self: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
+fn onMenuActivate(_: *anyopaque, self: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
+    // This handler fires when the menu panel itself is "activated" (e.g., by pressing Enter).
+    // It finds the currently highlighted item and activates it instead.
     const level = self.menu_state.stack.items.len - 1;
-    const items = self.menu_state.navigable_items_current_menu;
-    if (items.items.len == 0) return;
+    if (self.menu_state.highlighted_path.items.len > level) {
+        const highlighted_id = self.menu_state.highlighted_path.items[level];
+        // Programmatically trigger an activation on the highlighted item. This will be
+        // picked up by `self.activated()` in the next layout pass.
+        try self.pushEvent(highlighted_id, .activate_begin, null);
+        try self.pushEvent(highlighted_id, .{ .activate_end = .{ .end_element = highlighted_id, .modifiers = .{} } }, null);
+    }
+}
+
+fn onMenuFocusChange(_: *anyopaque, self: *Ui, info: Ui.Event.Info, payload: Ui.Event.Payload(.scoped_focus_change)) !void {
+    // This handler manages Tab and Shift+Tab navigation within a menu.
+    const level = self.menu_state.stack.items.len - 1;
+    const items_list = self.menu_state.navigable_items.get(info.element_id.id) orelse return;
+    if (items_list.items.len == 0) return;
 
     var current_idx: ?usize = null;
     if (self.menu_state.highlighted_path.items.len > level) {
         const highlighted_id = self.menu_state.highlighted_path.items[level];
-        for (items.items, 0..) |item_id, i| {
+        for (items_list.items, 0..) |item_id, i| {
+            if (item_id.id == highlighted_id.id) {
+                current_idx = i;
+                break;
+            }
+        }
+    }
+
+    switch (payload) {
+        .next => { // Corresponds to Tab
+            const next_idx = if (current_idx) |idx| (idx + 1) % items_list.items.len else 0;
+            self.menu_state.setHighlighted(self.gpa, level, items_list.items[next_idx]);
+        },
+        .prev => { // Corresponds to Shift+Tab
+            const prev_idx = if (current_idx) |idx| (idx + items_list.items.len - 1) % items_list.items.len else items_list.items.len - 1;
+            self.menu_state.setHighlighted(self.gpa, level, items_list.items[prev_idx]);
+        },
+    }
+}
+
+fn onMenuKeyDown(_: *anyopaque, self: *Ui, info: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
+    const level = self.menu_state.stack.items.len - 1;
+    // Get the item list specific to the menu that received the event.
+    const items_list = self.menu_state.navigable_items.get(info.element_id.id) orelse return;
+    const items = items_list.items;
+    if (items.len == 0) return;
+
+    var current_idx: ?usize = null;
+    if (self.menu_state.highlighted_path.items.len > level) {
+        const highlighted_id = self.menu_state.highlighted_path.items[level];
+        for (items, 0..) |item_id, i| {
             if (item_id.id == highlighted_id.id) {
                 current_idx = i;
                 break;
@@ -1934,21 +2004,25 @@ fn onMenuKeyDown(self: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_do
 
     switch (key_data.key) {
         .down => {
-            const next_idx = if (current_idx) |idx| (idx + 1) % items.items.len else 0;
-            self.menu_state.setHighlighted(self.gpa, level, items.items[next_idx]);
+            const next_idx = if (current_idx) |idx| (idx + 1) % items.len else 0;
+            self.menu_state.setHighlighted(self.gpa, level, items[next_idx]);
         },
         .up => {
-            const prev_idx = if (current_idx) |idx| (idx + items.items.len - 1) % items.items.len else items.items.len - 1;
-            self.menu_state.setHighlighted(self.gpa, level, items.items[prev_idx]);
+            const prev_idx = if (current_idx) |idx| (idx + items.len - 1) % items.len else items.len - 1;
+            self.menu_state.setHighlighted(self.gpa, level, items[prev_idx]);
         },
         .right => {
-            // Activating the highlighted item will open its submenu if it has one.
+            // Instead of pushing an event, we now directly open the submenu.
             if (current_idx) |idx| {
-                const highlighted_id = items.items[idx];
-                // We simulate an 'activate' event on the item. The item's own logic
-                // in `beginSubMenu` will then call `openMenu`.
-                try self.pushEvent(highlighted_id, .activate_begin, null);
-                try self.pushEvent(highlighted_id, .{ .activate_end = .{ .end_element = highlighted_id, .modifiers = .{} } }, null);
+                const highlighted_id = items[idx];
+                // Check if this item is registered to open a submenu.
+                if (self.menu_item_to_submenu_map.get(highlighted_id.id)) |child_menu_id| {
+                    const parent_menu_id = info.element_id; // The event was dispatched on the parent menu panel.
+                    self.openMenu(child_menu_id, .{
+                        .parent_menu_id = parent_menu_id,
+                        .parent_item_id = highlighted_id,
+                    });
+                }
             }
         },
         .left => {
@@ -1968,13 +2042,39 @@ fn handleMenuState(self: *Ui) !void {
     // --- 1. Process deferred close requests ---
     if (ms.close_request_level) |level| {
         while (ms.stack.items.len > level) {
-            _ = ms.stack.pop() orelse break;
+            // When popping a menu, we must remove its listeners and its navigable item list.
+            const closed_menu = ms.stack.pop() orelse break;
+            self.removeListener(closed_menu.id, .key_down, anyopaque, &onMenuKeyDown);
+            self.removeListener(closed_menu.id, .scoped_focus_change, anyopaque, &onMenuFocusChange);
+            self.removeListener(closed_menu.id, .scoped_focus_close, anyopaque, &onMenuCloseScope);
+            self.removeListener(closed_menu.id, .activate_end, anyopaque, &onMenuActivate);
             self.popFocusScope();
+
+            // Clean up the navigable items list for the closed menu to prevent memory leaks.
+            if (ms.navigable_items.fetchRemove(closed_menu.id.id)) |removed_list| {
+                var mutable_list = removed_list.value; // thank you zig very helpful
+                mutable_list.deinit(self.gpa);
+            }
+
+            // Fire the public event notifying the application that a menu was closed.
+            try self.pushEvent(closed_menu.id, .{ .menu_closed = .{ .level = @intCast(ms.stack.items.len) } }, null);
         }
+
+        // After closing a menu, explicitly restore focus to the new top-most menu.
+        if (ms.stack.items.len > 0) {
+            const parent_menu = ms.stack.items[ms.stack.items.len - 1];
+            self.state.focused_id = .{
+                .id = parent_menu.id,
+                .bounding_box = clay.getElementData(parent_menu.id).bounding_box,
+                .state = .flags(.{ .focus = true, .keyboard = true, .activate = true }),
+            };
+        } else {
+            // If all menus were closed, clear focus.
+            self.state.focused_id = null;
+        }
+
         // After closing menus, the highlighted path might be longer than the new
         // menu stack. We must truncate it to match.
-        // It can also be shorter if no items were highlighted in the menus that
-        // remain open, so we must guard the shrink call to prevent a panic.
         if (ms.highlighted_path.items.len > ms.stack.items.len) {
             ms.highlighted_path.shrinkRetainingCapacity(ms.stack.items.len);
         }
@@ -2007,8 +2107,21 @@ fn handleMenuState(self: *Ui) !void {
 
         // Close any menus deeper than the level we're opening at
         while (ms.stack.items.len > open_at_level) {
-            _ = ms.stack.pop() orelse break;
+            // Also remove listeners and navigable item lists when closing menus here.
+            const closed_menu = ms.stack.pop() orelse break;
+            self.removeListener(closed_menu.id, .key_down, anyopaque, &onMenuKeyDown);
+            self.removeListener(closed_menu.id, .scoped_focus_change, anyopaque, &onMenuFocusChange);
+            self.removeListener(closed_menu.id, .scoped_focus_close, anyopaque, &onMenuCloseScope);
+            self.removeListener(closed_menu.id, .activate_end, anyopaque, &onMenuActivate);
             self.popFocusScope();
+
+            if (ms.navigable_items.fetchRemove(closed_menu.id.id)) |removed_list| {
+                var mutable_list = removed_list.value; // thank you zig very helpful
+                mutable_list.deinit(self.gpa);
+            }
+
+            // Fire the public event here as well
+            try self.pushEvent(closed_menu.id, .{ .menu_closed = .{ .level = @intCast(ms.stack.items.len) } }, null);
         }
 
         // When opening a menu, we must truncate the highlighted path to the new
@@ -2022,13 +2135,21 @@ fn handleMenuState(self: *Ui) !void {
         try ms.stack.append(self.gpa, request);
         try self.pushFocusScope(request.id);
 
-        // Setting focus here is tricky as the element might not exist yet in Clay's data.
-        // Focusing the focus scope is sufficient for keyboard input to be captured.
-        // We will set the focused_id if the element is found later.
+        // Fire the public event notifying the application that a menu was opened.
+        try self.pushEvent(request.id, .menu_opened, null);
+
+        // Add the listeners now that the menu is officially open.
+        // These will persist until the menu is closed.
+        try self.addListener(request.id, .key_down, anyopaque, &onMenuKeyDown, undefined);
+        try self.addListener(request.id, .scoped_focus_change, anyopaque, &onMenuFocusChange, undefined);
+        try self.addListener(request.id, .scoped_focus_close, anyopaque, &onMenuCloseScope, undefined);
+        try self.addListener(request.id, .activate_end, anyopaque, &onMenuActivate, undefined);
+
+        // Set focus to the new menu.
         self.state.focused_id = .{
             .id = request.id,
             .bounding_box = .{}, // BBox is not known yet, but that's okay.
-            .state = .flags(.{ .focus = true, .keyboard = true }),
+            .state = .flags(.{ .focus = true, .keyboard = true, .activate = true }),
         };
 
         ms.open_request = null;
