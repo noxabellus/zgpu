@@ -139,7 +139,7 @@ fn createLayout(ui: *Ui) !void {
             .min = 0.0,
             .max = 1.0,
             .default = 0.5,
-            .track_color = COLOR_LIGHT_HOVER,
+            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
             .handle_color = COLOR_ORANGE,
         });
     }
@@ -165,7 +165,7 @@ fn createLayout(ui: *Ui) !void {
             .min = -100.0,
             .max = 100.0,
             .default = 0.0,
-            .track_color = COLOR_LIGHT_HOVER,
+            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
             .handle_color = COLOR_BLUE,
         });
     }
@@ -191,7 +191,7 @@ fn createLayout(ui: *Ui) !void {
             .min = -50,
             .max = 50,
             .default = 0,
-            .track_color = COLOR_LIGHT_HOVER,
+            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
             .handle_color = COLOR_RED,
         });
     }
@@ -217,7 +217,7 @@ fn createLayout(ui: *Ui) !void {
             .min = 0,
             .max = 100,
             .default = 50,
-            .track_color = COLOR_LIGHT_HOVER,
+            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
             .handle_color = COLOR_TEAL,
         });
     }
