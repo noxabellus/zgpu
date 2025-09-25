@@ -296,12 +296,18 @@ fn createLayout(ui: *Ui) !void {
             .font_id = FONT_ID_MONO,
             .font_size = 12,
         });
-        try ui.menuItem(.fromSlice("PasteMenuItem"), "Paste", .{});
+        try ui.menuItem(.fromSlice("PasteMenuItem"), "Paste", .{
+            .font_id = FONT_ID_MONO,
+            .font_size = 12,
+        });
         try ui.menuSeparator();
 
         // Submenu Trigger
         // Note: we do not utilize it here, but the return value is a boolean indicating if it is open
-        _ = try ui.subMenu(.fromSlice("MoreOptionsMenuItem"), "More Options...", .fromSlice("SubMenu1"), .{});
+        _ = try ui.subMenu(.fromSlice("MoreOptionsMenuItem"), "More Options...", .fromSlice("SubMenu1"), .{
+            .font_id = FONT_ID_MONO,
+            .font_size = 12,
+        });
 
         try ui.menuSeparator();
 
@@ -310,14 +316,29 @@ fn createLayout(ui: *Ui) !void {
             try ui.openElement(.{ .id = .fromSlice("MenuSliderContainer"), .layout = .{ .padding = .all(4), .direction = .top_to_bottom } });
             defer ui.closeElement();
 
-            try ui.text("Opacity", .{ .font_id = FONT_ID_BODY, .font_size = 24 });
+            try ui.text("Opacity", .{ .font_id = FONT_ID_MONO, .font_size = 12 });
             {
                 try ui.beginElement(.fromSlice("MenuSlider"));
                 defer ui.closeElement();
 
                 const bb = ui.getElementBounds(.fromSlice("ContextMenuRoot")).?; // Note: This is kind of dangerous; if you were to set the fixed width to be exactly the menu width, it would actually grow each frame
-                try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(bb.width - 16), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .click = true, .drag = true }) });
-                try ui.bindSlider(f32, .{ .min = 0, .max = 1 });
+                try ui.configureElement(.{
+                    .layout = .{ .sizing = .{ .w = .fixed(bb.width - 16), .h = .fixed(20) } },
+                    .widget = true,
+                    .state = .flags(.{
+                        .click = true,
+                        .drag = true,
+                        .focus = true,
+                        .keyboard = true,
+                    }),
+                });
+                try ui.menuNavigable(); // makes this element navigable via keyboard in menus
+                try ui.bindSlider(f32, .{
+                    .min = 0,
+                    .max = 1,
+                    .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
+                    .handle_color = COLOR_TEAL,
+                });
             }
         }
     }

@@ -16,6 +16,11 @@ test {
     std.testing.refAllDecls(@This());
 }
 
+const FrameElementInfo = struct {
+    state: ElementState,
+    parent_id: ?ElementId,
+};
+
 pub const Widget = struct {
     user_data: *anyopaque,
     render: *const fn (*anyopaque, *Ui, RenderCommand) anyerror!void,
@@ -118,6 +123,9 @@ menu_item_to_submenu_map: std.AutoHashMapUnmanaged(u32, ElementId) = .empty,
 
 // --- Interaction State ---
 focus_scope_stack: std.ArrayList(ElementId) = .empty,
+
+// Stores information about every element declared in the current frame.
+frame_element_info: std.AutoHashMapUnmanaged(u32, FrameElementInfo) = .empty,
 
 state: State = .{},
 last_state: State = .{},
@@ -232,6 +240,7 @@ pub fn deinit(self: *Ui) void {
     self.current_scroll_states.deinit(self.gpa);
     self.last_scroll_states.deinit(self.gpa);
     self.focus_scope_stack.deinit(self.gpa);
+    self.frame_element_info.deinit(self.gpa);
     self.menu_state.deinit(self.gpa);
     self.menu_item_to_submenu_map.deinit(self.gpa);
 
@@ -259,6 +268,7 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) !void {
     self.navigable_elements.clearRetainingCapacity();
     self.reverse_navigable_elements.clearRetainingCapacity();
     self.open_ids.clearRetainingCapacity();
+    self.frame_element_info.clearRetainingCapacity();
     self.menu_state.hovered_submenu_candidate = null;
     // This map is declarative and needs to be rebuilt each frame.
     self.menu_item_to_submenu_map.clearRetainingCapacity();
@@ -1077,6 +1087,35 @@ pub fn subMenu(self: *Ui, self_id: ElementId, label: []const u8, child_menu_id: 
     return is_child_open;
 }
 
+/// Registers the currently open element as a navigable target within the current menu.
+/// This allows keyboard focus to move from menu items into custom embedded widgets.
+pub fn menuNavigable(self: *Ui) !void {
+    // This function must be called from within an open menu (i.e., inside a beginMenu/endMenu block).
+    std.debug.assert(self.open_ids.items.len >= 1);
+
+    // The menu stack must have at least one menu open.
+    if (self.menu_state.stack.items.len == 0) {
+        log.warn("menuNavigable called, but no menu is currently open in the menu stack.", .{});
+        return;
+    }
+
+    const element_id = self.open_ids.items[self.open_ids.items.len - 1];
+
+    // The current menu is always the last one on the menu_state stack.
+    // This is robust and not dependent on the layout nesting depth.
+    const menu_info = self.menu_state.stack.items[self.menu_state.stack.items.len - 1];
+    const menu_id = menu_info.id;
+
+    // Add this item to its parent menu's navigable list.
+    // The list is guaranteed to exist because it's created in `beginMenu`.
+    if (self.menu_state.navigable_items.getPtr(menu_id.id)) |list| {
+        try list.append(self.gpa, element_id);
+    } else {
+        // This case should ideally not be hit if used correctly.
+        log.err("Could not find navigable item list for menu {any}", .{menu_id});
+    }
+}
+
 pub fn menuSeparator(self: *Ui) !void {
     try self.elem(.{
         .layout = .{
@@ -1887,6 +1926,17 @@ fn clayColorToBatchColor(c: clay.Color) Batch2D.Color {
 // --- Backend implementation --- //
 
 fn handleStateSetup(self: *Ui, declaration: ElementDeclaration) !void {
+    // Capture element info for this frame.
+    const parent_id: ?ElementId = if (self.open_ids.items.len > 1)
+        self.open_ids.items[self.open_ids.items.len - 2]
+    else
+        null;
+
+    try self.frame_element_info.put(self.gpa, declaration.id.id, .{
+        .state = declaration.state,
+        .parent_id = parent_id,
+    });
+
     // Add navigable elements to the map in the order they are declared
     if (declaration.state.event_flags.focus) {
         const index = self.navigable_elements.count();
@@ -1955,39 +2005,84 @@ fn measureTextCallback(
     }
 }
 
+// Helper to determine if an element is a widget that should receive true focus.
+// It now uses our internal frame_element_info map.
+fn isWidgetNavigable(self: *Ui, id: ElementId) bool {
+    const info = self.frame_element_info.get(id.id) orelse return false;
+    return info.state.event_flags.focus;
+}
+
+// A unified helper to perform navigation within a menu.
+fn navigateMenu(self: *Ui, menu_id: ElementId, direction: enum { next, prev, up, down }) !void {
+    const level = self.menu_state.stack.items.len - 1;
+    const items_list = self.menu_state.navigable_items.get(menu_id.id) orelse return;
+    if (items_list.items.len == 0) return;
+
+    // Find the index of the currently active item.
+    var current_idx: ?usize = null;
+    if (self.state.focusedId()) |focused_id| {
+        // A widget inside the menu is focused. Find its navigable ancestor in the list.
+        for (items_list.items, 0..) |navigable_item_id, i| {
+            var is_match = false;
+            var walker_id: ?ElementId = focused_id;
+            while (walker_id) |current_id| {
+                if (current_id.id == navigable_item_id.id) {
+                    is_match = true;
+                    break;
+                }
+                const info = self.frame_element_info.get(current_id.id) orelse break;
+                walker_id = info.parent_id;
+            }
+
+            if (is_match) {
+                current_idx = i;
+                break;
+            }
+        }
+    } else if (self.menu_state.highlighted_path.items.len > level) {
+        // A standard menu item is highlighted. Find it.
+        const highlighted_id = self.menu_state.highlighted_path.items[level];
+        for (items_list.items, 0..) |item_id, i| {
+            if (item_id.id == highlighted_id.id) {
+                current_idx = i;
+                break;
+            }
+        }
+    }
+
+    // Calculate the next index based on direction.
+    const new_idx: usize = switch (direction) {
+        .next, .down => if (current_idx) |idx| (idx + 1) % items_list.items.len else 0,
+        .prev, .up => if (current_idx) |idx| (idx + items_list.items.len - 1) % items_list.items.len else items_list.items.len - 1,
+    };
+
+    const new_target_id = items_list.items[new_idx];
+
+    // Now, activate the new target appropriately.
+    if (self.isWidgetNavigable(new_target_id)) {
+        // It's a widget. Give it global focus.
+        self.menu_state.highlighted_path.shrinkRetainingCapacity(level); // Clear highlight
+        const info = self.frame_element_info.get(new_target_id.id).?;
+        const element_data = clay.getElementData(new_target_id); // Still use this for bbox
+        if (element_data.found) {
+            self.state.focused_id = .{
+                .id = new_target_id,
+                .bounding_box = element_data.bounding_box,
+                .state = info.state,
+            };
+        }
+    } else {
+        // It's a standard menu item. Highlight it.
+        if (self.state.focusedId() != null) self.state.focused_id = null; // Clear focus
+        self.menu_state.setHighlighted(self.gpa, level, new_target_id);
+    }
+}
+
 fn onMenuCloseScope(_: *anyopaque, self: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.scoped_focus_close)) !void {
     // This event is sent when 'Escape' is pressed and a focus scope is active.
     // For a menu, this should close the current sub-menu level.
     self.closeTopMenu();
 }
-
-// -fn onMenuActivate(_: *anyopaque, self: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
-// +fn onMenuActivate(_: *anyopaque, self: *Ui, info: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
-//      // This handler fires when the menu panel itself is "activated" (e.g., by pressing Enter).
-// -    // It finds the currently highlighted item and activates it instead.
-// +    // It finds the currently highlighted item and performs the appropriate action.
-//      const level = self.menu_state.stack.items.len - 1;
-//      if (self.menu_state.highlighted_path.items.len > level) {
-//          const highlighted_id = self.menu_state.highlighted_path.items[level];
-// -        // Programmatically trigger an activation on the highlighted item. This will be
-// -        // picked up by `self.activated()` in the next layout pass.
-// -        try self.pushEvent(highlighted_id, .activate_begin, null);
-// -        try self.pushEvent(highlighted_id, .{ .activate_end = .{ .end_element = highlighted_id, .modifiers = .{} } }, null);
-// +
-// +        // Check if the highlighted item is a submenu trigger.
-// +        if (self.menu_item_to_submenu_map.get(highlighted_id.id)) |child_menu_id| {
-// +            // It's a submenu. Open it directly.
-// +            const parent_menu_id = info.element_id; // The event came from the parent menu.
-// +            self.openMenu(child_menu_id, .{ .parent_menu_id = parent_menu_id, .parent_item_id = highlighted_id });
-// +        } else {
-// +            // It's a regular menu item. Push an event for the application to handle...
-// +            try self.pushEvent(highlighted_id, .activate_begin, null);
-// +            try self.pushEvent(highlighted_id, .{ .activate_end = .{ .end_element = highlighted_id, .modifiers = .{} } }, null);
-// +            // ...and close all menus.
-// +            self.closeAllMenus();
-// +        }
-//      }
-//  }
 
 fn onMenuActivate(_: *anyopaque, self: *Ui, info: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
     // This handler fires when the menu panel itself is "activated" (e.g., by pressing Enter).
@@ -2012,67 +2107,23 @@ fn onMenuActivate(_: *anyopaque, self: *Ui, info: Ui.Event.Info, _: Ui.Event.Pay
 
 fn onMenuFocusChange(_: *anyopaque, self: *Ui, info: Ui.Event.Info, payload: Ui.Event.Payload(.scoped_focus_change)) !void {
     // This handler manages Tab and Shift+Tab navigation within a menu.
-    const level = self.menu_state.stack.items.len - 1;
-    const items_list = self.menu_state.navigable_items.get(info.element_id.id) orelse return;
-    if (items_list.items.len == 0) return;
-
-    var current_idx: ?usize = null;
-    if (self.menu_state.highlighted_path.items.len > level) {
-        const highlighted_id = self.menu_state.highlighted_path.items[level];
-        for (items_list.items, 0..) |item_id, i| {
-            if (item_id.id == highlighted_id.id) {
-                current_idx = i;
-                break;
-            }
-        }
-    }
-
-    switch (payload) {
-        .next => { // Corresponds to Tab
-            const next_idx = if (current_idx) |idx| (idx + 1) % items_list.items.len else 0;
-            self.menu_state.setHighlighted(self.gpa, level, items_list.items[next_idx]);
-        },
-        .prev => { // Corresponds to Shift+Tab
-            const prev_idx = if (current_idx) |idx| (idx + items_list.items.len - 1) % items_list.items.len else items_list.items.len - 1;
-            self.menu_state.setHighlighted(self.gpa, level, items_list.items[prev_idx]);
-        },
-    }
+    try navigateMenu(self, info.element_id, switch (payload) {
+        .next => .next,
+        .prev => .prev,
+    });
 }
 
 fn onMenuKeyDown(_: *anyopaque, self: *Ui, info: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
-    const level = self.menu_state.stack.items.len - 1;
-    // Get the item list specific to the menu that received the event.
-    const items_list = self.menu_state.navigable_items.get(info.element_id.id) orelse return;
-    const items = items_list.items;
-    if (items.len == 0) return;
-
-    var current_idx: ?usize = null;
-    if (self.menu_state.highlighted_path.items.len > level) {
-        const highlighted_id = self.menu_state.highlighted_path.items[level];
-        for (items, 0..) |item_id, i| {
-            if (item_id.id == highlighted_id.id) {
-                current_idx = i;
-                break;
-            }
-        }
-    }
-
     switch (key_data.key) {
-        .down => {
-            const next_idx = if (current_idx) |idx| (idx + 1) % items.len else 0;
-            self.menu_state.setHighlighted(self.gpa, level, items[next_idx]);
-        },
-        .up => {
-            const prev_idx = if (current_idx) |idx| (idx + items.len - 1) % items.len else items.len - 1;
-            self.menu_state.setHighlighted(self.gpa, level, items[prev_idx]);
-        },
+        .down => try navigateMenu(self, info.element_id, .down),
+        .up => try navigateMenu(self, info.element_id, .up),
         .right => {
-            // Instead of pushing an event, we now directly open the submenu.
-            if (current_idx) |idx| {
-                const highlighted_id = items[idx];
-                // Check if this item is registered to open a submenu.
+            // Right arrow should open a submenu if a submenu item is highlighted.
+            const level = self.menu_state.stack.items.len - 1;
+            if (self.menu_state.highlighted_path.items.len > level) {
+                const highlighted_id = self.menu_state.highlighted_path.items[level];
                 if (self.menu_item_to_submenu_map.get(highlighted_id.id)) |child_menu_id| {
-                    const parent_menu_id = info.element_id; // The event was dispatched on the parent menu panel.
+                    const parent_menu_id = info.element_id;
                     self.openMenu(child_menu_id, .{
                         .parent_menu_id = parent_menu_id,
                         .parent_item_id = highlighted_id,
@@ -2082,7 +2133,7 @@ fn onMenuKeyDown(_: *anyopaque, self: *Ui, info: Ui.Event.Info, key_data: Ui.Eve
         },
         .left => {
             // If we are in a submenu (level > 0), close this menu and go back to the parent.
-            if (level > 0) {
+            if (self.menu_state.stack.items.len - 1 > 0) {
                 self.closeTopMenu();
             }
         },
