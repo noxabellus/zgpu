@@ -379,7 +379,7 @@ pub fn onMouseDown(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, mouse_d
         .y = mouse_down_data.mouse_position.y - info.bounding_box.y,
     };
 
-    if (ui.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), location)) |index| {
+    if (ui.getCharacterIndexAtOffset(self.id, location)) |index| {
         if (mouse_down_data.modifiers.alt) {
             // Alt-click: Add a new caret
             try self.carets.append(ui.gpa, .{ .start = index, .end = index });
@@ -411,7 +411,7 @@ pub fn onDrag(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, drag_data: U
         .y = drag_data.mouse_position.y - info.bounding_box.y,
     };
 
-    const offset = ui.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), location);
+    const offset = ui.getCharacterIndexAtOffset(self.id, location);
     if (offset != null and self.carets.items.len > 0) {
         self.carets.items[self.carets.items.len - 1].end = offset.?;
     }
@@ -509,8 +509,8 @@ pub fn onText(self: *TextInputWidget, ui: *Ui, _: Ui.Event.Info, text_data: Ui.E
                             if (!cmd.modifiers.shift) caret.start = caret.end;
                         },
                         .move_up, .move_down => {
-                            const start_offset_res = ui.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), caret.start) orelse continue;
-                            const end_offset_res = ui.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), caret.end) orelse continue;
+                            const start_offset_res = ui.getCharacterOffset(self.id, caret.start) orelse continue;
+                            const end_offset_res = ui.getCharacterOffset(self.id, caret.end) orelse continue;
 
                             const target_y_offset = if (cmd.action == .move_up)
                                 -start_offset_res.line_height
@@ -520,22 +520,22 @@ pub fn onText(self: *TextInputWidget, ui: *Ui, _: Ui.Event.Info, text_data: Ui.E
                             if (cmd.modifiers.alt) {
                                 // Alt: Duplicate selection to the next line
                                 const target_start_loc = Ui.Vec2{ .x = start_offset_res.offset.x, .y = start_offset_res.offset.y + target_y_offset };
-                                const new_start_res = ui.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_start_loc) orelse continue;
+                                const new_start_res = ui.getCharacterIndexAtOffset(self.id, target_start_loc) orelse continue;
 
                                 const target_end_loc = Ui.Vec2{ .x = end_offset_res.offset.x, .y = end_offset_res.offset.y + target_y_offset };
-                                const new_end_res = ui.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_end_loc) orelse continue;
+                                const new_end_res = ui.getCharacterIndexAtOffset(self.id, target_end_loc) orelse continue;
 
                                 try new_carets_to_add.append(ui.frame_arena, .{ .start = new_start_res, .end = new_end_res });
                             } else if (cmd.modifiers.shift) {
                                 // Shift: Extend selection to the next line
                                 const target_end_loc = Ui.Vec2{ .x = end_offset_res.offset.x, .y = end_offset_res.offset.y + target_y_offset };
-                                const new_end_res = ui.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_end_loc) orelse continue;
+                                const new_end_res = ui.getCharacterIndexAtOffset(self.id, target_end_loc) orelse continue;
 
                                 caret.end = new_end_res;
                             } else {
                                 // No modifiers: Move caret, collapsing selection
                                 const target_end_loc = Ui.Vec2{ .x = end_offset_res.offset.x, .y = end_offset_res.offset.y + target_y_offset };
-                                const new_end_res = ui.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_end_loc) orelse continue;
+                                const new_end_res = ui.getCharacterIndexAtOffset(self.id, target_end_loc) orelse continue;
                                 caret.start = new_end_res;
                                 caret.end = new_end_res;
                             }
@@ -543,9 +543,9 @@ pub fn onText(self: *TextInputWidget, ui: *Ui, _: Ui.Event.Info, text_data: Ui.E
                         .home => {
                             if (cmd.modifiers.ctrl) {
                                 caret.end = 0;
-                            } else if (ui.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), caret.end)) |offset| {
+                            } else if (ui.getCharacterOffset(self.id, caret.end)) |offset| {
                                 const target_loc = Ui.Vec2{ .x = 0, .y = offset.offset.y };
-                                if (ui.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), target_loc)) |target_index| caret.end = target_index;
+                                if (ui.getCharacterIndexAtOffset(self.id, target_loc)) |target_index| caret.end = target_index;
                             }
                             if (!cmd.modifiers.shift) caret.start = caret.end;
                         },
@@ -553,11 +553,11 @@ pub fn onText(self: *TextInputWidget, ui: *Ui, _: Ui.Event.Info, text_data: Ui.E
                             if (cmd.modifiers.ctrl) {
                                 caret.end = @intCast(self.currentText().len);
                             } else {
-                                if (ui.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), caret.end)) |current_offset_res| {
+                                if (ui.getCharacterOffset(self.id, caret.end)) |current_offset_res| {
                                     const end_of_line_target_loc = Ui.Vec2{ .x = 999999.0, .y = current_offset_res.offset.y };
-                                    if (ui.getCharacterIndexAtOffset(Ui.ElementId.fromSlice("TextInputTest"), end_of_line_target_loc)) |end_of_line_res| {
+                                    if (ui.getCharacterIndexAtOffset(self.id, end_of_line_target_loc)) |end_of_line_res| {
                                         var last_char_idx = end_of_line_res;
-                                        const check_offset_res = ui.getCharacterOffset(Ui.ElementId.fromSlice("TextInputTest"), last_char_idx);
+                                        const check_offset_res = ui.getCharacterOffset(self.id, last_char_idx);
                                         if (check_offset_res != null and check_offset_res.?.offset.y != current_offset_res.offset.y and last_char_idx > 0) {
                                             var prev_char_start = last_char_idx - 1;
                                             while (prev_char_start > 0 and (self.currentText()[prev_char_start] & 0b1100_0000) == 0b1000_0000) {
