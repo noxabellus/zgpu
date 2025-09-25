@@ -94,6 +94,7 @@ pub fn For(comptime T: type) type {
             try ui.addListener(self.id, .activate_end, Self, EventHandler.toggleOpen, self);
             try ui.addListener(self.id, .key_down, Self, EventHandler.onKeyDown, self);
             try ui.addListener(self.id, .focus_lost, Self, EventHandler.onFocusLost, self);
+            try ui.addListener(self.id, .scoped_focus_change, Self, EventHandler.onScopedFocusChange, self);
 
             inline for (field_names) |field_name| {
                 const field_value = comptime @field(T, field_name);
@@ -106,6 +107,7 @@ pub fn For(comptime T: type) type {
             ui.removeListener(self.id, .activate_end, Self, EventHandler.toggleOpen);
             ui.removeListener(self.id, .key_down, Self, EventHandler.onKeyDown);
             ui.removeListener(self.id, .focus_lost, Self, EventHandler.onFocusLost);
+            ui.removeListener(self.id, .scoped_focus_change, Self, EventHandler.onScopedFocusChange);
 
             inline for (field_names) |field_name| {
                 if (optionId(self, ui, field_name)) |option_id| {
@@ -211,6 +213,8 @@ pub fn For(comptime T: type) type {
         }
 
         fn selectValue(self: *Self, ui: *Ui, value: T) !void {
+            const was_open = self.is_open;
+
             if (self.current_value != value) {
                 self.current_value = value;
                 const int_value: std.meta.Tag(T) = @intFromEnum(value);
@@ -225,10 +229,14 @@ pub fn For(comptime T: type) type {
             }
             self.is_open = false;
             self.highlighted_index = null;
+
+            if (was_open) {
+                ui.popFocusScope();
+            }
         }
 
         const EventHandler = struct {
-            pub fn toggleOpen(self: *Self, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
+            pub fn toggleOpen(self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
                 if (self.just_selected_with_key) {
                     self.just_selected_with_key = false;
                     return;
@@ -237,6 +245,9 @@ pub fn For(comptime T: type) type {
                 self.is_open = !self.is_open;
 
                 if (self.is_open) {
+                    // Push focus scope when the panel is opened.
+                    try ui.pushFocusScope(self.id);
+
                     // When opening, set highlight to the current selection
                     inline for (field_names, 0..) |field_name, i| {
                         const value = comptime @field(T, field_name);
@@ -246,14 +257,40 @@ pub fn For(comptime T: type) type {
                         }
                     }
                 } else {
+                    // Pop focus scope when the panel is closed.
+                    ui.popFocusScope();
                     self.highlighted_index = null;
                 }
             }
 
-            pub fn onFocusLost(self: *Self, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.focus_lost)) !void {
-                // When the dropdown loses focus, always close the panel.
-                self.is_open = false;
-                self.highlighted_index = null;
+            pub fn onFocusLost(self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.focus_lost)) !void {
+                // When the dropdown loses focus, always close the panel and pop the scope.
+                if (self.is_open) {
+                    self.is_open = false;
+                    self.highlighted_index = null;
+                    ui.popFocusScope();
+                }
+            }
+
+            pub fn onScopedFocusChange(self: *Self, _: *Ui, _: Ui.Event.Info, direction: Ui.Event.Payload(.scoped_focus_change)) !void {
+                if (!self.is_open) return;
+
+                switch (direction) {
+                    .prev => { // Equivalent to Shift+Tab or 'up'
+                        if (self.highlighted_index) |idx| {
+                            self.highlighted_index = (idx + num_options - 1) % num_options;
+                        } else {
+                            self.highlighted_index = num_options - 1;
+                        }
+                    },
+                    .next => { // Equivalent to Tab or 'down'
+                        if (self.highlighted_index) |idx| {
+                            self.highlighted_index = (idx + 1) % num_options;
+                        } else {
+                            self.highlighted_index = 0;
+                        }
+                    },
+                }
             }
 
             pub fn onKeyDown(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
@@ -263,6 +300,8 @@ pub fn For(comptime T: type) type {
                     .escape => {
                         self.is_open = false;
                         self.highlighted_index = null;
+                        // Pop focus scope on escape.
+                        ui.popFocusScope();
                     },
                     .up => {
                         if (self.highlighted_index) |idx| {

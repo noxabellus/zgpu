@@ -106,6 +106,8 @@ shared_widget_states: std.AutoHashMapUnmanaged(u32, SharedWidgetState) = .empty,
 
 // --- Interaction State ---
 
+focus_scope_stack: std.ArrayList(ElementId) = .empty,
+
 state: State = .{},
 last_state: State = .{},
 wheel_delta: Vec2 = .{},
@@ -216,6 +218,7 @@ pub fn deinit(self: *Ui) void {
     self.event_dispatch.deinit(self.gpa);
     self.current_scroll_states.deinit(self.gpa);
     self.last_scroll_states.deinit(self.gpa);
+    self.focus_scope_stack.deinit(self.gpa);
 
     self.widget_states.deinit(self.gpa);
     self.deferred_widget_states_current.deinit(self.gpa);
@@ -576,6 +579,18 @@ pub fn focusedId(self: *Ui) ?ElementId {
 /// Get the focused element ID from the last frame, or null if there was no focused element.
 pub fn lastFocusedId(self: *Ui) ?ElementId {
     return self.last_state.focusedId();
+}
+
+/// Pushes an element ID onto the focus scope stack.
+/// While a scope is active, focus navigation events (Tab, Shift+Tab) will be sent
+/// to the element at the top of the stack instead of performing global focus changes.
+pub fn pushFocusScope(self: *Ui, id: ElementId) !void {
+    try self.focus_scope_stack.append(self.gpa, id);
+}
+
+/// Pops the top element ID from the focus scope stack.
+pub fn popFocusScope(self: *Ui) void {
+    _ = self.focus_scope_stack.pop();
 }
 
 // Widget api //
@@ -1050,6 +1065,8 @@ pub const Event = struct {
             new_offset: Vec2,
             delta: Vec2,
         },
+
+        scoped_focus_change: enum { next, prev },
 
         text_change: []const u8,
         bool_change: bool,
@@ -1592,6 +1609,7 @@ fn measureTextCallback(
 }
 
 /// Processes the current UI state against the last frame's state to generate interaction events.
+/// Processes the current UI state against the last frame's state to generate interaction events.
 fn generateEvents(self: *Ui) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
@@ -2070,7 +2088,42 @@ fn generateEvents(self: *Ui) !void {
     }
 
     // --- Handle Keyboard Focus Events ---
-    if (self.navigable_elements.count() > 0) {
+    if (self.focus_scope_stack.items.len > 0) {
+        // A scope is active. Send a special event to that widget instead of doing global navigation.
+        if (focus_next_action == .released or focus_prev_action == .released) {
+            const scope_owner_id = self.focus_scope_stack.items[self.focus_scope_stack.items.len - 1];
+
+            // The bounding box can be retrieved from Clay's post-layout data.
+            // If the element wasn't laid out, this will be zero-initialized, which is fine.
+            const bounding_box = clay.getElementData(scope_owner_id).bounding_box;
+
+            // To get the user_data, we need to find the ElementState that was
+            // declared during layout. The navigable_elements map is the best
+            // place to look this up by ID. An element that can own a focus scope
+            // must be focusable itself, and therefore will be in this map.
+            var user_data: ?*anyopaque = null;
+            if (self.reverse_navigable_elements.get(scope_owner_id.id)) |nav_index| {
+                if (self.navigable_elements.get(nav_index)) |nav_entry| {
+                    user_data = nav_entry.state.getUserData();
+                }
+            }
+
+            const event_data: Event.Data = if (focus_next_action == .released)
+                .{ .scoped_focus_change = .next }
+            else
+                .{ .scoped_focus_change = .prev };
+
+            try self.events.append(self.gpa, .{
+                .info = .{
+                    .element_id = scope_owner_id,
+                    .bounding_box = bounding_box,
+                    .user_data = user_data,
+                },
+                .data = event_data,
+            });
+        }
+    } else if (self.navigable_elements.count() > 0) {
+        // No scope active, perform global focus navigation as before.
         if (focus_prev_action == .released) {
             var current_index: ?u32 = null;
             if (self.state.focusedId()) |focused_id| {
