@@ -61,11 +61,6 @@ event_dispatch: EventDispatch = .empty,
 
 user_data: ?*anyopaque = null,
 
-state: State = .{},
-last_state: State = .{},
-wheel_delta: Vec2 = .{},
-char_input: []const BindingState.Char = &.{},
-
 open_layout: bool = false,
 
 // A stack of all elements currently under the mouse, populated during layout. The last element is the top-most.
@@ -98,6 +93,13 @@ widgets_seen: std.AutoHashMapUnmanaged(u32, void) = .empty,
 // events from widgets triggered this frame, to be dispatched on the next frame
 widget_events: std.ArrayList(Event) = .empty,
 
+// --- Interaction State ---
+
+state: State = .{},
+last_state: State = .{},
+wheel_delta: Vec2 = .{},
+char_input: []const BindingState.Char = &.{},
+
 text_repeat: struct {
     timer: std.time.Timer = undefined,
     initial_delay: u64 = 350 * std.time.ns_per_ms,
@@ -114,6 +116,22 @@ text_repeat: struct {
             };
         }
     } = .none,
+} = .{},
+
+click_state: struct {
+    timer: std.time.Timer = undefined,
+    // Double-click state
+    last_click_time: u64 = 0,
+    last_click_element_id: ?u32 = null,
+    double_click_threshold_ms: u64 = 250,
+    // Drag-to-click differentiation state
+    drag_state: struct {
+        start_pos: Vec2 = .{},
+        start_time: u64 = 0,
+        is_dragging: bool = false,
+    } = .{},
+    drag_time_threshold_ms: u64 = 150,
+    drag_dist_threshold: f32 = 5.0,
 } = .{},
 
 pub fn init(gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, bindings: *BindingState) !*Ui {
@@ -156,6 +174,7 @@ pub fn init(gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *B
         .deferred_widget_arena_last = std.heap.ArenaAllocator.init(gpa),
     };
 
+    self.click_state.timer = try .start();
     self.text_repeat.timer = try .start();
 
     // Ensure required ui input bindings are registered
@@ -713,6 +732,7 @@ pub const Event = struct {
     pub const Tag = std.meta.Tag(Data);
 
     pub fn Payload(comptime tag: Tag) type {
+        @setEvalBranchQuota(10_000);
         return std.meta.TagPayload(Data, tag);
     }
 
@@ -730,8 +750,11 @@ pub const Event = struct {
         mouse_down: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
         mouse_up: struct { mouse_position: Vec2, end_element: ?ElementId, modifiers: BindingState.Modifiers },
         clicked: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
+        double_clicked: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
 
+        drag_begin: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
         drag: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
+        drag_end: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
 
         text: union(enum) {
             chars: []const BindingState.Char,
@@ -1321,6 +1344,8 @@ fn generateEvents(self: *Ui) !void {
 
     const modifiers = self.bindings.input_state.getModifiers();
 
+    const now = self.click_state.timer.read();
+
     // The top-most element in the stack is the one we consider "hovered" for this frame.
     if (self.hovered_element_stack.items.len > 0) {
         self.state.hovered = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1];
@@ -1617,21 +1642,6 @@ fn generateEvents(self: *Ui) !void {
         }
     }
 
-    // --- Generate Drag Event ---
-    if (primary_mouse_action.isDown() and self.state.active_id != null) {
-        const active_elem = self.state.active_id.?;
-        if (active_elem.state.event_flags.drag and self.last_state.activeIdValue() == self.state.activeIdValue()) {
-            try self.events.append(self.gpa, .{
-                .info = .{
-                    .element_id = active_elem.id,
-                    .bounding_box = active_elem.bounding_box,
-                    .user_data = active_elem.state.getUserData(),
-                },
-                .data = .{ .drag = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
-            });
-        }
-    }
-
     // Handle focus changes on mouse press
     if (primary_mouse_action == .pressed) {
         var clear_focus = true;
@@ -1651,6 +1661,8 @@ fn generateEvents(self: *Ui) !void {
     // --- Generate Mouse Release Events ---
     if (primary_mouse_action == .released and self.last_state.active_id != null) {
         const last_active = self.last_state.active_id.?;
+
+        // Always generate mouse_up if the element was clickable
         if (last_active.state.event_flags.click) {
             try self.events.append(self.gpa, .{
                 .info = .{
@@ -1660,17 +1672,46 @@ fn generateEvents(self: *Ui) !void {
                 },
                 .data = .{ .mouse_up = .{ .mouse_position = mouse_pos, .end_element = self.state.hoveredId(), .modifiers = modifiers } },
             });
+        }
 
-            if (last_active.id.id == self.state.hoveredIdValue()) {
+        if (self.click_state.drag_state.is_dragging) {
+            // This was a drag, so generate drag_end and no click.
+            if (last_active.state.event_flags.drag) {
                 try self.events.append(self.gpa, .{
                     .info = .{
                         .element_id = last_active.id,
                         .bounding_box = last_active.bounding_box,
                         .user_data = last_active.state.getUserData(),
                     },
-                    .data = .{ .clicked = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
+                    .data = .{ .drag_end = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
                 });
             }
+            self.click_state.drag_state.is_dragging = false;
+            // A drag action resets any pending double-click.
+            self.click_state.last_click_element_id = null;
+        } else if (last_active.state.event_flags.click and last_active.id.id == self.state.hoveredIdValue()) {
+            // This was not a drag. Check for click/double-click.
+            const double_click_threshold_ns = self.click_state.double_click_threshold_ms * std.time.ns_per_ms;
+            if (self.click_state.last_click_element_id == last_active.id.id and (now - self.click_state.last_click_time) < double_click_threshold_ns) {
+                // Double click successful.
+                try self.events.append(self.gpa, .{
+                    .info = .{ .element_id = last_active.id, .bounding_box = last_active.bounding_box, .user_data = last_active.state.getUserData() },
+                    .data = .{ .double_clicked = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
+                });
+                // Reset to prevent triple-clicks.
+                self.click_state.last_click_element_id = null;
+            } else {
+                // Single click. Record for a potential double-click.
+                try self.events.append(self.gpa, .{
+                    .info = .{ .element_id = last_active.id, .bounding_box = last_active.bounding_box, .user_data = last_active.state.getUserData() },
+                    .data = .{ .clicked = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
+                });
+                self.click_state.last_click_element_id = last_active.id.id;
+                self.click_state.last_click_time = now;
+            }
+        } else {
+            // Mouse was released on a different element or a non-clickable one; reset double-click tracking.
+            self.click_state.last_click_element_id = null;
         }
     }
 
@@ -1700,6 +1741,13 @@ fn generateEvents(self: *Ui) !void {
                     .data = .{ .mouse_down = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
                 });
             }
+            // If the new active element is draggable, initialize the drag state.
+            if (is_mouse_activating and new_active.state.event_flags.drag) {
+                self.click_state.drag_state.is_dragging = false;
+                self.click_state.drag_state.start_pos = mouse_pos;
+                self.click_state.drag_state.start_time = now;
+            }
+
             if (new_active.state.event_flags.activate) {
                 try self.events.append(self.gpa, .{
                     .info = .{
@@ -1711,7 +1759,37 @@ fn generateEvents(self: *Ui) !void {
                 });
             }
         }
-    } else if (self.state.active_id) |active_elem| {
+    } else if (self.state.active_id) |active_elem| { // Element remains active from last frame.
+        // Handle drag state progression
+        if (primary_mouse_action.isDown() and active_elem.state.event_flags.drag) {
+            if (!self.click_state.drag_state.is_dragging) {
+                // Check if drag thresholds (time or distance) have been met.
+                const elapsed_time = now - self.click_state.drag_state.start_time;
+                const drag_time_threshold_ns = self.click_state.drag_time_threshold_ms * std.time.ns_per_ms;
+
+                const dx = mouse_pos.x - self.click_state.drag_state.start_pos.x;
+                const dy = mouse_pos.y - self.click_state.drag_state.start_pos.y;
+                const dist_sq = dx * dx + dy * dy;
+                const dist_threshold_sq = self.click_state.drag_dist_threshold * self.click_state.drag_dist_threshold;
+
+                if (elapsed_time > drag_time_threshold_ns or dist_sq > dist_threshold_sq) {
+                    self.click_state.drag_state.is_dragging = true;
+                    try self.events.append(self.gpa, .{
+                        .info = .{ .element_id = active_elem.id, .bounding_box = active_elem.bounding_box, .user_data = active_elem.state.getUserData() },
+                        .data = .{ .drag_begin = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
+                    });
+                }
+            }
+
+            if (self.click_state.drag_state.is_dragging) {
+                try self.events.append(self.gpa, .{
+                    .info = .{ .element_id = active_elem.id, .bounding_box = active_elem.bounding_box, .user_data = active_elem.state.getUserData() },
+                    .data = .{ .drag = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
+                });
+            }
+        }
+
+        // Handle 'activating' event for any held active element (mouse or keyboard).
         if (active_elem.state.event_flags.activate) {
             try self.events.append(self.gpa, .{
                 .info = .{
@@ -1721,6 +1799,14 @@ fn generateEvents(self: *Ui) !void {
                 },
                 .data = .activating,
             });
+        }
+    }
+
+    // If no mouse buttons are being interacted with, check if enough time has passed to invalidate a pending double-click.
+    if (self.click_state.last_click_element_id != null and !primary_mouse_action.isDown()) {
+        const double_click_threshold_ns = self.click_state.double_click_threshold_ms * std.time.ns_per_ms;
+        if (now - self.click_state.last_click_time > double_click_threshold_ns) {
+            self.click_state.last_click_element_id = null;
         }
     }
 

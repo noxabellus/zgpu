@@ -84,6 +84,7 @@ pub fn deinit(self: *TextInputWidget, ui: *Ui) void {
 pub fn bindEvents(self: *TextInputWidget, ui: *Ui) !void {
     try ui.addListener(self.id, .mouse_down, TextInputWidget, TextInputWidget.onMouseDown, self);
     try ui.addListener(self.id, .mouse_up, TextInputWidget, TextInputWidget.onMouseUp, self);
+    try ui.addListener(self.id, .double_clicked, TextInputWidget, TextInputWidget.onDoubleClicked, self);
     try ui.addListener(self.id, .drag, TextInputWidget, TextInputWidget.onDrag, self);
     try ui.addListener(self.id, .text, TextInputWidget, TextInputWidget.onText, self);
 }
@@ -91,6 +92,7 @@ pub fn bindEvents(self: *TextInputWidget, ui: *Ui) !void {
 pub fn unbindEvents(self: *TextInputWidget, ui: *Ui) void {
     ui.removeListener(self.id, .mouse_down, TextInputWidget, TextInputWidget.onMouseDown);
     ui.removeListener(self.id, .mouse_up, TextInputWidget, TextInputWidget.onMouseUp);
+    ui.removeListener(self.id, .double_clicked, TextInputWidget, TextInputWidget.onDoubleClicked);
     ui.removeListener(self.id, .drag, TextInputWidget, TextInputWidget.onDrag);
     ui.removeListener(self.id, .text, TextInputWidget, TextInputWidget.onText);
 }
@@ -369,6 +371,18 @@ pub fn onSet(self: *TextInputWidget, ui: *Ui, new_text: *const []const u8) !void
     try self.carets.append(ui.gpa, .{ .start = 0, .end = @intCast(new_text.len) });
 }
 
+pub fn onDoubleClicked(self: *TextInputWidget, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.double_clicked)) !void {
+    log.info("TextInput received double click event", .{});
+
+    if (self.carets.items.len == 0) return;
+
+    const caret = &self.carets.items[self.carets.items.len - 1];
+    caret.start = findPrevWordBreak(self.currentText(), caret.end);
+    caret.end = findNextWordBreak(self.currentText(), caret.end);
+
+    try sortAndMergeCarets(&self.carets);
+}
+
 pub fn onMouseDown(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
     log.info("TextInput received mouse down event: {any}", .{mouse_down_data});
 
@@ -379,18 +393,18 @@ pub fn onMouseDown(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, mouse_d
 
     if (ui.getCharacterIndexAtOffset(self.id, location)) |index| {
         if (mouse_down_data.modifiers.alt) {
-            log.info("Alt drag start", .{});
             // START a column select drag.
             self.column_select_start_pos = index;
-            try self.carets.append(ui.gpa, .{ .start = index, .end = index });
             if (mouse_down_data.modifiers.shift) {
                 log.info("Alt+Shift drag additive", .{});
-                self.drag_additive = @intCast(self.carets.items.len);
+
+                self.drag_additive = @intCast(self.carets.items.len + 1);
             } else {
                 log.info("Alt drag new", .{});
                 self.carets.clearRetainingCapacity();
-                self.drag_additive = 0;
+                self.drag_additive = 1;
             }
+            try self.carets.append(ui.gpa, .{ .start = index, .end = index });
         } else if (mouse_down_data.modifiers.shift and self.carets.items.len > 0) {
             log.info("Shift click extend", .{});
             self.carets.items[self.carets.items.len - 1].end = index;
@@ -404,7 +418,6 @@ pub fn onMouseDown(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, mouse_d
 
 pub fn onMouseUp(self: *TextInputWidget, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.mouse_up)) !void {
     log.info("TextInput received mouse up event", .{});
-    log.info("TextInput received mouse up event", .{});
 
     try sortAndMergeCarets(&self.carets);
     self.column_select_start_pos = null;
@@ -412,6 +425,8 @@ pub fn onMouseUp(self: *TextInputWidget, _: *Ui, _: Ui.Event.Info, _: Ui.Event.P
 }
 
 pub fn onDrag(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
+    log.info("drag event: {any}", .{drag_data});
+
     const location = Ui.Vec2{
         .x = drag_data.mouse_position.x - info.bounding_box.x,
         .y = drag_data.mouse_position.y - info.bounding_box.y,
