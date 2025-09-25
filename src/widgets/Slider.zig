@@ -33,9 +33,6 @@ pub fn For(comptime T: type) type {
             handle_color: Ui.Color,
             handle_size: f32,
 
-            // Interaction state
-            is_dragging: bool = false,
-
             pub const Config = struct {
                 min: T = 0.0,
                 max: T = 1.0,
@@ -69,13 +66,11 @@ pub fn For(comptime T: type) type {
             pub fn bindEvents(self: *Self, ui: *Ui) !void {
                 try ui.addListener(self.id, .mouse_down, Self, onMouseDown, self);
                 try ui.addListener(self.id, .drag, Self, onDrag, self);
-                try ui.addListener(self.id, .mouse_up, Self, onMouseUp, self);
             }
 
             pub fn unbindEvents(self: *Self, ui: *Ui) void {
                 ui.removeListener(self.id, .mouse_down, Self, onMouseDown);
                 ui.removeListener(self.id, .drag, Self, onDrag);
-                ui.removeListener(self.id, .mouse_up, Self, onMouseUp);
             }
 
             pub fn onGet(self: *Self, _: *Ui) *const T {
@@ -88,20 +83,12 @@ pub fn For(comptime T: type) type {
 
             /// Called when the user presses the mouse button over the slider.
             pub fn onMouseDown(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
-                self.is_dragging = true;
                 try self.updateValueFromMouse(ui, info, mouse_down_data.mouse_position);
             }
 
             /// Called when the user drags the mouse after clicking on the slider.
             pub fn onDrag(self: *Self, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
-                if (self.is_dragging) {
-                    try self.updateValueFromMouse(ui, info, drag_data.mouse_position);
-                }
-            }
-
-            /// Called when the user releases the mouse button.
-            pub fn onMouseUp(self: *Self, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.mouse_up)) !void {
-                self.is_dragging = false;
+                try self.updateValueFromMouse(ui, info, drag_data.mouse_position);
             }
 
             /// Calculates the new slider value based on mouse position and fires an event if it changed.
@@ -153,9 +140,6 @@ pub fn For(comptime T: type) type {
                 handle_color: Ui.Color,
                 handle_size: f32,
 
-                // Interaction state
-                is_dragging: bool = false,
-
                 pub const Config = struct {
                     min: T = -50,
                     max: T = 50,
@@ -189,13 +173,11 @@ pub fn For(comptime T: type) type {
                 pub fn bindEvents(self: *Self, ui: *Ui) !void {
                     try ui.addListener(self.id, .mouse_down, Self, onMouseDown, self);
                     try ui.addListener(self.id, .drag, Self, onDrag, self);
-                    try ui.addListener(self.id, .mouse_up, Self, onMouseUp, self);
                 }
 
                 pub fn unbindEvents(self: *Self, ui: *Ui) void {
                     ui.removeListener(self.id, .mouse_down, Self, onMouseDown);
                     ui.removeListener(self.id, .drag, Self, onDrag);
-                    ui.removeListener(self.id, .mouse_up, Self, onMouseUp);
                 }
 
                 pub fn onGet(self: *Self, _: *Ui) *const T {
@@ -208,20 +190,12 @@ pub fn For(comptime T: type) type {
 
                 /// Called when the user presses the mouse button over the slider.
                 pub fn onMouseDown(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
-                    self.is_dragging = true;
                     try self.updateValueFromMouse(ui, info, mouse_down_data.mouse_position);
                 }
 
                 /// Called when the user drags the mouse after clicking on the slider.
                 pub fn onDrag(self: *Self, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
-                    if (self.is_dragging) {
-                        try self.updateValueFromMouse(ui, info, drag_data.mouse_position);
-                    }
-                }
-
-                /// Called when the user releases the mouse button.
-                pub fn onMouseUp(self: *Self, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.mouse_up)) !void {
-                    self.is_dragging = false;
+                    try self.updateValueFromMouse(ui, info, drag_data.mouse_position);
                 }
 
                 /// Calculates the new slider value based on mouse position and fires an event if it changed.
@@ -275,9 +249,6 @@ pub fn For(comptime T: type) type {
                 handle_color: Ui.Color,
                 handle_size: f32,
 
-                // Interaction state
-                is_dragging: bool = false,
-
                 pub const Config = struct {
                     min: T = 0,
                     max: T = 100,
@@ -311,13 +282,11 @@ pub fn For(comptime T: type) type {
                 pub fn bindEvents(self: *Self, ui: *Ui) !void {
                     try ui.addListener(self.id, .mouse_down, Self, onMouseDown, self);
                     try ui.addListener(self.id, .drag, Self, onDrag, self);
-                    try ui.addListener(self.id, .mouse_up, Self, onMouseUp, self);
                 }
 
                 pub fn unbindEvents(self: *Self, ui: *Ui) void {
                     ui.removeListener(self.id, .mouse_down, Self, onMouseDown);
                     ui.removeListener(self.id, .drag, Self, onDrag);
-                    ui.removeListener(self.id, .mouse_up, Self, onMouseUp);
                 }
 
                 pub fn onGet(self: *Self, _: *Ui) *const T {
@@ -330,20 +299,12 @@ pub fn For(comptime T: type) type {
 
                 /// Called when the user presses the mouse button over the slider.
                 pub fn onMouseDown(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
-                    self.is_dragging = true;
                     try self.updateValueFromMouse(ui, info, mouse_down_data.mouse_position);
                 }
 
                 /// Called when the user drags the mouse after clicking on the slider.
                 pub fn onDrag(self: *Self, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
-                    if (self.is_dragging) {
-                        try self.updateValueFromMouse(ui, info, drag_data.mouse_position);
-                    }
-                }
-
-                /// Called when the user releases the mouse button.
-                pub fn onMouseUp(self: *Self, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.mouse_up)) !void {
-                    self.is_dragging = false;
+                    try self.updateValueFromMouse(ui, info, drag_data.mouse_position);
                 }
 
                 /// Calculates the new slider value based on mouse position and fires an event if it changed.

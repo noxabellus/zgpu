@@ -609,6 +609,11 @@ pub fn getCharacterIndexAtOffset(self: *Ui, id: ElementId, offset: Vec2) ?u32 {
     return clay.getCharacterIndexAtOffset(id, vec2ToClay(offset));
 }
 
+pub fn getCharacterOffsetAtPoint(self: *Ui, id: ElementId, point: Vec2) ?CharacterOffset {
+    const index = self.getCharacterIndexAtOffset(id, point) orelse return null;
+    return self.getCharacterOffset(id, index);
+}
+
 pub fn pushEvent(self: *Ui, id: ElementId, data: Event.Data, user_data: ?*anyopaque) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
@@ -1572,24 +1577,22 @@ fn generateEvents(self: *Ui) !void {
 
     // --- Handle Active State and Focus-on-click ---
     // Determine the current active element based on continuous input state. Mouse input takes precedence.
-    var is_mouse_activating = false;
-    if (primary_mouse_action.isDown()) {
-        var found_click_target = false;
-
+    if (primary_mouse_action == .pressed) {
         // Iterate through the hovered stack from top to bottom to find the correct event target.
         for (self.hovered_element_stack.items, 0..) |_, i| {
             const hovered_state = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1 - i];
 
             // The first clickable, draggable or activatable element we find becomes active.
-            if (!found_click_target and (hovered_state.state.event_flags.click or hovered_state.state.event_flags.activate or hovered_state.state.event_flags.drag)) {
+            if (hovered_state.state.event_flags.click or hovered_state.state.event_flags.activate or hovered_state.state.event_flags.drag) {
                 self.state.active_id = hovered_state;
-                is_mouse_activating = true;
-                found_click_target = true;
                 break;
             }
         }
     }
 
+    // An interaction is mouse-driven if the button is down AND we have a locked-in active element.
+    // This correctly handles continuation (.held) frames.
+    const is_mouse_activating = primary_mouse_action.isDown() and self.state.active_id != null;
     // If mouse isn't activating, check keyboard.
     if (!is_mouse_activating) {
         // Only consider keyboard activation if we haven't just processed text input.
@@ -1617,7 +1620,7 @@ fn generateEvents(self: *Ui) !void {
     // --- Generate Drag Event ---
     if (primary_mouse_action.isDown() and self.state.active_id != null) {
         const active_elem = self.state.active_id.?;
-        if (active_elem.state.event_flags.drag) {
+        if (active_elem.state.event_flags.drag and self.last_state.activeIdValue() == self.state.activeIdValue()) {
             try self.events.append(self.gpa, .{
                 .info = .{
                     .element_id = active_elem.id,
@@ -1687,6 +1690,7 @@ fn generateEvents(self: *Ui) !void {
         }
         if (self.state.active_id) |new_active| {
             if (is_mouse_activating and new_active.state.event_flags.click) {
+                log.debug("Generating mouse_down for element {any} with modifiers: {any}", .{ new_active.id, modifiers });
                 try self.events.append(self.gpa, .{
                     .info = .{
                         .element_id = new_active.id,
