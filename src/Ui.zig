@@ -1546,7 +1546,7 @@ pub const CustomElementConfig = ?*anyopaque;
 
 pub const TextElementConfig = struct {
     /// The RGBA color of the font to render, conventionally specified as 0-255.
-    color: Color = .{ .r = 0, .g = 0, .b = 0, .a = 255 },
+    color: Color = .{ .r = 0, .g = 0, .b = 0, .a = 1.0 },
     /// Identifies the font to use.
     font_id: AssetCache.FontId = 0, // The debug view will pass fontId = 0 for its internal text.
     /// Controls the size of the font.

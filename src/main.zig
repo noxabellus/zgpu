@@ -308,14 +308,19 @@ fn createLayout(ui: *Ui) !void {
         try ui.menuSeparator();
 
         // Embedded Widget Test
-        try ui.openElement(.{ .id = .fromSlice("MenuSliderContainer"), .layout = .{ .padding = .all(4) } });
-        defer ui.closeElement();
-        // Fix 3: Increase font_size for "Opacity" text
-        try ui.text("Opacity", .{ .font_id = FONT_ID_BODY, .font_size = 14 });
-        try ui.beginElement(.fromSlice("MenuSlider"));
-        defer ui.closeElement();
-        try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(100), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .click = true, .drag = true }) });
-        try ui.bindSlider(f32, .{ .min = 0, .max = 1 });
+        {
+            try ui.openElement(.{ .id = .fromSlice("MenuSliderContainer"), .layout = .{ .padding = .all(4), .direction = .top_to_bottom } });
+            defer ui.closeElement();
+
+            try ui.text("Opacity", .{ .font_id = FONT_ID_BODY, .font_size = 24 });
+            {
+                try ui.beginElement(.fromSlice("MenuSlider"));
+                defer ui.closeElement();
+
+                try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(100), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .click = true, .drag = true }) });
+                try ui.bindSlider(f32, .{ .min = 0, .max = 1 });
+            }
+        }
     }
 
     // First Level Submenu
@@ -732,6 +737,10 @@ pub fn main() !void {
         wgpu.queueSubmit(queue, 1, &.{cmd});
 
         _ = wgpu.surfacePresent(demo.surface);
+
+        // block to create 10fps for debugging
+        // const fps_target_ns = std.time.ns_per_s / 10;
+        // while (debug_timer.read() < fps_target_ns) {}
 
         debug.lap();
     }
