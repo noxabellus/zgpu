@@ -69,217 +69,277 @@ const Theme = enum(u32) {
 const test_text_default = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla feugiat convallis viverra.\nNulla luctus odio arcu. Cras pellentesque vitae lorem vel egestas.\n";
 
 fn createLayout(ui: *Ui) !void {
-    try ui.openElement(.{
-        .id = .fromSlice("OuterContainer"),
-        .layout = .{
-            .sizing = .grow,
-            .direction = .top_to_bottom,
-            .child_alignment = .center,
-            .child_gap = 10,
-        },
-        .background_color = COLOR_LIGHT,
-    });
-    defer ui.closeElement();
-
     {
-        try ui.beginElement(.fromSlice("TextInputTest"));
-        defer ui.closeElement();
-
-        try ui.configureElement(.{
-            .layout = .{
-                .sizing = .{ .w = .fixed(300 + 5 * 2 + 2 * 2), .h = .fixed(16 * 6 + 5 * 2 + 2 * 2) },
-                .padding = .all(5),
-            },
-            .background_color = COLOR_WHITE,
-            .border = .{
-                .width = .all(2),
-                .color = COLOR_BROWN,
-            },
-            .corner_radius = .all(5),
-            .clip = .{
-                .vertical = true,
-                .child_offset = ui.scrollOffset(),
-            },
-            .widget = true,
-            .state = .flags(.{
-                .click = true,
-                .focus = true,
-                .text = true,
-                .drag = true,
-            }),
-        });
-
-        try ui.bindTextInput(.{
-            .alignment = .left,
-            .font_id = FONT_ID_MONO,
-            .font_size = 16,
-            .color = COLOR_BLUE,
-            .line_height = 20,
-        });
-    }
-
-    {
-        try ui.beginElement(.fromSlice("F32SliderTest"));
-        defer ui.closeElement();
-
-        try ui.configureElement(.{
-            .layout = .{
-                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
-            },
-            .widget = true,
-            .state = .flags(.{
-                .click = true,
-                .drag = true,
-                .focus = true,
-                .keyboard = true,
-            }),
-        });
-
-        try ui.bindSlider(f32, .{
-            .min = 0.0,
-            .max = 1.0,
-            .default = 0.5,
-            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-            .handle_color = COLOR_ORANGE,
-        });
-    }
-
-    {
-        try ui.beginElement(.fromSlice("F64SliderTest"));
-        defer ui.closeElement();
-
-        try ui.configureElement(.{
-            .layout = .{
-                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
-            },
-            .widget = true,
-            .state = .flags(.{
-                .click = true,
-                .drag = true,
-                .focus = true,
-                .keyboard = true,
-            }),
-        });
-
-        try ui.bindSlider(f64, .{
-            .min = -100.0,
-            .max = 100.0,
-            .default = 0.0,
-            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-            .handle_color = COLOR_BLUE,
-        });
-    }
-
-    {
-        try ui.beginElement(.fromSlice("ISizeSliderTest"));
-        defer ui.closeElement();
-
-        try ui.configureElement(.{
-            .layout = .{
-                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
-            },
-            .widget = true,
-            .state = .flags(.{
-                .click = true,
-                .drag = true,
-                .focus = true,
-                .keyboard = true,
-            }),
-        });
-
-        try ui.bindSlider(isize, .{
-            .min = -50,
-            .max = 50,
-            .default = 0,
-            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-            .handle_color = COLOR_RED,
-        });
-    }
-
-    {
-        try ui.beginElement(.fromSlice("USizeSliderTest"));
-        defer ui.closeElement();
-
-        try ui.configureElement(.{
-            .layout = .{
-                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
-            },
-            .widget = true,
-            .state = .flags(.{
-                .click = true,
-                .drag = true,
-                .focus = true,
-                .keyboard = true,
-            }),
-        });
-
-        try ui.bindSlider(usize, .{
-            .min = 0,
-            .max = 100,
-            .default = 50,
-            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-            .handle_color = COLOR_TEAL,
-        });
-    }
-
-    { // moved here to test z indexing
-        try ui.beginElement(.fromSlice("ThemeDropdown"));
-        defer ui.closeElement();
-
-        try ui.bindDropdown(Theme, .{
-            .default = .light,
-            .font_id = FONT_ID_BODY,
-        });
-    }
-
-    {
-        try ui.beginElement(.fromSlice("CheckboxTest"));
-        defer ui.closeElement();
-
-        try ui.configureElement(.{ .layout = .{
-            .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
-        }, .widget = true, .state = .flags(.{
-            .activate = true,
-            .focus = true,
-        }), .border = .{ .width = .all(1), .color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK } });
-
-        try ui.bindCheckbox(.{
-            .default = true,
-            .box_color = COLOR_LIGHT_HOVER,
-            .check_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK,
-            .size = 16.0,
-        });
-    }
-
-    {
-        const radio_group_id = Ui.ElementId.fromSlice("ThemeSelector");
-
         try ui.openElement(.{
-            .id = .fromSlice("RadioContainer"),
-            .layout = .{ .direction = .left_to_right, .child_gap = 10 },
+            .id = .fromSlice("OuterContainer"),
+            .layout = .{
+                .sizing = .grow,
+                .direction = .top_to_bottom,
+                .child_alignment = .center,
+                .child_gap = 10,
+            },
+            .background_color = COLOR_LIGHT,
         });
         defer ui.closeElement();
 
         {
-            // Light Theme Button
-            try ui.beginElement(.fromSlice("RadioLight"));
+            try ui.beginElement(.fromSlice("TextInputTest"));
             defer ui.closeElement();
-            try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
-            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .light, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
+
+            try ui.configureElement(.{
+                .layout = .{
+                    .sizing = .{ .w = .fixed(300 + 5 * 2 + 2 * 2), .h = .fixed(16 * 6 + 5 * 2 + 2 * 2) },
+                    .padding = .all(5),
+                },
+                .background_color = COLOR_WHITE,
+                .border = .{
+                    .width = .all(2),
+                    .color = COLOR_BROWN,
+                },
+                .corner_radius = .all(5),
+                .clip = .{
+                    .vertical = true,
+                    .child_offset = ui.scrollOffset(),
+                },
+                .widget = true,
+                .state = .flags(.{
+                    .click = true,
+                    .focus = true,
+                    .text = true,
+                    .drag = true,
+                }),
+            });
+
+            try ui.bindTextInput(.{
+                .alignment = .left,
+                .font_id = FONT_ID_MONO,
+                .font_size = 16,
+                .color = COLOR_BLUE,
+                .line_height = 20,
+            });
         }
+
         {
-            // Dark Theme Button
-            try ui.beginElement(.fromSlice("RadioDark"));
+            try ui.beginElement(.fromSlice("F32SliderTest"));
             defer ui.closeElement();
-            try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
-            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .dark, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
+
+            try ui.configureElement(.{
+                .layout = .{
+                    .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+                },
+                .widget = true,
+                .state = .flags(.{
+                    .click = true,
+                    .drag = true,
+                    .focus = true,
+                    .keyboard = true,
+                }),
+            });
+
+            try ui.bindSlider(f32, .{
+                .min = 0.0,
+                .max = 1.0,
+                .default = 0.5,
+                .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
+                .handle_color = COLOR_ORANGE,
+            });
         }
+
         {
-            // System Theme Button
-            try ui.beginElement(.fromSlice("RadioSystem"));
+            try ui.beginElement(.fromSlice("F64SliderTest"));
             defer ui.closeElement();
-            try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
-            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .system, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
+
+            try ui.configureElement(.{
+                .layout = .{
+                    .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+                },
+                .widget = true,
+                .state = .flags(.{
+                    .click = true,
+                    .drag = true,
+                    .focus = true,
+                    .keyboard = true,
+                }),
+            });
+
+            try ui.bindSlider(f64, .{
+                .min = -100.0,
+                .max = 100.0,
+                .default = 0.0,
+                .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
+                .handle_color = COLOR_BLUE,
+            });
+        }
+
+        {
+            try ui.beginElement(.fromSlice("ISizeSliderTest"));
+            defer ui.closeElement();
+
+            try ui.configureElement(.{
+                .layout = .{
+                    .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+                },
+                .widget = true,
+                .state = .flags(.{
+                    .click = true,
+                    .drag = true,
+                    .focus = true,
+                    .keyboard = true,
+                }),
+            });
+
+            try ui.bindSlider(isize, .{
+                .min = -50,
+                .max = 50,
+                .default = 0,
+                .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
+                .handle_color = COLOR_RED,
+            });
+        }
+
+        {
+            try ui.beginElement(.fromSlice("USizeSliderTest"));
+            defer ui.closeElement();
+
+            try ui.configureElement(.{
+                .layout = .{
+                    .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+                },
+                .widget = true,
+                .state = .flags(.{
+                    .click = true,
+                    .drag = true,
+                    .focus = true,
+                    .keyboard = true,
+                }),
+            });
+
+            try ui.bindSlider(usize, .{
+                .min = 0,
+                .max = 100,
+                .default = 50,
+                .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
+                .handle_color = COLOR_TEAL,
+            });
+        }
+
+        { // moved here to test z indexing
+            try ui.beginElement(.fromSlice("ThemeDropdown"));
+            defer ui.closeElement();
+
+            try ui.bindDropdown(Theme, .{
+                .default = .light,
+                .font_id = FONT_ID_BODY,
+            });
+        }
+
+        {
+            try ui.beginElement(.fromSlice("CheckboxTest"));
+            defer ui.closeElement();
+
+            try ui.configureElement(.{ .layout = .{
+                .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
+            }, .widget = true, .state = .flags(.{
+                .activate = true,
+                .focus = true,
+            }), .border = .{ .width = .all(1), .color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK } });
+
+            try ui.bindCheckbox(.{
+                .default = true,
+                .box_color = COLOR_LIGHT_HOVER,
+                .check_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK,
+                .size = 16.0,
+            });
+        }
+
+        {
+            const radio_group_id = Ui.ElementId.fromSlice("ThemeSelector");
+
+            try ui.openElement(.{
+                .id = .fromSlice("RadioContainer"),
+                .layout = .{ .direction = .left_to_right, .child_gap = 10 },
+            });
+            defer ui.closeElement();
+
+            {
+                // Light Theme Button
+                try ui.beginElement(.fromSlice("RadioLight"));
+                defer ui.closeElement();
+                try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
+                try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .light, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
+            }
+            {
+                // Dark Theme Button
+                try ui.beginElement(.fromSlice("RadioDark"));
+                defer ui.closeElement();
+                try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
+                try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .dark, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
+            }
+            {
+                // System Theme Button
+                try ui.beginElement(.fromSlice("RadioSystem"));
+                defer ui.closeElement();
+                try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
+                try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .system, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
+            }
+        }
+    }
+
+    // The following blocks declare the contents of menus. They only run when the UI
+    // system has determined (via `ui.openMenu`) that they should be visible.
+
+    // Root Context Menu
+    if (try ui.beginMenu(.fromSlice("ContextMenuRoot"))) {
+        defer ui.endMenu();
+
+        if (try ui.menuItem("Copy")) {
+            log.info("Action: Copy", .{});
+        }
+        if (try ui.menuItem("Paste")) {
+            log.info("Action: Paste", .{});
+        }
+        try ui.menuSeparator();
+
+        // Submenu Trigger
+        if (try ui.beginSubMenu("More Options...", .fromSlice("SubMenu1"))) {
+            defer ui.endSubMenu();
+        }
+
+        try ui.menuSeparator();
+
+        // Embedded Widget Test
+        try ui.openElement(.{ .id = .fromSlice("MenuSliderContainer"), .layout = .{ .padding = .all(4) } });
+        defer ui.closeElement();
+        // Fix 3: Increase font_size for "Opacity" text
+        try ui.text("Opacity", .{ .font_id = FONT_ID_BODY, .font_size = 14 });
+        try ui.beginElement(.fromSlice("MenuSlider"));
+        defer ui.closeElement();
+        try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(100), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .click = true, .drag = true }) });
+        try ui.bindSlider(f32, .{ .min = 0, .max = 1 });
+    }
+
+    // First Level Submenu
+    if (try ui.beginMenu(.fromSlice("SubMenu1"))) {
+        defer ui.endMenu();
+
+        if (try ui.menuItem("Option A")) {
+            log.info("Action: Option A", .{});
+        }
+        if (try ui.menuItem("Option B")) {
+            log.info("Action: Option B", .{});
+        }
+
+        // Deeper Submenu Trigger
+        if (try ui.beginSubMenu("Even Deeper...", .fromSlice("SubMenu2"))) {
+            defer ui.endSubMenu();
+        }
+    }
+
+    // Second Level Submenu
+    if (try ui.beginMenu(.fromSlice("SubMenu2"))) {
+        defer ui.endMenu();
+        if (try ui.menuItem("Final Option!")) {
+            log.info("Action: Final Option!", .{});
         }
     }
 }
@@ -426,6 +486,9 @@ pub fn main() !void {
 
     try bindings.bind(.toggle_debugger, .{ .key = .{ .bind_point = .d, .modifiers = .ctrlMod } });
     try bindings.bind(.dump_atlas, .{ .key = .{ .bind_point = .a, .modifiers = .altMod } });
+    // --- NEW ---
+    // NOTE: This requires adding `.open_context_menu` to the `BindingState.Action` enum.
+    try bindings.bind(.open_context_menu, .{ .mouse = .{ .bind_point = .button_2 } });
 
     // Init Ui
     var ui = try Ui.init(gpa, frame_arena, demo.renderer, &asset_cache, &bindings);
@@ -573,6 +636,14 @@ pub fn main() !void {
         if (bindings.getAction(.dump_atlas) == .pressed) {
             try demo.renderer.atlas.debugWriteAllAtlasesToPng("debug_atlas");
             log.info("finished writing debug_atlas_*.png", .{});
+        }
+
+        // --- Context menu ---
+        if (bindings.getAction(.open_context_menu) == .released) {
+            log.info("Right click released, opening context menu.", .{});
+            ui.openMenu(.fromSlice("ContextMenuRoot"), .{
+                .position = inputs.getMousePosition(),
+            });
         }
 
         // --- Update Clay UI ---

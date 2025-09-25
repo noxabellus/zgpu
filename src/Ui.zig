@@ -105,8 +105,10 @@ widget_events: std.ArrayList(Event) = .empty,
 // shared states for widgets like radio groups
 shared_widget_states: std.AutoHashMapUnmanaged(u32, SharedWidgetState) = .empty,
 
-// --- Interaction State ---
+// --- Menu System State ---
+menu_state: MenuState = .{},
 
+// --- Interaction State ---
 focus_scope_stack: std.ArrayList(ElementId) = .empty,
 
 state: State = .{},
@@ -190,6 +192,7 @@ pub fn init(gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *B
 
     self.click_state.timer = try .start();
     self.text_repeat.timer = try .start();
+    self.menu_state.hover_timer = try .start();
 
     // Ensure required ui input bindings are registered
     if (!bindings.hasBinding(.primary_mouse)) try bindings.bind(.primary_mouse, default_bindings.primary_mouse);
@@ -221,6 +224,7 @@ pub fn deinit(self: *Ui) void {
     self.current_scroll_states.deinit(self.gpa);
     self.last_scroll_states.deinit(self.gpa);
     self.focus_scope_stack.deinit(self.gpa);
+    self.menu_state.deinit(self.gpa);
 
     self.widget_states.deinit(self.gpa);
     self.deferred_widget_states_current.deinit(self.gpa);
@@ -246,6 +250,8 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) !void {
     self.navigable_elements.clearRetainingCapacity();
     self.reverse_navigable_elements.clearRetainingCapacity();
     self.open_ids.clearRetainingCapacity();
+    self.menu_state.navigable_items_current_menu.clearRetainingCapacity();
+    self.menu_state.hovered_submenu_candidate = null;
 
     self.last_state = self.state; // Save the last frame's state for event generation
     self.state = .{}; // Reset current state; will be populated during layout and event generation
@@ -563,6 +569,11 @@ pub fn active(self: *Ui) bool {
     return active_id == current_id;
 }
 
+/// Hacky helper for menus, checks last frame state rather than current like other functions.
+pub fn activated(self: *Ui, id: ElementId) bool {
+    return self.last_state.activeIdValue() == id.id;
+}
+
 /// Get the currently active element's ID, or null if there is no active element.
 pub fn activeId(self: *Ui) ?ElementId {
     return self.state.activeId();
@@ -810,6 +821,220 @@ pub fn bindTextInput(self: *Ui, config: Widget.TextInput.Config) !void {
 
     try self.text(widget.currentText(), config.toFull());
 }
+
+// Menu API //
+
+pub fn openMenu(self: *Ui, id: ElementId, config: MenuState.OpenMenuConfig) void {
+    self.menu_state.open_request = .{
+        .id = id,
+        .parent_menu_id = config.parent_menu_id,
+        .parent_item_id = config.parent_item_id,
+        .position = config.position,
+    };
+}
+
+pub fn closeTopMenu(self: *Ui) void {
+    if (self.menu_state.stack.items.len > 0) {
+        self.menu_state.close_request_level = self.menu_state.stack.items.len - 1;
+    }
+}
+
+pub fn closeAllMenus(self: *Ui) void {
+    if (self.menu_state.stack.items.len > 0) {
+        self.menu_state.close_request_level = 0;
+    }
+}
+
+pub fn beginMenu(self: *Ui, id: ElementId) !bool {
+    var is_open = false;
+    var maybe_current_level: ?usize = null;
+    var maybe_info: ?MenuState.OpenMenuInfo = null;
+
+    for (self.menu_state.stack.items, 0..) |menu_info, i| {
+        if (menu_info.id.id == id.id) {
+            is_open = true;
+            maybe_current_level = i;
+            maybe_info = menu_info;
+            break;
+        }
+    }
+
+    if (!is_open) {
+        return false;
+    }
+
+    const current_level = maybe_current_level.?;
+    const info = maybe_info.?;
+
+    const final_offset = info.position;
+    var attach_to_element = false;
+
+    if (info.parent_item_id) |item_id| {
+        // This is a submenu. We need to find its trigger item's position.
+        const item_data = clay.getElementData(item_id);
+        if (item_data.found) {
+            // The position should be relative to the viewport, not the parent menu.
+            // Clay handles attaching to an element correctly if we provide the
+            // element's ID and use attach points. The offset can be zero.
+            attach_to_element = true;
+        }
+    }
+
+    try self.openElement(.{
+        .id = id,
+        .layout = .{
+            .sizing = .{ .w = .fit, .h = .fit },
+            .direction = .top_to_bottom,
+            .padding = .all(4),
+        },
+        .floating = .{
+            // If it's a submenu, attach to the ITEM. If not, attach to the root.
+            .attach_to = if (attach_to_element) .element_with_id else .root,
+            // The parentId for attachment is the ITEM's ID.
+            .parentId = (info.parent_item_id orelse ElementId{}).id,
+            // If it's a root menu (context menu), use the specified position.
+            .offset = if (attach_to_element) .{} else final_offset,
+            // For submenus, attach our top-left to the parent item's top-right.
+            .attach_points = .{ .parent = if (attach_to_element) .right_top else .left_top, .element = .left_top },
+            .z_index = @intCast(MenuState.MENU_Z_INDEX_BASE + current_level),
+        },
+        .background_color = Color.fromLinearU8(240, 240, 240, 255),
+        .border = .{ .width = .all(1), .color = Color.fromLinearU8(128, 128, 128, 255) },
+        .corner_radius = .all(4),
+        .state = .flags(.{ .focus = true, .keyboard = true }),
+    });
+
+    try self.addListener(id, .key_down, @This(), @ptrCast(&onMenuKeyDown), self);
+    try self.addListener(id, .scoped_focus_close, @This(), @ptrCast(&onMenuCloseScope), self);
+
+    self.menu_state.navigable_items_current_menu.clearRetainingCapacity();
+
+    return true;
+}
+
+pub fn endMenu(self: *Ui) void {
+    self.removeListener(self.open_ids.items[self.open_ids.items.len - 1], .key_down, @This(), @ptrCast(&onMenuKeyDown));
+    self.removeListener(self.open_ids.items[self.open_ids.items.len - 1], .scoped_focus_close, @This(), @ptrCast(&onMenuCloseScope));
+    self.closeElement();
+}
+
+pub fn menuItem(self: *Ui, label: []const u8) !bool {
+    const parent_menu_id = self.open_ids.items[self.open_ids.items.len - 1];
+    const item_id = ElementId.fromSlice(try std.fmt.allocPrint(self.frame_arena, "{x}_item_{s}", .{ parent_menu_id.id, label }));
+    try self.menu_state.navigable_items_current_menu.append(self.gpa, item_id);
+
+    const level = self.menu_state.stack.items.len - 1;
+    const is_highlighted = self.menu_state.highlighted_path.items.len > level and self.menu_state.highlighted_path.items[level].id == item_id.id;
+
+    try self.openElement(.{
+        .id = item_id,
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .fixed(24) },
+            .padding = .{ .left = 8, .right = 8 },
+            .child_alignment = .center,
+        },
+        .background_color = if (is_highlighted) Color.fromLinearU8(0, 120, 215, 255) else .transparent,
+        .corner_radius = .all(3),
+        .state = .flags(.{ .activate = true, .hover = true }),
+    });
+    defer self.closeElement();
+
+    if (self.hovered()) {
+        self.menu_state.setHighlighted(self.gpa, level, item_id);
+    }
+
+    try self.text(label, .{
+        .font_id = 0,
+        .font_size = 14,
+        .color = if (is_highlighted) .white else .black,
+    });
+
+    if (self.activated(item_id)) {
+        self.closeAllMenus();
+        return true;
+    }
+    return false;
+}
+
+pub fn beginSubMenu(self: *Ui, label: []const u8, child_menu_id: ElementId) !bool {
+    const parent_menu_id = self.open_ids.items[self.open_ids.items.len - 1];
+    const item_id = ElementId.fromSlice(try std.fmt.allocPrint(self.frame_arena, "{x}_submenu_{s}", .{ parent_menu_id.id, label }));
+    try self.menu_state.navigable_items_current_menu.append(self.gpa, item_id);
+
+    const level = self.menu_state.stack.items.len - 1;
+    const is_highlighted = self.menu_state.highlighted_path.items.len > level and self.menu_state.highlighted_path.items[level].id == item_id.id;
+
+    var is_child_open = false;
+    if (self.menu_state.stack.items.len > level + 1) {
+        if (self.menu_state.stack.items[level + 1].parent_item_id) |parent_item| {
+            if (parent_item.id == item_id.id) {
+                is_child_open = true;
+            }
+        }
+    }
+
+    try self.openElement(.{
+        .id = item_id,
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .fixed(24) },
+            .direction = .left_to_right,
+            .child_alignment = .center,
+            .child_gap = 10,
+            .padding = .{ .left = 8, .right = 8 },
+        },
+        .background_color = if (is_highlighted or is_child_open) Color.fromLinearU8(0, 120, 215, 255) else .transparent,
+        .corner_radius = .all(3),
+        .state = .flags(.{ .activate = true, .hover = true }),
+    });
+    defer self.closeElement();
+
+    if (self.hovered()) {
+        self.menu_state.setHighlighted(self.gpa, level, item_id);
+        if (self.menu_state.hovered_submenu_candidate) |candidate| {
+            if (candidate.id != item_id.id) {
+                self.menu_state.hovered_submenu_candidate = item_id;
+                self.menu_state.hover_timer.reset();
+            }
+        } else {
+            self.menu_state.hovered_submenu_candidate = item_id;
+            self.menu_state.hover_timer.reset();
+        }
+    }
+
+    try self.text(label, .{
+        .font_id = 0,
+        .font_size = 14,
+        .color = if (is_highlighted or is_child_open) .white else .black,
+    });
+    try self.elem(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } }); // Spacer
+    try self.text(">", .{
+        .font_id = 0,
+        .font_size = 14,
+        .color = if (is_highlighted or is_child_open) .white else .black,
+    }); // Arrow
+
+    if (self.activated(item_id)) {
+        // Pass the item_id as the parent_item_id.
+        // The parent_menu_id is the menu we are currently inside.
+        self.openMenu(child_menu_id, .{ .parent_menu_id = parent_menu_id, .parent_item_id = item_id });
+    }
+
+    return is_child_open;
+}
+
+pub fn endSubMenu(_: *Ui) void {}
+
+pub fn menuSeparator(self: *Ui) !void {
+    try self.elem(.{
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .fixed(1) },
+            .padding = .{ .top = 4, .bottom = 4 },
+        },
+        .background_color = Color.fromLinearU8(200, 200, 200, 255),
+    });
+}
+
+// End Menu API //
 
 /// Get the offset data for a character within the only text element inside the element with the given id.
 pub fn getCharacterOffset(self: *Ui, id: ElementId, char_index: u32) ?CharacterOffset {
@@ -1106,6 +1331,59 @@ pub const State = struct {
 
     pub fn focusedIdValue(self: State) ?u32 {
         return (self.focused_id orelse return null).id.id;
+    }
+};
+
+pub const MenuState = struct {
+    pub const MENU_Z_INDEX_BASE: i16 = 1000;
+    pub const SUBMENU_OPEN_DELAY_NS: u64 = 200 * std.time.ns_per_ms;
+
+    pub const OpenMenuInfo = struct {
+        id: ElementId, // id of the menu panel being opened
+        parent_menu_id: ?ElementId, // id of the parent menu panel
+        parent_item_id: ?ElementId, // id of the menu item that triggered this menu
+        // attach_to is now redundant, we derive it from parent_item_id
+        position: Vec2, // screen-relative position to open the menu at
+    };
+
+    pub const OpenMenuConfig = struct {
+        parent_menu_id: ?ElementId = null, // id of the parent menu panel
+        parent_item_id: ?ElementId = null, // id of the menu item that triggered this menu
+        position: Vec2 = .{},
+    };
+
+    stack: std.ArrayList(OpenMenuInfo) = .empty,
+    highlighted_path: std.ArrayList(ElementId) = .empty,
+    navigable_items_current_menu: std.ArrayList(ElementId) = .empty,
+
+    open_request: ?OpenMenuInfo = null,
+    close_request_level: ?usize = null,
+
+    hover_timer: std.time.Timer = undefined,
+    hovered_submenu_candidate: ?ElementId = null,
+
+    fn deinit(self: *MenuState, gpa: std.mem.Allocator) void {
+        self.stack.deinit(gpa);
+        self.highlighted_path.deinit(gpa);
+        self.navigable_items_current_menu.deinit(gpa);
+    }
+
+    fn setHighlighted(self: *MenuState, allocator: std.mem.Allocator, level: usize, id: ElementId) void {
+        // If we're setting a highlight at `level`, the path must become exactly `level + 1` long.
+        // First, ensure the path is at least that long.
+        if (self.highlighted_path.items.len <= level) {
+            self.highlighted_path.resize(allocator, level + 1) catch |e| {
+                log.err("failed to resize highlighted path: {s}", .{@errorName(e)});
+                return;
+            };
+        } else {
+            // If the path is already longer, it means a deeper submenu was highlighted.
+            // We must truncate it to the correct new length before setting the new item.
+            self.highlighted_path.shrinkRetainingCapacity(level + 1);
+        }
+
+        // Now that the ArrayList has the correct size, we can safely set the item.
+        self.highlighted_path.items[level] = id;
     }
 };
 
@@ -1611,7 +1889,165 @@ fn measureTextCallback(
     }
 }
 
-/// Processes the current UI state against the last frame's state to generate interaction events.
+fn onMenuCloseScope(self: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.scoped_focus_close)) !void {
+    // This event is sent when 'Escape' is pressed and a focus scope is active.
+    // For a menu, this should close the current sub-menu level.
+    self.closeTopMenu();
+}
+
+fn onMenuKeyDown(self: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
+    const level = self.menu_state.stack.items.len - 1;
+    const items = self.menu_state.navigable_items_current_menu;
+    if (items.items.len == 0) return;
+
+    var current_idx: ?usize = null;
+    if (self.menu_state.highlighted_path.items.len > level) {
+        const highlighted_id = self.menu_state.highlighted_path.items[level];
+        for (items.items, 0..) |item_id, i| {
+            if (item_id.id == highlighted_id.id) {
+                current_idx = i;
+                break;
+            }
+        }
+    }
+
+    switch (key_data.key) {
+        .down => {
+            const next_idx = if (current_idx) |idx| (idx + 1) % items.items.len else 0;
+            self.menu_state.setHighlighted(self.gpa, level, items.items[next_idx]);
+        },
+        .up => {
+            const prev_idx = if (current_idx) |idx| (idx + items.items.len - 1) % items.items.len else items.items.len - 1;
+            self.menu_state.setHighlighted(self.gpa, level, items.items[prev_idx]);
+        },
+        .right => {
+            // Activating the highlighted item will open its submenu if it has one.
+            if (current_idx) |idx| {
+                const highlighted_id = items.items[idx];
+                // We simulate an 'activate' event on the item. The item's own logic
+                // in `beginSubMenu` will then call `openMenu`.
+                try self.pushEvent(highlighted_id, .activate_begin, null);
+                try self.pushEvent(highlighted_id, .{ .activate_end = .{ .end_element = highlighted_id, .modifiers = .{} } }, null);
+            }
+        },
+        .left => {
+            // If we are in a submenu (level > 0), close this menu and go back to the parent.
+            if (level > 0) {
+                self.closeTopMenu();
+            }
+        },
+        else => {},
+    }
+}
+
+/// Manages the menu stack, processes open/close requests, and handles global menu interactions like "click outside".
+fn handleMenuState(self: *Ui) !void {
+    const ms = &self.menu_state;
+
+    // --- 1. Process deferred close requests ---
+    if (ms.close_request_level) |level| {
+        while (ms.stack.items.len > level) {
+            _ = ms.stack.pop() orelse break;
+            self.popFocusScope();
+        }
+        // After closing menus, the highlighted path might be longer than the new
+        // menu stack. We must truncate it to match.
+        // It can also be shorter if no items were highlighted in the menus that
+        // remain open, so we must guard the shrink call to prevent a panic.
+        if (ms.highlighted_path.items.len > ms.stack.items.len) {
+            ms.highlighted_path.shrinkRetainingCapacity(ms.stack.items.len);
+        }
+        ms.close_request_level = null;
+    }
+
+    // --- 2. Process deferred open requests ---
+    if (ms.open_request) |request| {
+        var open_at_level: usize = 0;
+        if (request.parent_menu_id) |parent_menu| {
+            // Find the level of the parent menu.
+            var found_parent = false;
+            for (ms.stack.items, 0..) |menu_info, i| {
+                if (menu_info.id.id == parent_menu.id) {
+                    open_at_level = i + 1; // The new menu will be one level deeper.
+                    found_parent = true;
+                    break;
+                }
+            }
+            if (!found_parent) {
+                // The parent menu must have closed in the same frame.
+                // Abort the open request to prevent a detached menu.
+                ms.open_request = null;
+                return;
+            }
+        } else {
+            // No parent menu, so it's a root menu (e.g., context menu).
+            open_at_level = 0;
+        }
+
+        // Close any menus deeper than the level we're opening at
+        while (ms.stack.items.len > open_at_level) {
+            _ = ms.stack.pop() orelse break;
+            self.popFocusScope();
+        }
+
+        // When opening a menu, we must truncate the highlighted path to the new
+        // parent level. This removes highlights from any deeper submenus that
+        // were just closed.
+        if (ms.highlighted_path.items.len > open_at_level) {
+            ms.highlighted_path.shrinkRetainingCapacity(open_at_level);
+        }
+
+        // Push the new menu
+        try ms.stack.append(self.gpa, request);
+        try self.pushFocusScope(request.id);
+
+        // Setting focus here is tricky as the element might not exist yet in Clay's data.
+        // Focusing the focus scope is sufficient for keyboard input to be captured.
+        // We will set the focused_id if the element is found later.
+        self.state.focused_id = .{
+            .id = request.id,
+            .bounding_box = .{}, // BBox is not known yet, but that's okay.
+            .state = .flags(.{ .focus = true, .keyboard = true }),
+        };
+
+        ms.open_request = null;
+    }
+
+    // --- 3. Handle hover-to-open for submenus ---
+    if (ms.hovered_submenu_candidate) |candidate_id| {
+        if (ms.hover_timer.read() > MenuState.SUBMENU_OPEN_DELAY_NS) {
+            // Activate the candidate item to trigger its opening logic
+            try self.pushEvent(candidate_id, .activate_begin, null);
+            try self.pushEvent(candidate_id, .{ .activate_end = .{ .end_element = candidate_id, .modifiers = .{} } }, null);
+            ms.hovered_submenu_candidate = null;
+        }
+    } else {
+        ms.hover_timer.reset();
+    }
+
+    // --- 4. Handle "click outside" to close all menus ---
+    if (self.bindings.getAction(.primary_mouse) == .pressed and ms.stack.items.len > 0) {
+        var click_is_inside_a_menu_panel = false;
+        const mouse_pos = self.bindings.getMousePosition();
+
+        // Iterate through all open menus and check if the mouse position is inside any of their bounding boxes.
+        for (ms.stack.items) |menu_info| {
+            const menu_data = clay.getElementData(menu_info.id);
+            if (menu_data.found) {
+                if (boxContains(menu_data.bounding_box, mouse_pos)) {
+                    click_is_inside_a_menu_panel = true;
+                    break;
+                }
+            }
+        }
+
+        // If the click was not inside any menu's bounds, close them all.
+        if (!click_is_inside_a_menu_panel) {
+            self.closeAllMenus();
+        }
+    }
+}
+
 /// Processes the current UI state against the last frame's state to generate interaction events.
 fn generateEvents(self: *Ui) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
@@ -1631,6 +2067,9 @@ fn generateEvents(self: *Ui) !void {
     if (self.hovered_element_stack.items.len > 0) {
         self.state.hovered = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1];
     }
+
+    // --- Handle Menu State Changes ---
+    try self.handleMenuState();
 
     // --- Handle Text Input Events ---
     // This is processed before activation to give it priority.
