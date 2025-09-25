@@ -20,6 +20,7 @@ carets: std.ArrayList(Caret) = .empty,
 
 current_buffer_idx: u2 = 0,
 text_was_modified_last_frame: bool = false,
+is_dragging_text: bool = false,
 
 pub const Config = struct {
     /// The RGBA color of the font to render, conventionally specified as 0-255.
@@ -367,12 +368,10 @@ pub fn onSet(self: *TextInputWidget, ui: *Ui, new_text: *const []const u8) !void
     try self.carets.append(ui.gpa, .{ .start = 0, .end = @intCast(new_text.len) });
 }
 
-var is_dragging_text = false;
-
 pub fn onMouseDown(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
     log.debug("TextInput received mouse down event: {any}", .{mouse_down_data});
 
-    is_dragging_text = true;
+    self.is_dragging_text = true;
 
     const location = Ui.Vec2{
         .x = mouse_down_data.mouse_position.x - info.bounding_box.x,
@@ -397,8 +396,8 @@ pub fn onMouseDown(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, mouse_d
 pub fn onMouseUp(self: *TextInputWidget, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.mouse_up)) !void {
     log.debug("TextInput received mouse up event", .{});
 
-    if (is_dragging_text) {
-        is_dragging_text = false;
+    if (self.is_dragging_text) {
+        self.is_dragging_text = false;
         try sortAndMergeCarets(&self.carets);
     }
 }
