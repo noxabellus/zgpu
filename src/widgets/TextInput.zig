@@ -351,6 +351,22 @@ pub fn render(self: *TextInputWidget, ui: *Ui, command: Ui.RenderCommand) !void 
     }
 }
 
+pub fn onGet(self: *TextInputWidget, _: *Ui, _: Ui.Event.Info) *const []const u8 {
+    return &self.currentTextArray().items;
+}
+
+pub fn onSet(self: *TextInputWidget, ui: *Ui, new_text: *const []const u8) !void {
+    var target_buffer = self.nextTextArray();
+    target_buffer.deinit(ui.gpa);
+    target_buffer.* = try std.ArrayList(u8).initCapacity(ui.gpa, new_text.len);
+    try target_buffer.appendSlice(ui.gpa, new_text.*);
+
+    self.text_was_modified_last_frame = true;
+
+    self.carets.clearRetainingCapacity();
+    try self.carets.append(ui.gpa, .{ .start = 0, .end = @intCast(new_text.len) });
+}
+
 var is_dragging_text = false;
 
 pub fn onMouseDown(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {

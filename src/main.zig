@@ -103,7 +103,7 @@ fn createLayout(ui: *Ui) !void {
             }),
         });
 
-        try ui.bindTextInput(test_text_default, .{
+        try ui.bindTextInput("[Type here]", .{
             .alignment = .left,
             .font_id = FONT_ID_MONO,
             .font_size = 16,
@@ -356,13 +356,16 @@ pub fn main() !void {
     var ui = try Ui.init(gpa, frame_arena, demo.renderer, &asset_cache, &bindings);
     defer ui.deinit();
 
+    try ui.setWidgetState(.fromSlice("TextInputTest"), []const u8, test_text_default);
+
     try ui.addListener(
         .fromSlice("TextInputTest"),
         .text_change,
         anyopaque,
         &struct {
-            pub fn text_change_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_text: Ui.Event.Payload(.text_change)) anyerror!void {
+            pub fn text_change_listener(_: *anyopaque, g: *Ui, _: Ui.Event.Info, new_text: Ui.Event.Payload(.text_change)) anyerror!void {
                 log.info("TextInput text changed: {s}", .{new_text});
+                log.info("Test of get: {?s}", .{try g.getWidgetState(.fromSlice("TextInputTest"), []const u8)});
             }
         }.text_change_listener,
         undefined,
@@ -373,8 +376,10 @@ pub fn main() !void {
         .float_change,
         anyopaque,
         &struct {
-            pub fn slider_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.float_change)) anyerror!void {
+            pub fn slider_value_listener(_: *anyopaque, g: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.float_change)) anyerror!void {
                 log.info("Slider value changed: {d}", .{new_value});
+                log.info("Test of get: {?d}", .{try g.getWidgetState(.fromSlice("F32SliderTest"), f32)});
+                try g.setWidgetState(.fromSlice("F64SliderTest"), f64, new_value * 100.0 - 50.0);
             }
         }.slider_value_listener,
         undefined,

@@ -21,6 +21,9 @@ pub const Widget = struct {
     render: *const fn (*anyopaque, *Ui, RenderCommand) anyerror!void,
     unbind: *const fn (*anyopaque, *Ui) void,
     deinit: *const fn (*anyopaque, *Ui) void,
+    get: *const fn (*anyopaque, *Ui) *const anyopaque,
+    set: *const fn (*anyopaque, *Ui, *const anyopaque) void,
+    state_type: *const anyopaque,
 
     pub const TextInput = @import("widgets/TextInput.zig");
     pub const Slider = @import("widgets/Slider.zig");
@@ -63,6 +66,8 @@ last_state: State = .{},
 wheel_delta: Vec2 = .{},
 char_input: []const BindingState.Char = &.{},
 
+open_layout: bool = false,
+
 // A stack of all elements currently under the mouse, populated during layout. The last element is the top-most.
 hovered_element_stack: std.ArrayList(StateElement) = .empty,
 // Map from navigation index to element ID for quick lookup during keyboard navigation
@@ -79,6 +84,13 @@ last_scroll_states: std.AutoHashMapUnmanaged(u32, ScrollState) = .empty,
 
 // States for rich-interaction widgets
 widget_states: std.AutoHashMapUnmanaged(u32, Widget) = .empty,
+
+// Deferred state changes for widgets
+deferred_widget_states_current: std.AutoHashMapUnmanaged(u32, *anyopaque) = .empty,
+deferred_widget_arena_current: std.heap.ArenaAllocator,
+
+deferred_widget_states_last: std.AutoHashMapUnmanaged(u32, *anyopaque) = .empty,
+deferred_widget_arena_last: std.heap.ArenaAllocator,
 
 // widgets seen this frame
 widgets_seen: std.AutoHashMapUnmanaged(u32, void) = .empty,
@@ -140,6 +152,8 @@ pub fn init(gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *B
         .bindings = bindings,
         .clay_context = clay_context,
         .clay_memory = clay_memory,
+        .deferred_widget_arena_current = std.heap.ArenaAllocator.init(gpa),
+        .deferred_widget_arena_last = std.heap.ArenaAllocator.init(gpa),
     };
 
     self.text_repeat.timer = try .start();
@@ -169,6 +183,10 @@ pub fn deinit(self: *Ui) void {
     self.last_scroll_states.deinit(self.gpa);
 
     self.widget_states.deinit(self.gpa);
+    self.deferred_widget_states_current.deinit(self.gpa);
+    self.deferred_widget_arena_current.deinit();
+    self.deferred_widget_states_last.deinit(self.gpa);
+    self.deferred_widget_arena_last.deinit();
     self.widgets_seen.deinit(self.gpa);
     self.widget_events.deinit(self.gpa);
 
@@ -218,6 +236,8 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) !void {
     );
 
     clay.beginLayout();
+
+    self.open_layout = true;
 }
 
 /// End the current layout declaration and finalize the render commands and events.
@@ -237,11 +257,27 @@ pub fn endLayout(self: *Ui) !void {
     }
     self.widgets_seen.clearRetainingCapacity();
 
+    const old_states = self.deferred_widget_states_last;
+    const old_arena = self.deferred_widget_arena_last;
+
+    self.deferred_widget_states_last = self.deferred_widget_states_current;
+    self.deferred_widget_arena_last = self.deferred_widget_arena_current;
+
+    self.deferred_widget_states_current = old_states;
+    self.deferred_widget_arena_current = old_arena;
+
+    self.deferred_widget_states_current.clearRetainingCapacity();
+    _ = self.deferred_widget_arena_current.reset(.retain_capacity);
+
+    self.open_layout = false;
+
     try self.generateEvents();
 }
 
 /// Iterates through the generated events and calls any registered listeners.
 pub fn dispatchEvents(self: *Ui) !void {
+    std.debug.assert(!self.open_layout);
+
     clay.setCurrentContext(self.clay_context);
     defer clay.setCurrentContext(null);
 
@@ -283,6 +319,8 @@ pub fn dispatchEvents(self: *Ui) !void {
 /// After calling `Ui.beginLayout` and `Ui.endLayout`, this function issues the generated draw calls to Batch2D to render the UI.
 /// User should call this between `Batch2D.beginFrame()` and `Batch2D.endFrame()`.
 pub fn render(self: *Ui) !void {
+    std.debug.assert(!self.open_layout);
+
     clay.setCurrentContext(self.clay_context);
     defer clay.setCurrentContext(null);
 
@@ -428,6 +466,9 @@ pub fn bindTextInput(self: *Ui, default_value: []const u8, config: Widget.TextIn
         gop.value_ptr.* = Widget{
             .user_data = ptr,
             .render = @ptrCast(&Widget.TextInput.render),
+            .get = @ptrCast(&Widget.TextInput.onGet),
+            .set = @ptrCast(&Widget.TextInput.onSet),
+            .state_type = @typeName([]const u8),
             .unbind = @ptrCast(&Widget.TextInput.unbindEvents),
             .deinit = @ptrCast(&Widget.TextInput.deinit),
         };
@@ -440,6 +481,10 @@ pub fn bindTextInput(self: *Ui, default_value: []const u8, config: Widget.TextIn
         try ptr.swapBuffers(self);
         break :reuse_existing ptr;
     };
+
+    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
+        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
+    }
 
     try self.widgets_seen.put(self.gpa, id.id, {});
 
@@ -455,17 +500,22 @@ pub fn bindSlider(self: *Ui, comptime T: type, config: Widget.Slider.For(T).Conf
 
     const id = self.open_ids.items[self.open_ids.items.len - 1];
     const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-    if (!gop.found_existing) {
+    const widget = if (!gop.found_existing) create_new: {
         const ptr = try Slider.init(self, id, config);
         gop.value_ptr.* = Widget{
             .user_data = ptr,
+            .get = @ptrCast(&Slider.onGet),
+            .set = @ptrCast(&Slider.onSet),
+            .state_type = @typeName(T),
             .render = @ptrCast(&Slider.render),
             .unbind = @ptrCast(&Slider.unbindEvents),
             .deinit = @ptrCast(&Slider.deinit),
         };
 
         try ptr.bindEvents(self);
-    } else {
+
+        break :create_new ptr;
+    } else reuse_existing: {
         const ptr: *Slider = @ptrCast(@alignCast(gop.value_ptr.user_data));
 
         // Update config properties in case they change frame-to-frame.
@@ -474,23 +524,15 @@ pub fn bindSlider(self: *Ui, comptime T: type, config: Widget.Slider.For(T).Conf
         ptr.track_color = config.track_color;
         ptr.handle_color = config.handle_color;
         ptr.handle_size = config.handle_size;
+
+        break :reuse_existing ptr;
+    };
+
+    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
+        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
     }
 
     try self.widgets_seen.put(self.gpa, id.id, {});
-}
-
-/// Get the current text value of the open text input widget
-pub fn currentTextInputValue(self: *Ui) []const u8 {
-    std.debug.assert(clay.getCurrentContext() == self.clay_context);
-    std.debug.assert(self.open_ids.items.len > 0);
-
-    const id = self.open_ids.items[self.open_ids.items.len - 1];
-    if (self.widget_states.get(id.id)) |widget_vtable| {
-        const widget: *Widget.TextInput = @ptrCast(@alignCast(widget_vtable.user_data));
-        return widget.currentText();
-    } else {
-        return &.{};
-    }
 }
 
 /// Determine if the currently-open element is hovered by the mouse.
@@ -581,6 +623,35 @@ pub fn pushEvent(self: *Ui, id: ElementId, data: Event.Data, user_data: ?*anyopa
         },
         .data = data,
     });
+}
+
+pub fn getWidgetState(self: *Ui, id: ElementId, comptime T: type) !?T {
+    const widget_vtable = self.widget_states.get(id.id) orelse return null;
+
+    if (widget_vtable.state_type != @as(*const anyopaque, @typeName(T))) {
+        return null;
+    }
+
+    const ptr: *const T = @ptrCast(@alignCast(widget_vtable.get(widget_vtable.user_data, self)));
+    return ptr.*;
+}
+
+pub fn setWidgetState(self: *Ui, id: ElementId, comptime T: type, state: T) !void {
+    if (self.widget_states.get(id.id)) |widget_vtable| {
+        if (widget_vtable.state_type != @as(*const anyopaque, @typeName(T))) {
+            return error.InvalidWidgetStateType;
+        }
+
+        widget_vtable.set(widget_vtable.user_data, self, @ptrCast(&state));
+    } else if (self.open_layout) {
+        const ptr = try self.deferred_widget_arena_current.allocator().create(T);
+        ptr.* = state;
+        try self.deferred_widget_states_current.put(self.gpa, id.id, @ptrCast(ptr));
+    } else {
+        const ptr = try self.deferred_widget_arena_last.allocator().create(T);
+        ptr.* = state;
+        try self.deferred_widget_states_last.put(self.gpa, id.id, @ptrCast(ptr));
+    }
 }
 
 // --- Structures ---

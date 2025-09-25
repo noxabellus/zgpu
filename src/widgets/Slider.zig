@@ -78,6 +78,14 @@ pub fn For(comptime T: type) type {
                 ui.removeListener(self.id, .mouse_up, Self, onMouseUp);
             }
 
+            pub fn onGet(self: *Self, _: *Ui) *const T {
+                return &self.current_value;
+            }
+
+            pub fn onSet(self: *Self, _: *Ui, new_value: *const T) !void {
+                self.current_value = std.math.clamp(new_value.*, self.min, self.max);
+            }
+
             /// Called when the user presses the mouse button over the slider.
             pub fn onMouseDown(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
                 self.is_dragging = true;
@@ -188,6 +196,14 @@ pub fn For(comptime T: type) type {
                     ui.removeListener(self.id, .mouse_down, Self, onMouseDown);
                     ui.removeListener(self.id, .drag, Self, onDrag);
                     ui.removeListener(self.id, .mouse_up, Self, onMouseUp);
+                }
+
+                pub fn onGet(self: *Self, _: *Ui) *const T {
+                    return &self.current_value;
+                }
+
+                pub fn onSet(self: *Self, _: *Ui, new_value: *const T) !void {
+                    self.current_value = std.math.clamp(new_value.*, self.min, self.max);
                 }
 
                 /// Called when the user presses the mouse button over the slider.
@@ -302,6 +318,14 @@ pub fn For(comptime T: type) type {
                     ui.removeListener(self.id, .mouse_down, Self, onMouseDown);
                     ui.removeListener(self.id, .drag, Self, onDrag);
                     ui.removeListener(self.id, .mouse_up, Self, onMouseUp);
+                }
+
+                pub fn onGet(self: *Self, _: *Ui) *const T {
+                    return &self.current_value;
+                }
+
+                pub fn onSet(self: *Self, _: *Ui, new_value: *const T) !void {
+                    self.current_value = std.math.clamp(new_value.*, self.min, self.max);
                 }
 
                 /// Called when the user presses the mouse button over the slider.
