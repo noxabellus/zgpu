@@ -25,8 +25,9 @@ pub const Widget = struct {
     set: *const fn (*anyopaque, *Ui, *const anyopaque) void,
     state_type: *const anyopaque,
 
-    pub const TextInput = @import("widgets/TextInput.zig");
+    pub const Checkbox = @import("widgets/Checkbox.zig");
     pub const Slider = @import("widgets/Slider.zig");
+    pub const TextInput = @import("widgets/TextInput.zig");
 
     test {
         log.debug("semantic analysis for Ui.Widgets", .{});
@@ -473,87 +474,6 @@ pub fn text(self: *Ui, str: []const u8, config: TextElementConfig) !void {
     clay.text(str, config.toClay());
 }
 
-/// Configure an open element as a text input widget
-pub fn bindTextInput(self: *Ui, config: Widget.TextInput.Config) !void {
-    std.debug.assert(clay.getCurrentContext() == self.clay_context);
-    std.debug.assert(self.open_ids.items.len > 0);
-
-    const id = self.open_ids.items[self.open_ids.items.len - 1];
-    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-    const widget = if (!gop.found_existing) create_new: {
-        const ptr = try Widget.TextInput.init(self, id, config);
-        gop.value_ptr.* = Widget{
-            .user_data = ptr,
-            .render = @ptrCast(&Widget.TextInput.render),
-            .get = @ptrCast(&Widget.TextInput.onGet),
-            .set = @ptrCast(&Widget.TextInput.onSet),
-            .state_type = @typeName([]const u8),
-            .unbind = @ptrCast(&Widget.TextInput.unbindEvents),
-            .deinit = @ptrCast(&Widget.TextInput.deinit),
-        };
-
-        try ptr.bindEvents(self);
-
-        break :create_new ptr;
-    } else reuse_existing: {
-        const ptr: *Widget.TextInput = @ptrCast(@alignCast(gop.value_ptr.user_data));
-        try ptr.swapBuffers(self);
-        break :reuse_existing ptr;
-    };
-
-    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
-        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
-    }
-
-    try self.widgets_seen.put(self.gpa, id.id, {});
-
-    try self.text(widget.currentText(), config.toFull());
-}
-
-/// Configure an open element as a slider widget; works with floats and integers of all signs and sizes up to 64 bits.
-pub fn bindSlider(self: *Ui, comptime T: type, config: Widget.Slider.For(T).Config) !void {
-    const Slider = Widget.Slider.For(T);
-
-    std.debug.assert(clay.getCurrentContext() == self.clay_context);
-    std.debug.assert(self.open_ids.items.len > 0);
-
-    const id = self.open_ids.items[self.open_ids.items.len - 1];
-    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-    const widget = if (!gop.found_existing) create_new: {
-        const ptr = try Slider.init(self, id, config);
-        gop.value_ptr.* = Widget{
-            .user_data = ptr,
-            .get = @ptrCast(&Slider.onGet),
-            .set = @ptrCast(&Slider.onSet),
-            .state_type = @typeName(T),
-            .render = @ptrCast(&Slider.render),
-            .unbind = @ptrCast(&Slider.unbindEvents),
-            .deinit = @ptrCast(&Slider.deinit),
-        };
-
-        try ptr.bindEvents(self);
-
-        break :create_new ptr;
-    } else reuse_existing: {
-        const ptr: *Slider = @ptrCast(@alignCast(gop.value_ptr.user_data));
-
-        // Update config properties in case they change frame-to-frame.
-        ptr.min = config.min;
-        ptr.max = config.max;
-        ptr.track_color = config.track_color;
-        ptr.handle_color = config.handle_color;
-        ptr.handle_size = config.handle_size;
-
-        break :reuse_existing ptr;
-    };
-
-    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
-        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
-    }
-
-    try self.widgets_seen.put(self.gpa, id.id, {});
-}
-
 /// Determine if the currently-open element is hovered by the mouse.
 /// * This is for styling logic, not event handling; use the generated event stream for that.
 pub fn hovered(self: *Ui) bool {
@@ -615,6 +535,128 @@ pub fn focusedId(self: *Ui) ?ElementId {
 /// Get the focused element ID from the last frame, or null if there was no focused element.
 pub fn lastFocusedId(self: *Ui) ?ElementId {
     return self.last_state.focusedId();
+}
+
+// Widget api //
+
+/// Configure an open element as a checkbox widget for boolean values.
+pub fn bindCheckbox(self: *Ui, config: Widget.Checkbox.Config) !void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
+    const id = self.open_ids.items[self.open_ids.items.len - 1];
+    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
+    const widget = if (!gop.found_existing) create_new: {
+        const ptr = try Widget.Checkbox.init(self, id, config);
+        gop.value_ptr.* = Widget{
+            .user_data = ptr,
+            .get = @ptrCast(&Widget.Checkbox.onGet),
+            .set = @ptrCast(&Widget.Checkbox.onSet),
+            .state_type = @typeName(bool),
+            .render = @ptrCast(&Widget.Checkbox.render),
+            .unbind = @ptrCast(&Widget.Checkbox.unbindEvents),
+            .deinit = @ptrCast(&Widget.Checkbox.deinit),
+        };
+
+        try ptr.bindEvents(self);
+
+        break :create_new ptr;
+    } else reuse_existing: {
+        const ptr: *Widget.Checkbox = @ptrCast(@alignCast(gop.value_ptr.user_data));
+        // Update config properties in case they change frame-to-frame.
+        ptr.box_color = config.box_color;
+        ptr.check_color = config.check_color;
+        ptr.size = config.size;
+
+        break :reuse_existing ptr;
+    };
+
+    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
+        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
+    }
+
+    try self.widgets_seen.put(self.gpa, id.id, {});
+}
+
+/// Configure an open element as a slider widget; works with floats and integers of all signs and sizes up to 64 bits.
+pub fn bindSlider(self: *Ui, comptime T: type, config: Widget.Slider.For(T).Config) !void {
+    const Slider = Widget.Slider.For(T);
+
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
+    const id = self.open_ids.items[self.open_ids.items.len - 1];
+    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
+    const widget = if (!gop.found_existing) create_new: {
+        const ptr = try Slider.init(self, id, config);
+        gop.value_ptr.* = Widget{
+            .user_data = ptr,
+            .get = @ptrCast(&Slider.onGet),
+            .set = @ptrCast(&Slider.onSet),
+            .state_type = @typeName(T),
+            .render = @ptrCast(&Slider.render),
+            .unbind = @ptrCast(&Slider.unbindEvents),
+            .deinit = @ptrCast(&Slider.deinit),
+        };
+
+        try ptr.bindEvents(self);
+
+        break :create_new ptr;
+    } else reuse_existing: {
+        const ptr: *Slider = @ptrCast(@alignCast(gop.value_ptr.user_data));
+
+        // Update config properties in case they change frame-to-frame.
+        ptr.min = config.min;
+        ptr.max = config.max;
+        ptr.track_color = config.track_color;
+        ptr.handle_color = config.handle_color;
+        ptr.handle_size = config.handle_size;
+
+        break :reuse_existing ptr;
+    };
+
+    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
+        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
+    }
+
+    try self.widgets_seen.put(self.gpa, id.id, {});
+}
+
+/// Configure an open element as a text input widget
+pub fn bindTextInput(self: *Ui, config: Widget.TextInput.Config) !void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
+    const id = self.open_ids.items[self.open_ids.items.len - 1];
+    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
+    const widget = if (!gop.found_existing) create_new: {
+        const ptr = try Widget.TextInput.init(self, id, config);
+        gop.value_ptr.* = Widget{
+            .user_data = ptr,
+            .render = @ptrCast(&Widget.TextInput.render),
+            .get = @ptrCast(&Widget.TextInput.onGet),
+            .set = @ptrCast(&Widget.TextInput.onSet),
+            .state_type = @typeName([]const u8),
+            .unbind = @ptrCast(&Widget.TextInput.unbindEvents),
+            .deinit = @ptrCast(&Widget.TextInput.deinit),
+        };
+
+        try ptr.bindEvents(self);
+
+        break :create_new ptr;
+    } else reuse_existing: {
+        const ptr: *Widget.TextInput = @ptrCast(@alignCast(gop.value_ptr.user_data));
+        try ptr.swapBuffers(self);
+        break :reuse_existing ptr;
+    };
+
+    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
+        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
+    }
+
+    try self.widgets_seen.put(self.gpa, id.id, {});
+
+    try self.text(widget.currentText(), config.toFull());
 }
 
 /// Get the offset data for a character within the only text element inside the element with the given id.
@@ -794,6 +836,7 @@ pub const Event = struct {
         },
 
         text_change: []const u8,
+        bool_change: bool,
         float_change: f64,
         int_change: i64,
         uint_change: u64,

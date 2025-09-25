@@ -207,6 +207,25 @@ fn createLayout(ui: *Ui) !void {
             .handle_color = COLOR_TEAL,
         });
     }
+
+    {
+        try ui.beginElement(.fromSlice("CheckboxTest"));
+        defer ui.closeElement();
+
+        try ui.configureElement(.{ .layout = .{
+            .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
+        }, .widget = true, .state = .flags(.{
+            .activate = true,
+            .focus = true,
+        }), .border = .{ .width = .all(1), .color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK } });
+
+        try ui.bindCheckbox(.{
+            .default = true,
+            .box_color = COLOR_LIGHT_HOVER,
+            .check_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK,
+            .size = 16.0,
+        });
+    }
 }
 
 pub fn main() !void {
@@ -418,6 +437,18 @@ pub fn main() !void {
                 log.info("Slider value changed: {d}", .{new_value});
             }
         }.slider_value_listener,
+        undefined,
+    );
+
+    try ui.addListener(
+        .fromSlice("CheckboxTest"),
+        .bool_change,
+        anyopaque,
+        &struct {
+            pub fn checkbox_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.bool_change)) anyerror!void {
+                log.info("Checkbox value changed: {any}", .{new_value});
+            }
+        }.checkbox_value_listener,
         undefined,
     );
 
