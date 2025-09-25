@@ -865,6 +865,45 @@ pub fn setWidgetState(self: *Ui, id: ElementId, comptime T: type, state: T) !voi
     }
 }
 
+/// Programmatically sets the value of a shared widget state, such as a radio button group.
+/// If the state does not yet exist for the given group_id, it will be created.
+pub fn setSharedWidgetState(self: *Ui, group_id: ElementId, comptime T: type, state: T) !void {
+    const key = group_id.id;
+
+    if (self.shared_widget_states.getPtr(key)) |entry| {
+        // State already exists, so we just need to update it.
+        // First, ensure the types match to prevent corruption.
+        if (entry.state_type != @as(*const anyopaque, @typeName(T))) {
+            return error.InvalidWidgetStateType;
+        }
+
+        // Cast the generic pointer to the correct type and set the value.
+        const state_ptr: *T = @ptrCast(@alignCast(entry.data));
+        state_ptr.* = state;
+    } else {
+        // The state does not exist. We will create it. This is useful for setting
+        // the initial state of a group before any of its widgets are declared.
+        const ptr = try self.gpa.create(T);
+        errdefer self.gpa.destroy(ptr); // In case the put fails.
+        ptr.* = state;
+
+        const new_entry = SharedWidgetState{
+            .data = ptr,
+            .deinit = @ptrCast(&struct {
+                pub fn destructor(state_ptr: *T, ui: *Ui) void {
+                    ui.gpa.destroy(state_ptr);
+                }
+            }.destructor),
+            .state_type = @typeName(T),
+            // We mark this as 'seen' because we are intentionally creating it. This
+            // prevents it from being garbage collected at the end of the frame if
+            // no widgets from its group happen to be declared.
+            .seen_this_frame = true,
+        };
+        try self.shared_widget_states.put(self.gpa, key, new_entry);
+    }
+}
+
 pub fn getOrPutSharedWidgetState(self: *Ui, comptime T: type, group_id: ElementId, default_value: T) !*T {
     const key = group_id.id;
 

@@ -23,12 +23,17 @@ pub fn For(comptime T: type) type {
         }
     }
 
+    const field_names = comptime std.meta.fieldNames(T);
+    const num_options = comptime field_names.len;
+
     return struct {
         const Self = @This();
 
         id: Ui.ElementId,
         current_value: T,
         is_open: bool,
+        just_selected_with_key: bool,
+        highlighted_index: ?usize,
 
         // Style properties
         box_color: Ui.Color,
@@ -67,6 +72,8 @@ pub fn For(comptime T: type) type {
                 .id = id,
                 .current_value = config.default,
                 .is_open = false,
+                .just_selected_with_key = false,
+                .highlighted_index = null,
                 .box_color = config.box_color,
                 .box_color_hover = config.box_color_hover,
                 .text_color = config.text_color,
@@ -80,26 +87,27 @@ pub fn For(comptime T: type) type {
         }
 
         pub fn deinit(self: *Self, ui: *Ui) void {
-            self.unbindEvents(ui);
             ui.gpa.destroy(self);
         }
 
         pub fn bindEvents(self: *Self, ui: *Ui) !void {
             try ui.addListener(self.id, .activate_end, Self, EventHandler.toggleOpen, self);
+            try ui.addListener(self.id, .key_down, Self, EventHandler.onKeyDown, self);
 
-            inline for (comptime std.meta.fields(T)) |field| {
-                const option_id = try optionId(self, ui, field.name);
-                const field_value = @field(T, field.name);
+            inline for (field_names) |field_name| {
+                const field_value = comptime @field(T, field_name);
+                const option_id = try optionId(self, ui, field_name);
                 try ui.addListener(option_id, .activate_end, Self, EventHandler.select(field_value), self);
             }
         }
 
         pub fn unbindEvents(self: *Self, ui: *Ui) void {
             ui.removeListener(self.id, .activate_end, Self, EventHandler.toggleOpen);
+            ui.removeListener(self.id, .key_down, Self, EventHandler.onKeyDown);
 
-            inline for (comptime std.meta.fields(T)) |field| {
-                if (optionId(self, ui, field.name)) |option_id| {
-                    const field_value = @field(T, field.name);
+            inline for (field_names) |field_name| {
+                if (optionId(self, ui, field_name)) |option_id| {
+                    const field_value = comptime @field(T, field_name);
                     ui.removeListener(option_id, .activate_end, Self, EventHandler.select(field_value));
                 } else |err| {
                     log.err("Error generating option ID for unbinding: {s}", .{@errorName(err)});
@@ -127,7 +135,7 @@ pub fn For(comptime T: type) type {
                 .corner_radius = .all(4),
                 .border = .{ .width = .all(1), .color = if (ui.focused()) Ui.Color.blue else Ui.Color.black },
                 .widget = false,
-                .state = .flags(.{ .activate = true, .focus = true }),
+                .state = .flags(.{ .activate = true, .focus = true, .keyboard = true }),
             });
 
             try ui.text(@tagName(self.current_value), .{
@@ -157,11 +165,16 @@ pub fn For(comptime T: type) type {
                 });
                 defer ui.closeElement();
 
-                inline for (comptime std.meta.fieldNames(T)) |field_name| {
+                inline for (comptime std.meta.fields(T), 0..) |_, i| {
+                    const field_name = comptime std.meta.fields(T)[i].name;
                     const option_id = try optionId(self, ui, field_name);
 
                     try ui.beginElement(option_id);
                     defer ui.closeElement();
+
+                    if (ui.hovered()) {
+                        self.highlighted_index = i;
+                    }
 
                     try ui.configureElement(.{
                         .layout = .{
@@ -169,7 +182,7 @@ pub fn For(comptime T: type) type {
                             .padding = .axes(10, 0),
                             .child_alignment = .center,
                         },
-                        .background_color = if (ui.hovered()) self.option_color_hover else .transparent,
+                        .background_color = if (self.highlighted_index == i) self.option_color_hover else .transparent,
                         .widget = false,
                         .state = .flags(.{ .activate = true }),
                     });
@@ -206,6 +219,7 @@ pub fn For(comptime T: type) type {
 
                 if (!click_is_internal) {
                     self.is_open = false;
+                    self.highlighted_index = null;
                 }
             }
         }
@@ -222,27 +236,88 @@ pub fn For(comptime T: type) type {
             return Ui.ElementId.fromSlice(try std.fmt.allocPrint(ui.frame_arena, "{x}_option_{s}", .{ self.id.id, name }));
         }
 
+        fn selectValue(self: *Self, ui: *Ui, value: T) !void {
+            if (self.current_value != value) {
+                self.current_value = value;
+                const int_value: std.meta.Tag(T) = @intFromEnum(value);
+                try ui.pushEvent(
+                    self.id,
+                    if (comptime @typeInfo(std.meta.Tag(T)).int.signedness == .signed)
+                        Ui.Event.Data{ .int_change = int_value }
+                    else
+                        Ui.Event.Data{ .uint_change = int_value },
+                    self,
+                );
+            }
+            self.is_open = false;
+            self.highlighted_index = null;
+        }
+
         const EventHandler = struct {
             pub fn toggleOpen(self: *Self, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
+                if (self.just_selected_with_key) {
+                    self.just_selected_with_key = false;
+                    return;
+                }
+
                 self.is_open = !self.is_open;
+
+                if (self.is_open) {
+                    // When opening, set highlight to the current selection
+                    inline for (field_names, 0..) |field_name, i| {
+                        const value = comptime @field(T, field_name);
+                        if (value == self.current_value) {
+                            self.highlighted_index = i;
+                            break;
+                        }
+                    }
+                } else {
+                    self.highlighted_index = null;
+                }
+            }
+
+            pub fn onKeyDown(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
+                if (!self.is_open) return;
+
+                switch (key_data.key) {
+                    .escape => {
+                        self.is_open = false;
+                        self.highlighted_index = null;
+                    },
+                    .up => {
+                        if (self.highlighted_index) |idx| {
+                            self.highlighted_index = (idx + num_options - 1) % num_options;
+                        } else {
+                            self.highlighted_index = num_options - 1;
+                        }
+                    },
+                    .down => {
+                        if (self.highlighted_index) |idx| {
+                            self.highlighted_index = (idx + 1) % num_options;
+                        } else {
+                            self.highlighted_index = 0;
+                        }
+                    },
+                    .enter, .space => {
+                        if (self.highlighted_index) |idx| {
+                            inline for (comptime field_names, 0..) |field_name, i| {
+                                if (i == idx) {
+                                    const selected_value = @field(T, field_name);
+                                    try self.selectValue(ui, selected_value);
+                                    self.just_selected_with_key = true;
+                                    break;
+                                }
+                            }
+                        }
+                    },
+                    else => {},
+                }
             }
 
             pub fn select(comptime value: T) (fn (self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void) {
                 return struct {
                     pub fn handler(self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
-                        if (self.current_value != value) {
-                            self.current_value = value;
-                            const int_value: std.meta.Tag(T) = @intFromEnum(value);
-                            try ui.pushEvent(
-                                self.id,
-                                if (comptime @typeInfo(std.meta.Tag(T)).int.signedness == .signed)
-                                    Ui.Event.Data{ .int_change = int_value }
-                                else
-                                    Ui.Event.Data{ .uint_change = int_value },
-                                self,
-                            );
-                        }
-                        self.is_open = false;
+                        try self.selectValue(ui, value);
                     }
                 }.handler;
             }
