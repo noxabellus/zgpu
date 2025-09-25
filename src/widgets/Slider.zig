@@ -4,6 +4,7 @@ const SliderWidget = @This();
 
 const std = @import("std");
 const Ui = @import("../Ui.zig");
+const BindingState = @import("../BindingState.zig");
 
 const log = std.log.scoped(.slider_widget);
 
@@ -11,6 +12,22 @@ test {
     log.debug("semantic analysis for widgets/Slider.zig", .{});
     std.testing.refAllDecls(@This());
 }
+
+const KeyRepeatState = struct {
+    timer: ?std.time.Timer = null,
+    initial_delay: u64 = 350 * std.time.ns_per_ms,
+    nth_delay: u64 = 25 * std.time.ns_per_ms,
+    state: enum { none, first, nth } = .none,
+    active_key: ?BindingState.Key = null,
+
+    fn advance(self: *@This()) void {
+        self.state = switch (self.state) {
+            .none => .first,
+            .first => .nth,
+            else => self.state,
+        };
+    }
+};
 
 pub fn For(comptime T: type) type {
     const TInfo = @typeInfo(T);
@@ -27,6 +44,8 @@ pub fn For(comptime T: type) type {
             min: T,
             max: T,
             current_value: T,
+
+            key_repeat: KeyRepeatState = .{},
 
             // Style properties
             track_color: Ui.Color,
@@ -55,6 +74,7 @@ pub fn For(comptime T: type) type {
                     .handle_color = config.handle_color,
                     .handle_size = config.handle_size,
                 };
+                self.key_repeat.timer = try std.time.Timer.start();
 
                 return self;
             }
@@ -66,11 +86,17 @@ pub fn For(comptime T: type) type {
             pub fn bindEvents(self: *Self, ui: *Ui) !void {
                 try ui.addListener(self.id, .mouse_down, Self, onMouseDown, self);
                 try ui.addListener(self.id, .drag, Self, onDrag, self);
+                try ui.addListener(self.id, .key_down, Self, onKeyDown, self);
+                try ui.addListener(self.id, .key, Self, onKey, self);
+                try ui.addListener(self.id, .key_up, Self, onKeyUp, self);
             }
 
             pub fn unbindEvents(self: *Self, ui: *Ui) void {
                 ui.removeListener(self.id, .mouse_down, Self, onMouseDown);
                 ui.removeListener(self.id, .drag, Self, onDrag);
+                ui.removeListener(self.id, .key_down, Self, onKeyDown);
+                ui.removeListener(self.id, .key, Self, onKey);
+                ui.removeListener(self.id, .key_up, Self, onKeyUp);
             }
 
             pub fn onGet(self: *Self, _: *Ui) *const T {
@@ -81,47 +107,92 @@ pub fn For(comptime T: type) type {
                 self.current_value = std.math.clamp(new_value.*, self.min, self.max);
             }
 
-            /// Called when the user presses the mouse button over the slider.
             pub fn onMouseDown(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
                 try self.updateValueFromMouse(ui, info, mouse_down_data.mouse_position);
             }
 
-            /// Called when the user drags the mouse after clicking on the slider.
             pub fn onDrag(self: *Self, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
                 try self.updateValueFromMouse(ui, info, drag_data.mouse_position);
             }
 
-            /// Calculates the new slider value based on mouse position and fires an event if it changed.
+            pub fn onKeyDown(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
+                const key = key_data.key;
+                if (key != .left and key != .down and key != .right and key != .up) return;
+
+                self.key_repeat.state = .none;
+                self.key_repeat.active_key = key;
+
+                try self.performKeyAction(ui, key);
+
+                self.key_repeat.advance();
+                self.key_repeat.timer.?.reset();
+            }
+
+            pub fn onKey(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key)) !void {
+                const key = key_data.key;
+                if (self.key_repeat.active_key != key) return;
+
+                const delay = switch (self.key_repeat.state) {
+                    .none => return,
+                    .first => self.key_repeat.initial_delay,
+                    .nth => self.key_repeat.nth_delay,
+                };
+
+                if (self.key_repeat.timer.?.read() < delay) return;
+
+                try self.performKeyAction(ui, key);
+                self.key_repeat.advance();
+                self.key_repeat.timer.?.reset();
+            }
+
+            pub fn onKeyUp(self: *Self, _: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_up)) !void {
+                if (self.key_repeat.active_key == key_data.key) {
+                    self.key_repeat.state = .none;
+                    self.key_repeat.active_key = null;
+                }
+            }
+
+            fn performKeyAction(self: *Self, ui: *Ui, key: BindingState.Key) !void {
+                const step = (self.max - self.min) * 0.01;
+                var new_value = self.current_value;
+
+                switch (key) {
+                    .left, .down => new_value -= step,
+                    .right, .up => new_value += step,
+                    else => return,
+                }
+
+                new_value = std.math.clamp(new_value, self.min, self.max);
+
+                if (new_value != self.current_value) {
+                    self.current_value = new_value;
+                    try ui.pushEvent(self.id, .{ .float_change = self.current_value }, self);
+                }
+            }
+
             fn updateValueFromMouse(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_pos: Ui.Vec2) !void {
                 const bb = info.bounding_box;
-                // For a horizontal slider, we only care about the x position.
                 const relative_x = mouse_pos.x - bb.x;
                 const proportion = std.math.clamp(relative_x / bb.width, 0.0, 1.0);
                 const new_value = self.min + proportion * (self.max - self.min);
 
                 if (new_value != self.current_value) {
                     self.current_value = new_value;
-                    // Push a value_change event to notify the application.
-
                     try ui.pushEvent(self.id, .{ .float_change = self.current_value }, self);
                 }
             }
 
-            /// The rendering function for the slider, called by the UI system.
             pub fn render(self: *Self, ui: *Ui, command: Ui.RenderCommand) !void {
                 const bb = command.bounding_box;
 
-                // Draw the track (a thin, rounded rectangle).
                 const track_height: f32 = 4.0;
                 const track_y = bb.y + (bb.height - track_height) / 2.0;
                 try ui.renderer.drawRoundedRect(.{ .x = bb.x, .y = track_y }, .{ .x = bb.width, .y = track_height }, .all(track_height / 2.0), self.track_color);
 
-                // Calculate the handle's position based on the current value.
                 const value_proportion: f32 = @floatCast((self.current_value - self.min) / (self.max - self.min));
                 const handle_x = bb.x + (value_proportion * (bb.width - self.handle_size));
                 const handle_y = bb.y + (bb.height - self.handle_size) / 2.0;
 
-                // Draw the handle (a circle or rounded square).
                 try ui.renderer.drawRoundedRect(.{ .x = handle_x, .y = handle_y }, .{ .x = self.handle_size, .y = self.handle_size }, .all(self.handle_size / 2.0), self.handle_color);
             }
         },
@@ -134,6 +205,8 @@ pub fn For(comptime T: type) type {
                 min: T,
                 max: T,
                 current_value: T,
+
+                key_repeat: KeyRepeatState = .{},
 
                 // Style properties
                 track_color: Ui.Color,
@@ -162,6 +235,7 @@ pub fn For(comptime T: type) type {
                         .handle_color = config.handle_color,
                         .handle_size = config.handle_size,
                     };
+                    self.key_repeat.timer = try std.time.Timer.start();
 
                     return self;
                 }
@@ -173,11 +247,17 @@ pub fn For(comptime T: type) type {
                 pub fn bindEvents(self: *Self, ui: *Ui) !void {
                     try ui.addListener(self.id, .mouse_down, Self, onMouseDown, self);
                     try ui.addListener(self.id, .drag, Self, onDrag, self);
+                    try ui.addListener(self.id, .key_down, Self, onKeyDown, self);
+                    try ui.addListener(self.id, .key, Self, onKey, self);
+                    try ui.addListener(self.id, .key_up, Self, onKeyUp, self);
                 }
 
                 pub fn unbindEvents(self: *Self, ui: *Ui) void {
                     ui.removeListener(self.id, .mouse_down, Self, onMouseDown);
                     ui.removeListener(self.id, .drag, Self, onDrag);
+                    ui.removeListener(self.id, .key_down, Self, onKeyDown);
+                    ui.removeListener(self.id, .key, Self, onKey);
+                    ui.removeListener(self.id, .key_up, Self, onKeyUp);
                 }
 
                 pub fn onGet(self: *Self, _: *Ui) *const T {
@@ -188,17 +268,69 @@ pub fn For(comptime T: type) type {
                     self.current_value = std.math.clamp(new_value.*, self.min, self.max);
                 }
 
-                /// Called when the user presses the mouse button over the slider.
                 pub fn onMouseDown(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
                     try self.updateValueFromMouse(ui, info, mouse_down_data.mouse_position);
                 }
 
-                /// Called when the user drags the mouse after clicking on the slider.
                 pub fn onDrag(self: *Self, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
                     try self.updateValueFromMouse(ui, info, drag_data.mouse_position);
                 }
 
-                /// Calculates the new slider value based on mouse position and fires an event if it changed.
+                pub fn onKeyDown(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
+                    const key = key_data.key;
+                    if (key != .left and key != .down and key != .right and key != .up) return;
+
+                    self.key_repeat.state = .none;
+                    self.key_repeat.active_key = key;
+
+                    try self.performKeyAction(ui, key);
+
+                    self.key_repeat.advance();
+                    self.key_repeat.timer.?.reset();
+                }
+
+                pub fn onKey(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key)) !void {
+                    const key = key_data.key;
+                    if (self.key_repeat.active_key != key) return;
+
+                    const delay = switch (self.key_repeat.state) {
+                        .none => return,
+                        .first => self.key_repeat.initial_delay,
+                        .nth => self.key_repeat.nth_delay,
+                    };
+
+                    if (self.key_repeat.timer.?.read() < delay) return;
+
+                    try self.performKeyAction(ui, key);
+                    self.key_repeat.advance();
+                    self.key_repeat.timer.?.reset();
+                }
+
+                pub fn onKeyUp(self: *Self, _: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_up)) !void {
+                    if (self.key_repeat.active_key == key_data.key) {
+                        self.key_repeat.state = .none;
+                        self.key_repeat.active_key = null;
+                    }
+                }
+
+                fn performKeyAction(self: *Self, ui: *Ui, key: BindingState.Key) !void {
+                    const step: T = 1;
+                    var new_value = self.current_value;
+
+                    switch (key) {
+                        .left, .down => new_value -= step,
+                        .right, .up => new_value += step,
+                        else => return,
+                    }
+
+                    new_value = std.math.clamp(new_value, self.min, self.max);
+
+                    if (new_value != self.current_value) {
+                        self.current_value = new_value;
+                        try ui.pushEvent(self.id, .{ .int_change = self.current_value }, self);
+                    }
+                }
+
                 fn updateValueFromMouse(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_pos: Ui.Vec2) !void {
                     const bb = info.bounding_box;
                     const relative_x = mouse_pos.x - bb.x;
@@ -214,16 +346,13 @@ pub fn For(comptime T: type) type {
                     }
                 }
 
-                /// The rendering function for the slider, called by the UI system.
                 pub fn render(self: *Self, ui: *Ui, command: Ui.RenderCommand) !void {
                     const bb = command.bounding_box;
 
-                    // Draw the track
                     const track_height: f32 = 4.0;
                     const track_y = bb.y + (bb.height - track_height) / 2.0;
                     try ui.renderer.drawRoundedRect(.{ .x = bb.x, .y = track_y }, .{ .x = bb.width, .y = track_height }, .all(track_height / 2.0), self.track_color);
 
-                    // Calculate the handle's position
                     const value_proportion = if (self.max - self.min == 0)
                         0.0
                     else
@@ -232,7 +361,6 @@ pub fn For(comptime T: type) type {
                     const handle_x = bb.x + (value_proportion * (bb.width - self.handle_size));
                     const handle_y = bb.y + (bb.height - self.handle_size) / 2.0;
 
-                    // Draw the handle
                     try ui.renderer.drawRoundedRect(.{ .x = handle_x, .y = handle_y }, .{ .x = self.handle_size, .y = self.handle_size }, .all(self.handle_size / 2.0), self.handle_color);
                 }
             },
@@ -243,6 +371,8 @@ pub fn For(comptime T: type) type {
                 min: T,
                 max: T,
                 current_value: T,
+
+                key_repeat: KeyRepeatState = .{},
 
                 // Style properties
                 track_color: Ui.Color,
@@ -271,6 +401,7 @@ pub fn For(comptime T: type) type {
                         .handle_color = config.handle_color,
                         .handle_size = config.handle_size,
                     };
+                    self.key_repeat.timer = try std.time.Timer.start();
 
                     return self;
                 }
@@ -282,11 +413,17 @@ pub fn For(comptime T: type) type {
                 pub fn bindEvents(self: *Self, ui: *Ui) !void {
                     try ui.addListener(self.id, .mouse_down, Self, onMouseDown, self);
                     try ui.addListener(self.id, .drag, Self, onDrag, self);
+                    try ui.addListener(self.id, .key_down, Self, onKeyDown, self);
+                    try ui.addListener(self.id, .key, Self, onKey, self);
+                    try ui.addListener(self.id, .key_up, Self, onKeyUp, self);
                 }
 
                 pub fn unbindEvents(self: *Self, ui: *Ui) void {
                     ui.removeListener(self.id, .mouse_down, Self, onMouseDown);
                     ui.removeListener(self.id, .drag, Self, onDrag);
+                    ui.removeListener(self.id, .key_down, Self, onKeyDown);
+                    ui.removeListener(self.id, .key, Self, onKey);
+                    ui.removeListener(self.id, .key_up, Self, onKeyUp);
                 }
 
                 pub fn onGet(self: *Self, _: *Ui) *const T {
@@ -297,17 +434,81 @@ pub fn For(comptime T: type) type {
                     self.current_value = std.math.clamp(new_value.*, self.min, self.max);
                 }
 
-                /// Called when the user presses the mouse button over the slider.
                 pub fn onMouseDown(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
                     try self.updateValueFromMouse(ui, info, mouse_down_data.mouse_position);
                 }
 
-                /// Called when the user drags the mouse after clicking on the slider.
                 pub fn onDrag(self: *Self, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
                     try self.updateValueFromMouse(ui, info, drag_data.mouse_position);
                 }
 
-                /// Calculates the new slider value based on mouse position and fires an event if it changed.
+                pub fn onKeyDown(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
+                    const key = key_data.key;
+                    if (key != .left and key != .down and key != .right and key != .up) return;
+
+                    self.key_repeat.state = .none;
+                    self.key_repeat.active_key = key;
+
+                    try self.performKeyAction(ui, key);
+
+                    self.key_repeat.advance();
+                    self.key_repeat.timer.?.reset();
+                }
+
+                pub fn onKey(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key)) !void {
+                    const key = key_data.key;
+                    if (self.key_repeat.active_key != key) return;
+
+                    const delay = switch (self.key_repeat.state) {
+                        .none => return,
+                        .first => self.key_repeat.initial_delay,
+                        .nth => self.key_repeat.nth_delay,
+                    };
+
+                    if (self.key_repeat.timer.?.read() < delay) return;
+
+                    try self.performKeyAction(ui, key);
+                    self.key_repeat.advance();
+                    self.key_repeat.timer.?.reset();
+                }
+
+                pub fn onKeyUp(self: *Self, _: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_up)) !void {
+                    if (self.key_repeat.active_key == key_data.key) {
+                        self.key_repeat.state = .none;
+                        self.key_repeat.active_key = null;
+                    }
+                }
+
+                fn performKeyAction(self: *Self, ui: *Ui, key: BindingState.Key) !void {
+                    const step: T = 1;
+                    var new_value = self.current_value;
+
+                    switch (key) {
+                        .left, .down => {
+                            if (new_value > self.min) {
+                                new_value -= step;
+                            } else {
+                                new_value = self.min;
+                            }
+                        },
+                        .right, .up => {
+                            if (new_value < self.max) {
+                                new_value += step;
+                            } else {
+                                new_value = self.max;
+                            }
+                        },
+                        else => return,
+                    }
+
+                    new_value = std.math.clamp(new_value, self.min, self.max);
+
+                    if (new_value != self.current_value) {
+                        self.current_value = new_value;
+                        try ui.pushEvent(self.id, .{ .uint_change = self.current_value }, self);
+                    }
+                }
+
                 fn updateValueFromMouse(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_pos: Ui.Vec2) !void {
                     const bb = info.bounding_box;
                     const relative_x = mouse_pos.x - bb.x;
@@ -323,16 +524,13 @@ pub fn For(comptime T: type) type {
                     }
                 }
 
-                /// The rendering function for the slider, called by the UI system.
                 pub fn render(self: *Self, ui: *Ui, command: Ui.RenderCommand) !void {
                     const bb = command.bounding_box;
 
-                    // Draw the track
                     const track_height: f32 = 4.0;
                     const track_y = bb.y + (bb.height - track_height) / 2.0;
                     try ui.renderer.drawRoundedRect(.{ .x = bb.x, .y = track_y }, .{ .x = bb.width, .y = track_height }, .all(track_height / 2.0), self.track_color);
 
-                    // Calculate the handle's position
                     const value_proportion = if (self.max - self.min == 0)
                         0.0
                     else
@@ -341,7 +539,6 @@ pub fn For(comptime T: type) type {
                     const handle_x = bb.x + (value_proportion * (bb.width - self.handle_size));
                     const handle_y = bb.y + (bb.height - self.handle_size) / 2.0;
 
-                    // Draw the handle
                     try ui.renderer.drawRoundedRect(.{ .x = handle_x, .y = handle_y }, .{ .x = self.handle_size, .y = self.handle_size }, .all(self.handle_size / 2.0), self.handle_color);
                 }
             },

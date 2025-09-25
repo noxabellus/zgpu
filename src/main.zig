@@ -124,6 +124,8 @@ fn createLayout(ui: *Ui) !void {
             .state = .flags(.{
                 .click = true,
                 .drag = true,
+                .focus = true,
+                .keyboard = true,
             }),
         });
 
@@ -148,6 +150,8 @@ fn createLayout(ui: *Ui) !void {
             .state = .flags(.{
                 .click = true,
                 .drag = true,
+                .focus = true,
+                .keyboard = true,
             }),
         });
 
@@ -172,6 +176,8 @@ fn createLayout(ui: *Ui) !void {
             .state = .flags(.{
                 .click = true,
                 .drag = true,
+                .focus = true,
+                .keyboard = true,
             }),
         });
 
@@ -196,6 +202,8 @@ fn createLayout(ui: *Ui) !void {
             .state = .flags(.{
                 .click = true,
                 .drag = true,
+                .focus = true,
+                .keyboard = true,
             }),
         });
 
