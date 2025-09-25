@@ -956,7 +956,10 @@ pub fn menuItem(self: *Ui, label: []const u8) !bool {
     return false;
 }
 
-pub fn beginSubMenu(self: *Ui, label: []const u8, child_menu_id: ElementId) !bool {
+/// Create a link to a submenu inside the currently open menu.
+/// * It is not necessary to render the submenu directly, instead simply call `Ui.beginMenu` separately, with the same child menu ID provided here.
+/// * The return value indicating whether the menu is open is for styling the current menu.
+pub fn subMenu(self: *Ui, label: []const u8, child_menu_id: ElementId) !bool {
     const parent_menu_id = self.open_ids.items[self.open_ids.items.len - 1];
     const item_id = ElementId.fromSlice(try std.fmt.allocPrint(self.frame_arena, "{x}_submenu_{s}", .{ parent_menu_id.id, label }));
     try self.menu_state.navigable_items_current_menu.append(self.gpa, item_id);
@@ -1021,8 +1024,6 @@ pub fn beginSubMenu(self: *Ui, label: []const u8, child_menu_id: ElementId) !boo
 
     return is_child_open;
 }
-
-pub fn endSubMenu(_: *Ui) void {}
 
 pub fn menuSeparator(self: *Ui) !void {
     try self.elem(.{

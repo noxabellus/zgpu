@@ -285,7 +285,7 @@ fn createLayout(ui: *Ui) !void {
         }
     }
 
-    // The following blocks declare the contents of menus. They only run when the UI
+    // The following blocks declare the contents of menus. They only run when the controller
     // system has determined (via `ui.openMenu`) that they should be visible.
 
     // Root Context Menu
@@ -301,9 +301,8 @@ fn createLayout(ui: *Ui) !void {
         try ui.menuSeparator();
 
         // Submenu Trigger
-        if (try ui.beginSubMenu("More Options...", .fromSlice("SubMenu1"))) {
-            defer ui.endSubMenu();
-        }
+        // Note: we do not utilize it here, but the return value is a boolean indicating if it is open
+        _ = try ui.subMenu("More Options...", .fromSlice("SubMenu1"));
 
         try ui.menuSeparator();
 
@@ -317,7 +316,8 @@ fn createLayout(ui: *Ui) !void {
                 try ui.beginElement(.fromSlice("MenuSlider"));
                 defer ui.closeElement();
 
-                try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(100), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .click = true, .drag = true }) });
+                const bb = ui.getElementBounds(.fromSlice("ContextMenuRoot")).?; // Note: This is kind of dangerous; if you were to set the fixed width to be exactly the menu width, it would actually grow each frame
+                try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(bb.width - 16), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .click = true, .drag = true }) });
                 try ui.bindSlider(f32, .{ .min = 0, .max = 1 });
             }
         }
@@ -330,19 +330,18 @@ fn createLayout(ui: *Ui) !void {
         if (try ui.menuItem("Option A")) {
             log.info("Action: Option A", .{});
         }
+
         if (try ui.menuItem("Option B")) {
             log.info("Action: Option B", .{});
         }
 
-        // Deeper Submenu Trigger
-        if (try ui.beginSubMenu("Even Deeper...", .fromSlice("SubMenu2"))) {
-            defer ui.endSubMenu();
-        }
+        _ = try ui.subMenu("Even Deeper...", .fromSlice("SubMenu2"));
     }
 
     // Second Level Submenu
     if (try ui.beginMenu(.fromSlice("SubMenu2"))) {
         defer ui.endMenu();
+
         if (try ui.menuItem("Final Option!")) {
             log.info("Action: Final Option!", .{});
         }
@@ -605,6 +604,19 @@ pub fn main() !void {
                 try g.setSharedWidgetState(.fromSlice("ThemeSelector"), Theme, theme);
             }
         }.dropdown_value_listener,
+        undefined,
+    );
+
+    // listener for the slider embedded in the context menu
+    try ui.addListener(
+        .fromSlice("MenuSlider"),
+        .float_change,
+        anyopaque,
+        &struct {
+            pub fn slider_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.float_change)) anyerror!void {
+                log.info("Context Menu Slider value changed: {d}", .{new_value});
+            }
+        }.slider_value_listener,
         undefined,
     );
 
