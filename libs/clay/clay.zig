@@ -208,13 +208,13 @@ pub const Color = [4]f32;
 
 pub const BoundingBox = extern struct {
     /// X coordinate of the top-left corner
-    x: f32,
+    x: f32 = 0,
     /// Y coordinate of the top-left corner
-    y: f32,
+    y: f32 = 0,
     /// Width of the bounding box
-    width: f32,
+    width: f32 = 0,
     /// Height of the bounding box
-    height: f32,
+    height: f32 = 0,
 };
 
 pub const SizingMinMax = extern struct {
