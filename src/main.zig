@@ -60,6 +60,12 @@ const COLOR_BLUE_DARK = Ui.Color.fromLinearU8(2, 32, 82, 255);
 const COLOR_NONE = Ui.Color.fromLinearU8(0, 0, 0, 255);
 const COLOR_WHITE = Ui.Color.fromLinearU8(255, 255, 255, 255);
 
+const Theme = enum(u32) {
+    light,
+    dark,
+    system,
+};
+
 const test_text_default = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. Nulla feugiat convallis viverra.\nNulla luctus odio arcu. Cras pellentesque vitae lorem vel egestas.\n";
 
 fn createLayout(ui: *Ui) !void {
@@ -233,6 +239,38 @@ fn createLayout(ui: *Ui) !void {
             .check_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK,
             .size = 16.0,
         });
+    }
+
+    {
+        const radio_group_id = Ui.ElementId.fromSlice("ThemeSelector");
+
+        try ui.openElement(.{
+            .id = .fromSlice("RadioContainer"),
+            .layout = .{ .direction = .left_to_right, .child_gap = 10 },
+        });
+        defer ui.closeElement();
+
+        {
+            // Light Theme Button
+            try ui.beginElement(.fromSlice("RadioLight"));
+            defer ui.closeElement();
+            try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
+            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .light });
+        }
+        {
+            // Dark Theme Button
+            try ui.beginElement(.fromSlice("RadioDark"));
+            defer ui.closeElement();
+            try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
+            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .dark });
+        }
+        {
+            // System Theme Button
+            try ui.beginElement(.fromSlice("RadioSystem"));
+            defer ui.closeElement();
+            try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
+            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .system });
+        }
     }
 }
 
@@ -457,6 +495,19 @@ pub fn main() !void {
                 log.info("Checkbox value changed: {any}", .{new_value});
             }
         }.checkbox_value_listener,
+        undefined,
+    );
+
+    try ui.addListener(
+        .fromSlice("ThemeSelector"),
+        .uint_change,
+        anyopaque,
+        &struct {
+            pub fn radio_value_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.uint_change)) anyerror!void {
+                const theme: Theme = @enumFromInt(new_value);
+                log.info("RadioButton value changed: {any}", .{theme});
+            }
+        }.radio_value_listener,
         undefined,
     );
 

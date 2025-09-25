@@ -24,15 +24,24 @@ pub const Widget = struct {
     get: *const fn (*anyopaque, *Ui) *const anyopaque,
     set: *const fn (*anyopaque, *Ui, *const anyopaque) void,
     state_type: *const anyopaque,
+    seen_this_frame: bool,
 
     pub const Checkbox = @import("widgets/Checkbox.zig");
     pub const Slider = @import("widgets/Slider.zig");
     pub const TextInput = @import("widgets/TextInput.zig");
+    pub const RadioButton = @import("widgets/RadioButton.zig");
 
     test {
         log.debug("semantic analysis for Ui.Widgets", .{});
         std.testing.refAllDecls(@This());
     }
+};
+
+pub const SharedWidgetState = struct {
+    data: *anyopaque,
+    deinit: *const fn (*anyopaque, *Ui) void,
+    state_type: *const anyopaque,
+    seen_this_frame: bool,
 };
 
 pub const Vec2 = Batch2D.Vec2;
@@ -88,11 +97,11 @@ deferred_widget_arena_current: std.heap.ArenaAllocator,
 deferred_widget_states_last: std.AutoHashMapUnmanaged(u32, *anyopaque) = .empty,
 deferred_widget_arena_last: std.heap.ArenaAllocator,
 
-// widgets seen this frame
-widgets_seen: std.AutoHashMapUnmanaged(u32, void) = .empty,
-
 // events from widgets triggered this frame, to be dispatched on the next frame
 widget_events: std.ArrayList(Event) = .empty,
+
+// shared states for widgets like radio groups
+shared_widget_states: std.AutoHashMapUnmanaged(u32, SharedWidgetState) = .empty,
 
 // --- Interaction State ---
 
@@ -188,9 +197,14 @@ pub fn init(gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *B
 }
 
 pub fn deinit(self: *Ui) void {
-    var it = self.widget_states.valueIterator();
-    while (it.next()) |vtable| {
+    var state_it = self.widget_states.valueIterator();
+    while (state_it.next()) |vtable| {
         vtable.deinit(vtable.user_data, self);
+    }
+
+    var shared_it = self.shared_widget_states.valueIterator();
+    while (shared_it.next()) |entry| {
+        entry.deinit(entry.data, self);
     }
 
     self.events.deinit(self.gpa);
@@ -207,7 +221,6 @@ pub fn deinit(self: *Ui) void {
     self.deferred_widget_arena_current.deinit();
     self.deferred_widget_states_last.deinit(self.gpa);
     self.deferred_widget_arena_last.deinit();
-    self.widgets_seen.deinit(self.gpa);
     self.widget_events.deinit(self.gpa);
 
     self.gpa.free(self.clay_memory);
@@ -242,6 +255,11 @@ pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) !void {
     self.current_scroll_states = last_scrolls;
     self.current_scroll_states.clearRetainingCapacity();
 
+    var shared_it = self.shared_widget_states.iterator();
+    while (shared_it.next()) |entry| {
+        entry.value_ptr.seen_this_frame = false;
+    }
+
     clay.setCurrentContext(self.clay_context);
 
     clay.setLayoutDimensions(vec2ToDims(dimensions));
@@ -268,14 +286,20 @@ pub fn endLayout(self: *Ui) !void {
 
     self.render_commands = clay.endLayout();
 
+    var state_to_remove = std.ArrayList(u32).empty;
     var widget_it = self.widget_states.iterator();
     while (widget_it.next()) |kv| {
-        if (!self.widgets_seen.contains(kv.key_ptr.*)) {
-            kv.value_ptr.unbind(kv.value_ptr.user_data, self);
-            kv.value_ptr.deinit(kv.value_ptr.user_data, self);
+        if (!kv.value_ptr.seen_this_frame) {
+            try state_to_remove.append(self.frame_arena, kv.key_ptr.*);
         }
     }
-    self.widgets_seen.clearRetainingCapacity();
+
+    for (state_to_remove.items) |key| {
+        if (self.widget_states.fetchRemove(key)) |removed_entry| {
+            removed_entry.value.unbind(removed_entry.value.user_data, self);
+            removed_entry.value.deinit(removed_entry.value.user_data, self);
+        }
+    }
 
     const old_states = self.deferred_widget_states_last;
     const old_arena = self.deferred_widget_arena_last;
@@ -288,6 +312,22 @@ pub fn endLayout(self: *Ui) !void {
 
     self.deferred_widget_states_current.clearRetainingCapacity();
     _ = self.deferred_widget_arena_current.reset(.retain_capacity);
+
+    var shared_to_remove = std.ArrayList(u32).empty;
+
+    var shared_it = self.shared_widget_states.iterator();
+    while (shared_it.next()) |entry| {
+        if (!entry.value_ptr.seen_this_frame) {
+            try shared_to_remove.append(self.frame_arena, entry.key_ptr.*);
+        }
+    }
+
+    for (shared_to_remove.items) |key| {
+        if (self.shared_widget_states.fetchRemove(key)) |removed_entry| {
+            const state = removed_entry.value;
+            state.deinit(state.data, self);
+        }
+    }
 
     self.open_layout = false;
 
@@ -556,12 +596,15 @@ pub fn bindCheckbox(self: *Ui, config: Widget.Checkbox.Config) !void {
             .render = @ptrCast(&Widget.Checkbox.render),
             .unbind = @ptrCast(&Widget.Checkbox.unbindEvents),
             .deinit = @ptrCast(&Widget.Checkbox.deinit),
+            .seen_this_frame = true,
         };
 
         try ptr.bindEvents(self);
 
         break :create_new ptr;
     } else reuse_existing: {
+        gop.value_ptr.seen_this_frame = true;
+
         const ptr: *Widget.Checkbox = @ptrCast(@alignCast(gop.value_ptr.user_data));
         // Update config properties in case they change frame-to-frame.
         ptr.box_color = config.box_color;
@@ -574,8 +617,48 @@ pub fn bindCheckbox(self: *Ui, config: Widget.Checkbox.Config) !void {
     if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
         try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
     }
+}
 
-    try self.widgets_seen.put(self.gpa, id.id, {});
+/// Configure an open element as a radio button widget for enum values.
+/// All radio buttons sharing the same `group_id` in the config will be linked.
+pub fn bindRadioButton(self: *Ui, comptime T: type, config: Widget.RadioButton.For(T).Config) !void {
+    const RadioButton = Widget.RadioButton.For(T);
+
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
+    const id = self.open_ids.items[self.open_ids.items.len - 1];
+    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
+    if (!gop.found_existing) {
+        const ptr = try RadioButton.init(self, id, config);
+        gop.value_ptr.* = Widget{
+            .user_data = ptr,
+            .get = @ptrCast(&RadioButton.onGet),
+            .set = @ptrCast(&RadioButton.onSet),
+            .state_type = @typeName(T),
+            .render = @ptrCast(&RadioButton.render),
+            .unbind = @ptrCast(&RadioButton.unbindEvents),
+            .deinit = @ptrCast(&RadioButton.deinit),
+            .seen_this_frame = true,
+        };
+
+        try ptr.bindEvents(self);
+    } else {
+        gop.value_ptr.seen_this_frame = true;
+
+        const ptr: *RadioButton = @ptrCast(@alignCast(gop.value_ptr.user_data));
+
+        // Update config properties in case they change frame-to-frame.
+        ptr.circle_color = config.circle_color;
+        ptr.dot_color = config.dot_color;
+        ptr.size = config.size;
+    }
+
+    // We must "see" the shared state during the layout phase to prevent it
+    // from being garbage collected by endLayout(). We don't need to do anything
+    // with the returned pointer here; just calling the function is enough.
+    const default_value = comptime @field(T, std.meta.fieldNames(T)[0]);
+    _ = try self.getOrPutSharedWidgetState(T, config.group_id, default_value);
 }
 
 /// Configure an open element as a slider widget; works with floats and integers of all signs and sizes up to 64 bits.
@@ -597,12 +680,15 @@ pub fn bindSlider(self: *Ui, comptime T: type, config: Widget.Slider.For(T).Conf
             .render = @ptrCast(&Slider.render),
             .unbind = @ptrCast(&Slider.unbindEvents),
             .deinit = @ptrCast(&Slider.deinit),
+            .seen_this_frame = true,
         };
 
         try ptr.bindEvents(self);
 
         break :create_new ptr;
     } else reuse_existing: {
+        gop.value_ptr.seen_this_frame = true;
+
         const ptr: *Slider = @ptrCast(@alignCast(gop.value_ptr.user_data));
 
         // Update config properties in case they change frame-to-frame.
@@ -618,8 +704,6 @@ pub fn bindSlider(self: *Ui, comptime T: type, config: Widget.Slider.For(T).Conf
     if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
         try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
     }
-
-    try self.widgets_seen.put(self.gpa, id.id, {});
 }
 
 /// Configure an open element as a text input widget
@@ -639,12 +723,14 @@ pub fn bindTextInput(self: *Ui, config: Widget.TextInput.Config) !void {
             .state_type = @typeName([]const u8),
             .unbind = @ptrCast(&Widget.TextInput.unbindEvents),
             .deinit = @ptrCast(&Widget.TextInput.deinit),
+            .seen_this_frame = true,
         };
 
         try ptr.bindEvents(self);
 
         break :create_new ptr;
     } else reuse_existing: {
+        gop.value_ptr.seen_this_frame = true;
         const ptr: *Widget.TextInput = @ptrCast(@alignCast(gop.value_ptr.user_data));
         try ptr.swapBuffers(self);
         break :reuse_existing ptr;
@@ -653,8 +739,6 @@ pub fn bindTextInput(self: *Ui, config: Widget.TextInput.Config) !void {
     if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
         try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
     }
-
-    try self.widgets_seen.put(self.gpa, id.id, {});
 
     try self.text(widget.currentText(), config.toFull());
 }
@@ -678,8 +762,12 @@ pub fn getCharacterOffsetAtPoint(self: *Ui, id: ElementId, point: Vec2) ?Charact
 pub fn pushEvent(self: *Ui, id: ElementId, data: Event.Data, user_data: ?*anyopaque) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
+    // NOTE: we do not check if element_data was found here,
+    // because this allows dispatching arbitrary events for non-existent elements,
+    // which is useful for shared-state widgets like radio groups:
+    // dispatching on the id of the group instead of the element allows for easier event handling on the user side.
+    // The bounding box will be {0,0,0,0} in this case.
     const element_data = clay.getElementData(id);
-    if (!element_data.found) return;
 
     try self.widget_events.append(self.gpa, Event{
         .info = Event.Info{
@@ -717,6 +805,38 @@ pub fn setWidgetState(self: *Ui, id: ElementId, comptime T: type, state: T) !voi
         const ptr = try self.deferred_widget_arena_last.allocator().create(T);
         ptr.* = state;
         try self.deferred_widget_states_last.put(self.gpa, id.id, @ptrCast(ptr));
+    }
+}
+
+pub fn getOrPutSharedWidgetState(self: *Ui, comptime T: type, group_id: ElementId, default_value: T) !*T {
+    const key = group_id.id;
+
+    const gop = try self.shared_widget_states.getOrPut(self.gpa, key);
+
+    if (!gop.found_existing) {
+        const ptr = try self.gpa.create(T);
+        ptr.* = default_value;
+
+        gop.value_ptr.* = SharedWidgetState{
+            .data = ptr,
+            .deinit = @ptrCast(&struct {
+                pub fn destructor(state_ptr: *T, ui: *Ui) void {
+                    ui.gpa.destroy(state_ptr);
+                }
+            }.destructor),
+            .state_type = @typeName(T),
+            .seen_this_frame = true,
+        };
+
+        return ptr;
+    } else {
+        gop.value_ptr.seen_this_frame = true;
+
+        if (gop.value_ptr.state_type != @as(*const anyopaque, @typeName(T))) {
+            return error.SharedStateWrongType;
+        }
+
+        return @ptrCast(@alignCast(gop.value_ptr.data));
     }
 }
 
