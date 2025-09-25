@@ -93,6 +93,7 @@ pub fn For(comptime T: type) type {
         pub fn bindEvents(self: *Self, ui: *Ui) !void {
             try ui.addListener(self.id, .activate_end, Self, EventHandler.toggleOpen, self);
             try ui.addListener(self.id, .key_down, Self, EventHandler.onKeyDown, self);
+            try ui.addListener(self.id, .focus_lost, Self, EventHandler.onFocusLost, self);
 
             inline for (field_names) |field_name| {
                 const field_value = comptime @field(T, field_name);
@@ -104,6 +105,7 @@ pub fn For(comptime T: type) type {
         pub fn unbindEvents(self: *Self, ui: *Ui) void {
             ui.removeListener(self.id, .activate_end, Self, EventHandler.toggleOpen);
             ui.removeListener(self.id, .key_down, Self, EventHandler.onKeyDown);
+            ui.removeListener(self.id, .focus_lost, Self, EventHandler.onFocusLost);
 
             inline for (field_names) |field_name| {
                 if (optionId(self, ui, field_name)) |option_id| {
@@ -194,34 +196,6 @@ pub fn For(comptime T: type) type {
                     });
                 }
             }
-
-            // --- Per-frame logic to handle closing the dropdown ---
-            // This logic is placed after all elements are declared for the frame,
-            // because it uses a geometric check for the click event.
-            if (self.is_open and ui.bindings.getAction(.primary_mouse) == .pressed) {
-                const mouse_pos = ui.bindings.getMousePosition();
-                var click_is_internal = false;
-
-                // Check if click is inside the main dropdown box
-                const main_box_data = ui.getElementBounds(self.id);
-                if (main_box_data != null and Ui.boxContains(main_box_data.?, mouse_pos)) {
-                    click_is_internal = true;
-                }
-
-                // Check if click is inside the floating panel
-                if (!click_is_internal) {
-                    const panel_id = try self.panelId(ui);
-                    const panel_data = ui.getElementBounds(panel_id);
-                    if (panel_data != null and Ui.boxContains(panel_data.?, mouse_pos)) {
-                        click_is_internal = true;
-                    }
-                }
-
-                if (!click_is_internal) {
-                    self.is_open = false;
-                    self.highlighted_index = null;
-                }
-            }
         }
 
         pub fn render(_: *Self, _: *Ui, _: Ui.RenderCommand) !void {
@@ -274,6 +248,12 @@ pub fn For(comptime T: type) type {
                 } else {
                     self.highlighted_index = null;
                 }
+            }
+
+            pub fn onFocusLost(self: *Self, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.focus_lost)) !void {
+                // When the dropdown loses focus, always close the panel.
+                self.is_open = false;
+                self.highlighted_index = null;
             }
 
             pub fn onKeyDown(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
