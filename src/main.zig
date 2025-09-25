@@ -255,21 +255,21 @@ fn createLayout(ui: *Ui) !void {
             try ui.beginElement(.fromSlice("RadioLight"));
             defer ui.closeElement();
             try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
-            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .light });
+            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .light, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
         }
         {
             // Dark Theme Button
             try ui.beginElement(.fromSlice("RadioDark"));
             defer ui.closeElement();
             try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
-            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .dark });
+            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .dark, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
         }
         {
             // System Theme Button
             try ui.beginElement(.fromSlice("RadioSystem"));
             defer ui.closeElement();
             try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
-            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .system });
+            try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .system, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
         }
     }
 }
