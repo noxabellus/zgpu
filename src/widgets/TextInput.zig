@@ -20,6 +20,8 @@ carets: std.ArrayList(Caret) = .empty,
 
 current_buffer_idx: u2 = 0,
 text_was_modified_last_frame: bool = false,
+column_select_start_pos: ?u32 = null,
+drag_additive: u32 = 0,
 
 pub const Config = struct {
     /// The RGBA color of the font to render, conventionally specified as 0-255.
@@ -377,13 +379,23 @@ pub fn onMouseDown(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, mouse_d
 
     if (ui.getCharacterIndexAtOffset(self.id, location)) |index| {
         if (mouse_down_data.modifiers.alt) {
-            // Alt-click: Add a new caret
+            log.info("Alt drag start", .{});
+            // START a column select drag.
+            self.column_select_start_pos = index;
             try self.carets.append(ui.gpa, .{ .start = index, .end = index });
+            if (mouse_down_data.modifiers.shift) {
+                log.info("Alt+Shift drag additive", .{});
+                self.drag_additive = @intCast(self.carets.items.len);
+            } else {
+                log.info("Alt drag new", .{});
+                self.carets.clearRetainingCapacity();
+                self.drag_additive = 0;
+            }
         } else if (mouse_down_data.modifiers.shift and self.carets.items.len > 0) {
-            // Shift-click: Extend selection of the last caret
+            log.info("Shift click extend", .{});
             self.carets.items[self.carets.items.len - 1].end = index;
         } else {
-            // Normal click: Clear all and create one new caret
+            log.info("Normal click", .{});
             self.carets.clearRetainingCapacity();
             try self.carets.append(ui.gpa, .{ .start = index, .end = index });
         }
@@ -392,21 +404,89 @@ pub fn onMouseDown(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, mouse_d
 
 pub fn onMouseUp(self: *TextInputWidget, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.mouse_up)) !void {
     log.info("TextInput received mouse up event", .{});
+    log.info("TextInput received mouse up event", .{});
 
     try sortAndMergeCarets(&self.carets);
+    self.column_select_start_pos = null;
+    self.drag_additive = 0;
 }
 
 pub fn onDrag(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
-    log.info("TextInput received drag event ({}): {any}", .{ self.carets.items.len, drag_data });
-
     const location = Ui.Vec2{
         .x = drag_data.mouse_position.x - info.bounding_box.x,
         .y = drag_data.mouse_position.y - info.bounding_box.y,
     };
 
-    const offset = ui.getCharacterIndexAtOffset(self.id, location);
-    if (offset != null and self.carets.items.len > 0) {
-        self.carets.items[self.carets.items.len - 1].end = offset.?;
+    // Branch on the interaction mode
+    if (self.column_select_start_pos) |start_index| {
+        log.info("Column drag event", .{});
+        // --- We are in COLUMN SELECTION mode ---
+        const start_offset = ui.getCharacterOffset(self.id, start_index) orelse return;
+        const current_offset = ui.getCharacterOffsetAtPoint(self.id, location) orelse return;
+
+        // Define the selection rectangle in text-space coordinates
+        const rect_x1 = @min(start_offset.offset.x, current_offset.offset.x);
+        const rect_x2 = @max(start_offset.offset.x, current_offset.offset.x);
+        const rect_y1 = @min(start_offset.offset.y, current_offset.offset.y);
+        const rect_y2 = @max(start_offset.offset.y, current_offset.offset.y) + current_offset.line_height;
+
+        // Clear previous carets, we're recalculating them from scratch each drag frame
+        const base = @min(self.drag_additive, self.carets.items.len);
+        self.carets.shrinkRetainingCapacity(base);
+
+        // This is tricky: we need to iterate over *visual lines* in the text box.
+        // We can approximate this by stepping through the text and checking character offsets.
+        var scan_index: u32 = 0;
+        while (scan_index < self.currentText().len) {
+            const char_offset = ui.getCharacterOffset(self.id, scan_index) orelse {
+                scan_index += 1;
+                continue;
+            };
+
+            const line_y = char_offset.offset.y;
+            const line_h = char_offset.line_height;
+
+            // Is this line within our vertical selection rectangle?
+            if (line_y + line_h > rect_y1 and line_y < rect_y2) {
+                // Yes. Now find the start and end character indices for this line's selection.
+                const start_char_opt = ui.getCharacterIndexAtOffset(self.id, .{ .x = rect_x1, .y = line_y });
+                const end_char_opt = ui.getCharacterIndexAtOffset(self.id, .{ .x = rect_x2, .y = line_y });
+
+                if (start_char_opt != null and end_char_opt != null) {
+                    // We found a valid selection range for this line. Add a new caret.
+                    // Ensure start <= end
+                    const sel_start = @min(start_char_opt.?, end_char_opt.?);
+                    const sel_end = @max(start_char_opt.?, end_char_opt.?);
+                    self.carets.append(ui.gpa, .{ .start = sel_start, .end = sel_end }) catch |err| {
+                        log.err("Failed to append caret during column select: {any}", .{err});
+                        return;
+                    };
+                }
+            }
+
+            // Find the start of the next line to continue scanning
+            var next_scan_index = scan_index;
+            while (next_scan_index < self.currentText().len) {
+                const next_char_offset = ui.getCharacterOffset(self.id, next_scan_index) orelse break;
+                if (next_char_offset.offset.y > line_y) {
+                    break; // Found start of next line
+                }
+                next_scan_index += 1; // This is slow, but necessary without a better line API
+            }
+
+            if (next_scan_index == scan_index) {
+                // We are at the end of the text
+                break;
+            }
+            scan_index = next_scan_index;
+        }
+    } else {
+        // --- We are in NORMAL selection mode ---
+        log.info("TextInput received drag event: {any}", .{drag_data});
+        const offset = ui.getCharacterIndexAtOffset(self.id, location);
+        if (offset != null and self.carets.items.len > 0) {
+            self.carets.items[self.carets.items.len - 1].end = offset.?;
+        }
     }
 }
 
