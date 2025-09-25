@@ -947,7 +947,23 @@ pub fn beginMenu(self: *Ui, id: ElementId, config: MenuConfig) !bool {
 }
 
 pub fn endMenu(self: *Ui) void {
+    const menu_id = self.open_ids.items[self.open_ids.items.len - 1];
     self.closeElement();
+
+    // If this menu was just opened, automatically highlight its first item for better keyboard UX.
+    if (self.menu_state.just_opened_menu_id == menu_id.id) {
+        if (self.menu_state.navigable_items.get(menu_id.id)) |list| {
+            if (list.items.len > 0) {
+                // Find the menu's level in the stack to set the highlight correctly.
+                for (self.menu_state.stack.items, 0..) |menu_info, level| {
+                    if (menu_info.id.id == menu_id.id) {
+                        self.menu_state.setHighlighted(self.gpa, level, list.items[0]);
+                        break;
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Creates a menu item. Application logic should be handled by listening for the `.activate_end` or `.clicked` event on the provided `id`.
@@ -1402,6 +1418,9 @@ pub const MenuState = struct {
 
     hover_timer: std.time.Timer = undefined,
     hovered_submenu_candidate: ?ElementId = null,
+    // Transient state to signal that a menu was opened in the current event processing phase.
+    // This is used to auto-highlight the first item during the next layout pass.
+    just_opened_menu_id: ?u32 = null,
 
     fn deinit(self: *MenuState, gpa: std.mem.Allocator) void {
         self.stack.deinit(gpa);
@@ -1942,16 +1961,52 @@ fn onMenuCloseScope(_: *anyopaque, self: *Ui, _: Ui.Event.Info, _: Ui.Event.Payl
     self.closeTopMenu();
 }
 
-fn onMenuActivate(_: *anyopaque, self: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
+// -fn onMenuActivate(_: *anyopaque, self: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
+// +fn onMenuActivate(_: *anyopaque, self: *Ui, info: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
+//      // This handler fires when the menu panel itself is "activated" (e.g., by pressing Enter).
+// -    // It finds the currently highlighted item and activates it instead.
+// +    // It finds the currently highlighted item and performs the appropriate action.
+//      const level = self.menu_state.stack.items.len - 1;
+//      if (self.menu_state.highlighted_path.items.len > level) {
+//          const highlighted_id = self.menu_state.highlighted_path.items[level];
+// -        // Programmatically trigger an activation on the highlighted item. This will be
+// -        // picked up by `self.activated()` in the next layout pass.
+// -        try self.pushEvent(highlighted_id, .activate_begin, null);
+// -        try self.pushEvent(highlighted_id, .{ .activate_end = .{ .end_element = highlighted_id, .modifiers = .{} } }, null);
+// +
+// +        // Check if the highlighted item is a submenu trigger.
+// +        if (self.menu_item_to_submenu_map.get(highlighted_id.id)) |child_menu_id| {
+// +            // It's a submenu. Open it directly.
+// +            const parent_menu_id = info.element_id; // The event came from the parent menu.
+// +            self.openMenu(child_menu_id, .{ .parent_menu_id = parent_menu_id, .parent_item_id = highlighted_id });
+// +        } else {
+// +            // It's a regular menu item. Push an event for the application to handle...
+// +            try self.pushEvent(highlighted_id, .activate_begin, null);
+// +            try self.pushEvent(highlighted_id, .{ .activate_end = .{ .end_element = highlighted_id, .modifiers = .{} } }, null);
+// +            // ...and close all menus.
+// +            self.closeAllMenus();
+// +        }
+//      }
+//  }
+
+fn onMenuActivate(_: *anyopaque, self: *Ui, info: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
     // This handler fires when the menu panel itself is "activated" (e.g., by pressing Enter).
-    // It finds the currently highlighted item and activates it instead.
+    // It finds the currently highlighted item and performs the appropriate action.
     const level = self.menu_state.stack.items.len - 1;
     if (self.menu_state.highlighted_path.items.len > level) {
         const highlighted_id = self.menu_state.highlighted_path.items[level];
-        // Programmatically trigger an activation on the highlighted item. This will be
-        // picked up by `self.activated()` in the next layout pass.
-        try self.pushEvent(highlighted_id, .activate_begin, null);
-        try self.pushEvent(highlighted_id, .{ .activate_end = .{ .end_element = highlighted_id, .modifiers = .{} } }, null);
+        // Check if the highlighted item is a submenu trigger.
+        if (self.menu_item_to_submenu_map.get(highlighted_id.id)) |child_menu_id| {
+            // It's a submenu. Open it directly.
+            const parent_menu_id = info.element_id; // The event came from the parent menu.
+            self.openMenu(child_menu_id, .{ .parent_menu_id = parent_menu_id, .parent_item_id = highlighted_id });
+        } else {
+            // It's a regular menu item. Push an event for the application to handle...
+            try self.pushEvent(highlighted_id, .activate_begin, null);
+            try self.pushEvent(highlighted_id, .{ .activate_end = .{ .end_element = highlighted_id, .modifiers = .{} } }, null);
+            // ...and close all menus.
+            self.closeAllMenus();
+        }
     }
 }
 
@@ -2038,6 +2093,9 @@ fn onMenuKeyDown(_: *anyopaque, self: *Ui, info: Ui.Event.Info, key_data: Ui.Eve
 /// Manages the menu stack, processes open/close requests, and handles global menu interactions like "click outside".
 fn handleMenuState(self: *Ui) !void {
     const ms = &self.menu_state;
+
+    // Reset transient state at the start of each frame's processing.
+    ms.just_opened_menu_id = null;
 
     // --- 1. Process deferred close requests ---
     if (ms.close_request_level) |level| {
@@ -2133,6 +2191,7 @@ fn handleMenuState(self: *Ui) !void {
 
         // Push the new menu
         try ms.stack.append(self.gpa, request);
+        ms.just_opened_menu_id = request.id.id; // Signal that this menu just opened.
         try self.pushFocusScope(request.id);
 
         // Fire the public event notifying the application that a menu was opened.
@@ -2552,25 +2611,26 @@ fn generateEvents(self: *Ui) !void {
             // A drag action resets any pending double-click.
             self.click_state.last_click_element_id = null;
         } else if (last_active.state.event_flags.click and last_active.id.id == self.state.hoveredIdValue()) {
-            // This was not a drag. Check for click/double-click.
-            const double_click_threshold_ns = self.click_state.double_click_threshold_ms * std.time.ns_per_ms;
-            if (self.click_state.last_click_element_id == last_active.id.id and (now - self.click_state.last_click_time) < double_click_threshold_ns) {
-                // Double click successful.
-                try self.events.append(self.gpa, .{
-                    .info = .{ .element_id = last_active.id, .bounding_box = last_active.bounding_box, .user_data = last_active.state.getUserData() },
-                    .data = .{ .double_clicked = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
-                });
-                // Reset to prevent triple-clicks.
-                self.click_state.last_click_element_id = null;
-            } else {
-                // Single click. Record for a potential double-click.
-                try self.events.append(self.gpa, .{
-                    .info = .{ .element_id = last_active.id, .bounding_box = last_active.bounding_box, .user_data = last_active.state.getUserData() },
-                    .data = .{ .clicked = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
-                });
-                self.click_state.last_click_element_id = last_active.id.id;
-                self.click_state.last_click_time = now;
+            // This was not a drag. Check if it's a regular menu item click, which should close the menu.
+            var is_regular_menu_item = false;
+            var menu_it = self.menu_state.navigable_items.valueIterator();
+            is_in_any_menu: while (menu_it.next()) |item_list| {
+                for (item_list.items) |item_id| {
+                    if (item_id.id == last_active.id.id) {
+                        // It is a menu item. Now check if it's a submenu trigger.
+                        if (!self.menu_item_to_submenu_map.contains(last_active.id.id)) {
+                            is_regular_menu_item = true;
+                        }
+                        break :is_in_any_menu;
+                    }
+                }
             }
+
+            if (is_regular_menu_item) {
+                self.closeAllMenus();
+            }
+
+            // Now, proceed with click/double-click event generation.
         } else {
             // Mouse was released on a different element or a non-clickable one; reset double-click tracking.
             self.click_state.last_click_element_id = null;
