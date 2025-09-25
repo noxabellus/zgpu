@@ -49,6 +49,11 @@ pub const Vec2 = Batch2D.Vec2;
 pub const Color = Batch2D.Color;
 pub const FontId = Batch2D.FontId;
 
+// --- Common Colors ---
+pub const black = Color.fromLinearU8(0, 0, 0, 255);
+pub const white = Color.fromLinearU8(255, 255, 255, 255);
+pub const transparent = Color.fromLinearU8(0, 0, 0, 0);
+
 pub const default_bindings = .{
     .primary_mouse = BindingState.InputBinding{ .mouse = .{ .bind_point = .button_1 } },
     .focus_next = BindingState.InputBinding{ .key = .{ .bind_point = .tab } },
@@ -822,7 +827,29 @@ pub fn bindTextInput(self: *Ui, config: Widget.TextInput.Config) !void {
     try self.text(widget.currentText(), config.toFull());
 }
 
-// Menu API //
+// --- Menu Structures ---
+
+pub const MenuItemConfig = struct {
+    font_id: FontId = 0,
+    font_size: u16 = 14,
+    height: f32 = 24.0,
+    padding: Padding = .{ .left = 8, .right = 8, .top = 0, .bottom = 0 },
+    corner_radius: CornerRadius = .all(3),
+    text_color: Color = black,
+    text_color_highlighted: Color = white,
+    background_color: Color = transparent,
+    background_color_highlighted: Color = Color.fromLinearU8(0, 120, 215, 255),
+};
+
+pub const MenuConfig = struct {
+    background_color: Color = Color.fromLinearU8(240, 240, 240, 255),
+    border_color: Color = Color.fromLinearU8(128, 128, 128, 255),
+    border_width: BorderWidth = .all(1),
+    corner_radius: CornerRadius = .all(4),
+    padding: Padding = .all(4),
+};
+
+// --- Menu API ---
 
 pub fn openMenu(self: *Ui, id: ElementId, config: MenuState.OpenMenuConfig) void {
     self.menu_state.open_request = .{
@@ -845,7 +872,7 @@ pub fn closeAllMenus(self: *Ui) void {
     }
 }
 
-pub fn beginMenu(self: *Ui, id: ElementId) !bool {
+pub fn beginMenu(self: *Ui, id: ElementId, config: MenuConfig) !bool {
     var is_open = false;
     var maybe_current_level: ?usize = null;
     var maybe_info: ?MenuState.OpenMenuInfo = null;
@@ -885,7 +912,7 @@ pub fn beginMenu(self: *Ui, id: ElementId) !bool {
         .layout = .{
             .sizing = .{ .w = .fit, .h = .fit },
             .direction = .top_to_bottom,
-            .padding = .all(4),
+            .padding = config.padding,
         },
         .floating = .{
             // If it's a submenu, attach to the ITEM. If not, attach to the root.
@@ -898,9 +925,9 @@ pub fn beginMenu(self: *Ui, id: ElementId) !bool {
             .attach_points = .{ .parent = if (attach_to_element) .right_top else .left_top, .element = .left_top },
             .z_index = @intCast(MenuState.MENU_Z_INDEX_BASE + current_level),
         },
-        .background_color = Color.fromLinearU8(240, 240, 240, 255),
-        .border = .{ .width = .all(1), .color = Color.fromLinearU8(128, 128, 128, 255) },
-        .corner_radius = .all(4),
+        .background_color = config.background_color,
+        .border = .{ .width = config.border_width, .color = config.border_color },
+        .corner_radius = config.corner_radius,
         .state = .flags(.{ .focus = true, .keyboard = true }),
     });
 
@@ -918,108 +945,101 @@ pub fn endMenu(self: *Ui) void {
     self.closeElement();
 }
 
-pub fn menuItem(self: *Ui, label: []const u8) !bool {
-    const parent_menu_id = self.open_ids.items[self.open_ids.items.len - 1];
-    const item_id = ElementId.fromSlice(try std.fmt.allocPrint(self.frame_arena, "{x}_item_{s}", .{ parent_menu_id.id, label }));
-    try self.menu_state.navigable_items_current_menu.append(self.gpa, item_id);
+/// Creates a menu item. Application logic should be handled by listening for the `.activate_end` or `.clicked` event on the provided `id`.
+pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemConfig) !void {
+    try self.menu_state.navigable_items_current_menu.append(self.gpa, id);
 
     const level = self.menu_state.stack.items.len - 1;
-    const is_highlighted = self.menu_state.highlighted_path.items.len > level and self.menu_state.highlighted_path.items[level].id == item_id.id;
+    const is_highlighted = self.menu_state.highlighted_path.items.len > level and self.menu_state.highlighted_path.items[level].id == id.id;
 
     try self.openElement(.{
-        .id = item_id,
+        .id = id,
         .layout = .{
-            .sizing = .{ .w = .grow, .h = .fixed(24) },
-            .padding = .{ .left = 8, .right = 8 },
+            .sizing = .{ .w = .grow, .h = .fixed(config.height) },
+            .padding = config.padding,
             .child_alignment = .center,
         },
-        .background_color = if (is_highlighted) Color.fromLinearU8(0, 120, 215, 255) else .transparent,
-        .corner_radius = .all(3),
+        .background_color = if (is_highlighted) config.background_color_highlighted else config.background_color,
+        .corner_radius = config.corner_radius,
         .state = .flags(.{ .activate = true, .hover = true }),
     });
     defer self.closeElement();
 
     if (self.hovered()) {
-        self.menu_state.setHighlighted(self.gpa, level, item_id);
+        self.menu_state.setHighlighted(self.gpa, level, id);
     }
 
     try self.text(label, .{
-        .font_id = 0,
-        .font_size = 14,
-        .color = if (is_highlighted) .white else .black,
+        .font_id = config.font_id,
+        .font_size = config.font_size,
+        .color = if (is_highlighted) config.text_color_highlighted else config.text_color,
     });
-
-    if (self.activated(item_id)) {
-        self.closeAllMenus();
-        return true;
-    }
-    return false;
 }
 
 /// Create a link to a submenu inside the currently open menu.
 /// * It is not necessary to render the submenu directly, instead simply call `Ui.beginMenu` separately, with the same child menu ID provided here.
 /// * The return value indicating whether the menu is open is for styling the current menu.
-pub fn subMenu(self: *Ui, label: []const u8, child_menu_id: ElementId) !bool {
+pub fn subMenu(self: *Ui, self_id: ElementId, label: []const u8, child_menu_id: ElementId, config: MenuItemConfig) !bool {
     const parent_menu_id = self.open_ids.items[self.open_ids.items.len - 1];
-    const item_id = ElementId.fromSlice(try std.fmt.allocPrint(self.frame_arena, "{x}_submenu_{s}", .{ parent_menu_id.id, label }));
-    try self.menu_state.navigable_items_current_menu.append(self.gpa, item_id);
+    try self.menu_state.navigable_items_current_menu.append(self.gpa, self_id);
 
     const level = self.menu_state.stack.items.len - 1;
-    const is_highlighted = self.menu_state.highlighted_path.items.len > level and self.menu_state.highlighted_path.items[level].id == item_id.id;
+    const is_highlighted = self.menu_state.highlighted_path.items.len > level and self.menu_state.highlighted_path.items[level].id == self_id.id;
 
     var is_child_open = false;
     if (self.menu_state.stack.items.len > level + 1) {
         if (self.menu_state.stack.items[level + 1].parent_item_id) |parent_item| {
-            if (parent_item.id == item_id.id) {
+            if (parent_item.id == self_id.id) {
                 is_child_open = true;
             }
         }
     }
 
     try self.openElement(.{
-        .id = item_id,
+        .id = self_id,
         .layout = .{
-            .sizing = .{ .w = .grow, .h = .fixed(24) },
+            .sizing = .{ .w = .grow, .h = .fixed(config.height) },
             .direction = .left_to_right,
             .child_alignment = .center,
             .child_gap = 10,
-            .padding = .{ .left = 8, .right = 8 },
+            .padding = config.padding,
         },
-        .background_color = if (is_highlighted or is_child_open) Color.fromLinearU8(0, 120, 215, 255) else .transparent,
-        .corner_radius = .all(3),
+        .background_color = if (is_highlighted or is_child_open) config.background_color_highlighted else config.background_color,
+        .corner_radius = config.corner_radius,
         .state = .flags(.{ .activate = true, .hover = true }),
     });
     defer self.closeElement();
 
     if (self.hovered()) {
-        self.menu_state.setHighlighted(self.gpa, level, item_id);
+        self.menu_state.setHighlighted(self.gpa, level, self_id);
         if (self.menu_state.hovered_submenu_candidate) |candidate| {
-            if (candidate.id != item_id.id) {
-                self.menu_state.hovered_submenu_candidate = item_id;
+            if (candidate.id != self_id.id) {
+                self.menu_state.hovered_submenu_candidate = self_id;
                 self.menu_state.hover_timer.reset();
             }
         } else {
-            self.menu_state.hovered_submenu_candidate = item_id;
+            self.menu_state.hovered_submenu_candidate = self_id;
             self.menu_state.hover_timer.reset();
         }
     }
 
+    const text_color = if (is_highlighted or is_child_open) config.text_color_highlighted else config.text_color;
     try self.text(label, .{
-        .font_id = 0,
-        .font_size = 14,
-        .color = if (is_highlighted or is_child_open) .white else .black,
+        .font_id = config.font_id,
+        .font_size = config.font_size,
+        .color = text_color,
     });
     try self.elem(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } }); // Spacer
     try self.text(">", .{
-        .font_id = 0,
-        .font_size = 14,
-        .color = if (is_highlighted or is_child_open) .white else .black,
+        .font_id = config.font_id,
+        .font_size = config.font_size,
+        .color = text_color,
     }); // Arrow
 
-    if (self.activated(item_id)) {
+    if (self.activated(self_id)) {
         // Pass the item_id as the parent_item_id.
         // The parent_menu_id is the menu we are currently inside.
-        self.openMenu(child_menu_id, .{ .parent_menu_id = parent_menu_id, .parent_item_id = item_id });
+        self.openMenu(child_menu_id, .{ .parent_menu_id = parent_menu_id, .parent_item_id = self_id });
     }
 
     return is_child_open;

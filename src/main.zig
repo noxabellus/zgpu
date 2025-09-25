@@ -289,20 +289,19 @@ fn createLayout(ui: *Ui) !void {
     // system has determined (via `ui.openMenu`) that they should be visible.
 
     // Root Context Menu
-    if (try ui.beginMenu(.fromSlice("ContextMenuRoot"))) {
+    if (try ui.beginMenu(.fromSlice("ContextMenuRoot"), .{})) {
         defer ui.endMenu();
 
-        if (try ui.menuItem("Copy")) {
-            log.info("Action: Copy", .{});
-        }
-        if (try ui.menuItem("Paste")) {
-            log.info("Action: Paste", .{});
-        }
+        try ui.menuItem(.fromSlice("CopyMenuItem"), "Copy", .{
+            .font_id = FONT_ID_MONO,
+            .font_size = 12,
+        });
+        try ui.menuItem(.fromSlice("PasteMenuItem"), "Paste", .{});
         try ui.menuSeparator();
 
         // Submenu Trigger
         // Note: we do not utilize it here, but the return value is a boolean indicating if it is open
-        _ = try ui.subMenu("More Options...", .fromSlice("SubMenu1"));
+        _ = try ui.subMenu(.fromSlice("MoreOptionsMenuItem"), "More Options...", .fromSlice("SubMenu1"), .{});
 
         try ui.menuSeparator();
 
@@ -324,27 +323,23 @@ fn createLayout(ui: *Ui) !void {
     }
 
     // First Level Submenu
-    if (try ui.beginMenu(.fromSlice("SubMenu1"))) {
+    if (try ui.beginMenu(.fromSlice("SubMenu1"), .{})) {
         defer ui.endMenu();
 
-        if (try ui.menuItem("Option A")) {
-            log.info("Action: Option A", .{});
-        }
+        try ui.menuItem(.fromSlice("OptionAMenuItem"), "Option A", .{});
 
-        if (try ui.menuItem("Option B")) {
-            log.info("Action: Option B", .{});
-        }
+        try ui.menuItem(.fromSlice("OptionBMenuItem"), "Option B", .{});
 
-        _ = try ui.subMenu("Even Deeper...", .fromSlice("SubMenu2"));
+        _ = try ui.subMenu(.fromSlice("EvenDeeperMenuItem"), "Even Deeper...", .fromSlice("SubMenu2"), .{});
     }
 
     // Second Level Submenu
-    if (try ui.beginMenu(.fromSlice("SubMenu2"))) {
+    if (try ui.beginMenu(.fromSlice("SubMenu2"), .{})) {
         defer ui.endMenu();
 
-        if (try ui.menuItem("Final Option!")) {
-            log.info("Action: Final Option!", .{});
-        }
+        try ui.menuItem(.fromSlice("FinalOptionMenuItem"), "Final Option!", .{
+            .font_size = 32,
+        });
     }
 }
 
@@ -607,7 +602,67 @@ pub fn main() !void {
         undefined,
     );
 
-    // listener for the slider embedded in the context menu
+    // listeners for the items embedded in menus
+    try ui.addListener(
+        .fromSlice("CopyMenuItem"),
+        .activate_end,
+        anyopaque,
+        &struct {
+            pub fn menu_item_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void {
+                log.info("Copy menu item activated", .{});
+            }
+        }.menu_item_listener,
+        undefined,
+    );
+
+    try ui.addListener(
+        .fromSlice("PasteMenuItem"),
+        .activate_end,
+        anyopaque,
+        &struct {
+            pub fn menu_item_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void {
+                log.info("Paste menu item activated", .{});
+            }
+        }.menu_item_listener,
+        undefined,
+    );
+
+    try ui.addListener(
+        .fromSlice("OptionAMenuItem"),
+        .activate_end,
+        anyopaque,
+        &struct {
+            pub fn menu_item_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void {
+                log.info("Option A menu item activated", .{});
+            }
+        }.menu_item_listener,
+        undefined,
+    );
+
+    try ui.addListener(
+        .fromSlice("OptionBMenuItem"),
+        .activate_end,
+        anyopaque,
+        &struct {
+            pub fn menu_item_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void {
+                log.info("Option B menu item activated", .{});
+            }
+        }.menu_item_listener,
+        undefined,
+    );
+
+    try ui.addListener(
+        .fromSlice("FinalOptionMenuItem"),
+        .activate_end,
+        anyopaque,
+        &struct {
+            pub fn menu_item_listener(_: *anyopaque, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void {
+                log.info("Final Option menu item activated", .{});
+            }
+        }.menu_item_listener,
+        undefined,
+    );
+
     try ui.addListener(
         .fromSlice("MenuSlider"),
         .float_change,
