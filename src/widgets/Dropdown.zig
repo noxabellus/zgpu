@@ -32,7 +32,6 @@ pub fn For(comptime T: type) type {
         id: Ui.ElementId,
         current_value: T,
         is_open: bool,
-        just_selected_with_key: bool,
         highlighted_index: ?usize,
 
         // Style properties
@@ -72,7 +71,6 @@ pub fn For(comptime T: type) type {
                 .id = id,
                 .current_value = config.default,
                 .is_open = false,
-                .just_selected_with_key = false,
                 .highlighted_index = null,
                 .box_color = config.box_color,
                 .box_color_hover = config.box_color_hover,
@@ -91,7 +89,7 @@ pub fn For(comptime T: type) type {
         }
 
         pub fn bindEvents(self: *Self, ui: *Ui) !void {
-            try ui.addListener(self.id, .activate_end, Self, EventHandler.toggleOpen, self);
+            try ui.addListener(self.id, .activate_end, Self, EventHandler.onActivate, self);
             try ui.addListener(self.id, .key_down, Self, EventHandler.onKeyDown, self);
             try ui.addListener(self.id, .focus_lost, Self, EventHandler.onFocusLost, self);
             try ui.addListener(self.id, .scoped_focus_change, Self, EventHandler.onScopedFocusChange, self);
@@ -105,7 +103,7 @@ pub fn For(comptime T: type) type {
         }
 
         pub fn unbindEvents(self: *Self, ui: *Ui) void {
-            ui.removeListener(self.id, .activate_end, Self, EventHandler.toggleOpen);
+            ui.removeListener(self.id, .activate_end, Self, EventHandler.onActivate);
             ui.removeListener(self.id, .key_down, Self, EventHandler.onKeyDown);
             ui.removeListener(self.id, .focus_lost, Self, EventHandler.onFocusLost);
             ui.removeListener(self.id, .scoped_focus_change, Self, EventHandler.onScopedFocusChange);
@@ -237,17 +235,32 @@ pub fn For(comptime T: type) type {
             }
         }
 
-        const EventHandler = struct {
-            pub fn toggleOpen(self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
-                if (self.just_selected_with_key) {
-                    self.just_selected_with_key = false;
-                    return;
+        fn selectHighlighted(self: *Self, ui: *Ui) !void {
+            if (self.highlighted_index) |idx| {
+                inline for (comptime field_names, 0..) |field_name, i| {
+                    if (i == idx) {
+                        const selected_value = @field(T, field_name);
+                        // selectValue will close the dropdown and pop the focus scope
+                        try self.selectValue(ui, selected_value);
+                        return;
+                    }
                 }
+            }
 
-                self.is_open = !self.is_open;
+            // If we get here, nothing was highlighted. Just close.
+            self.is_open = false;
+            self.highlighted_index = null;
+            ui.popFocusScope();
+        }
 
+        const EventHandler = struct {
+            pub fn onActivate(self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
                 if (self.is_open) {
-                    // Push focus scope when the panel is opened.
+                    // If dropdown is open, activation selects the highlighted item.
+                    try self.selectHighlighted(ui);
+                } else {
+                    // If dropdown is closed, activation opens it.
+                    self.is_open = true;
                     try ui.pushFocusScope(self.id);
 
                     // When opening, set highlight to the current selection
@@ -258,10 +271,6 @@ pub fn For(comptime T: type) type {
                             break;
                         }
                     }
-                } else {
-                    // Pop focus scope when the panel is closed.
-                    ui.popFocusScope();
-                    self.highlighted_index = null;
                 }
             }
 
@@ -288,14 +297,14 @@ pub fn For(comptime T: type) type {
                 if (!self.is_open) return;
 
                 switch (direction) {
-                    .prev => { // Equivalent to Shift+Tab or 'up'
+                    .prev => { // Equivalent to Shift+Tab
                         if (self.highlighted_index) |idx| {
                             self.highlighted_index = (idx + num_options - 1) % num_options;
                         } else {
                             self.highlighted_index = num_options - 1;
                         }
                     },
-                    .next => { // Equivalent to Tab or 'down'
+                    .next => { // Equivalent to Tab
                         if (self.highlighted_index) |idx| {
                             self.highlighted_index = (idx + 1) % num_options;
                         } else {
@@ -306,8 +315,29 @@ pub fn For(comptime T: type) type {
             }
 
             pub fn onKeyDown(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
-                if (!self.is_open) return;
+                if (!self.is_open) {
+                    // When closed and focused, allow arrow keys to open the dropdown.
+                    // Activation (Enter/Click) is handled by onActivate.
+                    switch (key_data.key) {
+                        .up, .down => {
+                            self.is_open = true;
+                            try ui.pushFocusScope(self.id);
 
+                            // When opening, set highlight to the current selection
+                            inline for (field_names, 0..) |field_name, i| {
+                                const value = comptime @field(T, field_name);
+                                if (value == self.current_value) {
+                                    self.highlighted_index = i;
+                                    break;
+                                }
+                            }
+                        },
+                        else => {},
+                    }
+                    return;
+                }
+
+                // When open, handle navigation and selection.
                 switch (key_data.key) {
                     .up => {
                         if (self.highlighted_index) |idx| {
@@ -323,18 +353,12 @@ pub fn For(comptime T: type) type {
                             self.highlighted_index = 0;
                         }
                     },
-                    .enter, .space => {
-                        if (self.highlighted_index) |idx| {
-                            inline for (comptime field_names, 0..) |field_name, i| {
-                                if (i == idx) {
-                                    const selected_value = @field(T, field_name);
-                                    try self.selectValue(ui, selected_value);
-                                    self.just_selected_with_key = true;
-                                    break;
-                                }
-                            }
-                        }
+                    .space => {
+                        // Space is a common activation key, handle it directly for convenience.
+                        try self.selectHighlighted(ui);
                     },
+                    // .enter is handled by the 'activate_end' event.
+                    // .escape is handled by the 'scoped_focus_close' event.
                     else => {},
                 }
             }

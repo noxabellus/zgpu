@@ -222,6 +222,16 @@ fn createLayout(ui: *Ui) !void {
         });
     }
 
+    { // moved here to test z indexing
+        try ui.beginElement(.fromSlice("ThemeDropdown"));
+        defer ui.closeElement();
+
+        try ui.bindDropdown(Theme, .{
+            .default = .light,
+            .font_id = FONT_ID_BODY,
+        });
+    }
+
     {
         try ui.beginElement(.fromSlice("CheckboxTest"));
         defer ui.closeElement();
@@ -271,16 +281,6 @@ fn createLayout(ui: *Ui) !void {
             try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
             try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .system, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
         }
-    }
-
-    {
-        try ui.beginElement(.fromSlice("ThemeDropdown"));
-        defer ui.closeElement();
-
-        try ui.bindDropdown(Theme, .{
-            .default = .light,
-            .font_id = FONT_ID_BODY,
-        });
     }
 }
 
