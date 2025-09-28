@@ -697,9 +697,9 @@ pub fn main() !void {
     );
 
     // --- Load Assets ---
-    FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/Quicksand-Semibold.ttf");
-    FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/Calistoga-Regular.ttf");
-    FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/dejavu/DejaVuSansMono.ttf");
+    FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/quicksand/semibold.ttf");
+    FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/calistoga/regular.ttf");
+    FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/dejavu/sans-mono.ttf");
 
     zig_logo_image_id = try asset_cache.loadImage("assets/images/zig-mark.png", true);
     wgpu_logo_image_id = try asset_cache.loadImage("assets/images/wgpu-logo.png", true);
