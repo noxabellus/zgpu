@@ -5,9 +5,12 @@ const Ui = @This();
 const std = @import("std");
 const clay = @import("clay");
 
+const linalg = @import("linalg.zig");
 const Batch2D = @import("Batch2D.zig");
 const AssetCache = @import("AssetCache.zig");
 const BindingState = @import("BindingState.zig");
+
+const vec2 = linalg.vec2;
 
 const log = std.log.scoped(.ui);
 
@@ -50,7 +53,6 @@ pub const SharedWidgetState = struct {
     seen_this_frame: bool,
 };
 
-pub const Vec2 = Batch2D.Vec2;
 pub const Color = Batch2D.Color;
 pub const FontId = Batch2D.FontId;
 
@@ -129,7 +131,7 @@ frame_element_info: std.AutoHashMapUnmanaged(u32, FrameElementInfo) = .empty,
 
 state: State = .{},
 last_state: State = .{},
-wheel_delta: Vec2 = .{},
+wheel_delta: vec2 = .{ 0, 0 },
 char_input: []const BindingState.Char = &.{},
 
 text_repeat: struct {
@@ -158,7 +160,7 @@ click_state: struct {
     double_click_threshold_ms: u64 = 250,
     // Drag-to-click differentiation state
     drag_state: struct {
-        start_pos: Vec2 = .{},
+        start_pos: vec2 = .{ 0, 0 },
         start_time: u64 = 0,
         is_dragging: bool = false,
     } = .{},
@@ -257,7 +259,7 @@ pub fn deinit(self: *Ui) void {
 
 /// Call this at any time in the update stage to begin declaring the ui layout. Caller must ensure `Ui.endLayout` is called before the next `Ui.beginLayout` and/or `Ui.render`.
 /// Note: it is acceptable to run the layout code multiple times per frame, but all state will be discarded when calling this function.
-pub fn beginLayout(self: *Ui, dimensions: Batch2D.Vec2, delta_ms: f32) !void {
+pub fn beginLayout(self: *Ui, dimensions: vec2, delta_ms: f32) !void {
     self.render_commands = null;
 
     self.events.clearRetainingCapacity();
@@ -558,7 +560,7 @@ pub fn hovered(self: *Ui) bool {
 /// Get the current scroll offset of the currently-open scroll container element.
 /// * If the current element is not a scroll container, returns {0,0}.
 /// * This is for styling logic, not event handling; use the generated event stream for that.
-pub fn scrollOffset(self: *Ui) Vec2 {
+pub fn scrollOffset(self: *Ui) vec2 {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
     std.debug.assert(self.open_ids.items.len > 0);
 
@@ -935,7 +937,7 @@ pub fn beginMenu(self: *Ui, id: ElementId, config: MenuConfig) !bool {
             // The parentId for attachment is the ITEM's ID.
             .parentId = (info.parent_item_id orelse ElementId{}).id,
             // If it's a root menu (context menu), use the specified position.
-            .offset = if (attach_to_element) .{} else final_offset,
+            .offset = if (attach_to_element) .{ 0, 0 } else final_offset,
             // For submenus, attach our top-left to the parent item's top-right.
             .attach_points = .{ .parent = if (attach_to_element) .right_top else .left_top, .element = .left_top },
             .z_index = @intCast(MenuState.MENU_Z_INDEX_BASE + current_level),
@@ -1145,12 +1147,12 @@ pub fn getCharacterOffset(self: *Ui, id: ElementId, char_index: u32) ?CharacterO
     return clay.getCharacterOffset(id, char_index);
 }
 
-pub fn getCharacterIndexAtOffset(self: *Ui, id: ElementId, offset: Vec2) ?u32 {
+pub fn getCharacterIndexAtOffset(self: *Ui, id: ElementId, offset: vec2) ?u32 {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
     return clay.getCharacterIndexAtOffset(id, vec2ToClay(offset));
 }
 
-pub fn getCharacterOffsetAtPoint(self: *Ui, id: ElementId, point: Vec2) ?CharacterOffset {
+pub fn getCharacterOffsetAtPoint(self: *Ui, id: ElementId, point: vec2) ?CharacterOffset {
     const index = self.getCharacterIndexAtOffset(id, point) orelse return null;
     return self.getCharacterOffset(id, index);
 }
@@ -1346,18 +1348,18 @@ pub const Event = struct {
     };
 
     pub const Data = union(enum) {
-        hover_begin: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
-        hovering: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
-        hover_end: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
+        hover_begin: struct { mouse_position: vec2, modifiers: BindingState.Modifiers },
+        hovering: struct { mouse_position: vec2, modifiers: BindingState.Modifiers },
+        hover_end: struct { mouse_position: vec2, modifiers: BindingState.Modifiers },
 
-        mouse_down: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
-        mouse_up: struct { mouse_position: Vec2, end_element: ?ElementId, modifiers: BindingState.Modifiers },
-        clicked: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
-        double_clicked: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
+        mouse_down: struct { mouse_position: vec2, modifiers: BindingState.Modifiers },
+        mouse_up: struct { mouse_position: vec2, end_element: ?ElementId, modifiers: BindingState.Modifiers },
+        clicked: struct { mouse_position: vec2, modifiers: BindingState.Modifiers },
+        double_clicked: struct { mouse_position: vec2, modifiers: BindingState.Modifiers },
 
-        drag_begin: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
-        drag: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
-        drag_end: struct { mouse_position: Vec2, modifiers: BindingState.Modifiers },
+        drag_begin: struct { mouse_position: vec2, modifiers: BindingState.Modifiers },
+        drag: struct { mouse_position: vec2, modifiers: BindingState.Modifiers },
+        drag_end: struct { mouse_position: vec2, modifiers: BindingState.Modifiers },
 
         text: union(enum) {
             chars: []const BindingState.Char,
@@ -1367,7 +1369,7 @@ pub const Event = struct {
             },
         },
 
-        wheel: struct { delta: Vec2, modifiers: BindingState.Modifiers },
+        wheel: struct { delta: vec2, modifiers: BindingState.Modifiers },
 
         focus_gained: void,
         focusing: void,
@@ -1391,9 +1393,9 @@ pub const Event = struct {
         },
 
         scroll: struct {
-            old_offset: Vec2,
-            new_offset: Vec2,
-            delta: Vec2,
+            old_offset: vec2,
+            new_offset: vec2,
+            delta: vec2,
         },
 
         scoped_focus_change: enum { next, prev },
@@ -1449,13 +1451,13 @@ pub const MenuState = struct {
         parent_menu_id: ?ElementId, // id of the parent menu panel
         parent_item_id: ?ElementId, // id of the menu item that triggered this menu
         // attach_to is now redundant, we derive it from parent_item_id
-        position: Vec2, // screen-relative position to open the menu at
+        position: vec2, // screen-relative position to open the menu at
     };
 
     pub const OpenMenuConfig = struct {
         parent_menu_id: ?ElementId = null, // id of the parent menu panel
         parent_item_id: ?ElementId = null, // id of the menu item that triggered this menu
-        position: Vec2 = .{},
+        position: vec2 = .{ 0, 0 },
     };
 
     stack: std.ArrayList(OpenMenuInfo) = .empty,
@@ -1510,7 +1512,7 @@ pub const StateElement = struct {
 };
 
 pub const ScrollState = struct {
-    offset: Vec2,
+    offset: vec2,
     elem_state: StateElement,
 };
 
@@ -1694,9 +1696,9 @@ pub const TextElementConfig = struct {
 
 pub const FloatingElementConfig = struct {
     /// Offsets this floating element by these x,y coordinates from its attachPoints
-    offset: Vec2 = .{},
+    offset: vec2 = .{ 0, 0 },
     /// Expands the boundaries of the outer floating element without affecting children
-    expand: Vec2 = .{},
+    expand: vec2 = .{ 0, 0 },
     /// When using CLAY_ATTACH_TO_ELEMENT_WITH_ID, attaches to element with this ID
     parentId: u32 = 0,
     /// Z-index controls stacking order (ascending)
@@ -1744,7 +1746,7 @@ pub const ClipElementConfig = struct {
     /// Whether to enable vertical scrolling
     vertical: bool = false,
     // Offsets the x,y positions of all child elements.
-    child_offset: Vec2 = .{ .x = 0, .y = 0 },
+    child_offset: vec2 = .{ 0, 0 },
 
     fn toClay(self: ClipElementConfig) clay.ClipElementConfig {
         return clay.ClipElementConfig{
@@ -1855,20 +1857,20 @@ pub const ElementDeclaration = struct {
 
 // --- Helper functions ---
 
-fn vec2FromClay(vec: clay.Vector2) Batch2D.Vec2 {
-    return .{ .x = vec.x, .y = vec.y };
+fn vec2FromClay(vec: clay.Vector2) vec2 {
+    return .{ vec.x, vec.y };
 }
 
-fn vec2ToClay(vec: Batch2D.Vec2) clay.Vector2 {
-    return .{ .x = vec.x, .y = vec.y };
+fn vec2ToClay(vec: vec2) clay.Vector2 {
+    return .{ .x = vec[0], .y = vec[1] };
 }
 
-fn vec2FromDims(dims: clay.Dimensions) Batch2D.Vec2 {
-    return .{ .x = dims.w, .y = dims.h };
+fn vec2FromDims(dims: clay.Dimensions) vec2 {
+    return .{ dims.w, dims.h };
 }
 
-fn vec2ToDims(vec: Batch2D.Vec2) clay.Dimensions {
-    return .{ .w = vec.x, .h = vec.y };
+fn vec2ToDims(vec: vec2) clay.Dimensions {
+    return .{ .w = vec[0], .h = vec[1] };
 }
 
 fn colorToClay(color: Batch2D.Color) clay.Color {
@@ -1886,8 +1888,8 @@ fn decodeImageId(id: usize) AssetCache.ImageId {
     return @intCast(id - 1);
 }
 
-pub fn boxContains(box: BoundingBox, point: Vec2) bool {
-    return point.x >= box.x and point.x < box.x + box.width and point.y >= box.y and point.y < box.y + box.height;
+pub fn boxContains(box: BoundingBox, point: vec2) bool {
+    return point[0] >= box.x and point[0] < box.x + box.width and point[1] >= box.y and point[1] < box.y + box.height;
 }
 
 pub fn boxesIntersect(a: BoundingBox, b: BoundingBox) bool {
@@ -1898,17 +1900,17 @@ pub fn boxContainsBox(outer: BoundingBox, inner: BoundingBox) bool {
     return inner.x >= outer.x and inner.x + inner.width <= outer.x + outer.width and inner.y >= outer.y and inner.y + inner.height <= outer.y + outer.height;
 }
 
-pub fn clampToBox(box: BoundingBox, point: Vec2) Vec2 {
+pub fn clampToBox(box: BoundingBox, point: vec2) vec2 {
     return .{
-        .x = std.math.clamp(point.x, box.x, box.x + box.width),
-        .y = std.math.clamp(point.y, box.y, box.y + box.height),
+        std.math.clamp(point[0], box.x, box.x + box.width),
+        std.math.clamp(point[1], box.y, box.y + box.height),
     };
 }
 
-pub fn relativizeToBox(box: BoundingBox, point: Vec2) Vec2 {
+pub fn relativizeToBox(box: BoundingBox, point: vec2) vec2 {
     return .{
-        .x = point.x - box.x,
-        .y = point.y - box.y,
+        point[0] - box.x,
+        point[1] - box.y,
     };
 }
 
@@ -2010,7 +2012,7 @@ fn measureTextCallback(
     );
 
     if (dimensions) |dims| {
-        return .{ .w = dims.x, .h = dims.y };
+        return vec2ToDims(dims);
     } else {
         return .{ .w = 0, .h = 0 };
     }
@@ -2767,8 +2769,8 @@ fn generateEvents(self: *Ui) !void {
                 const elapsed_time = now - self.click_state.drag_state.start_time;
                 const drag_time_threshold_ns = self.click_state.drag_time_threshold_ms * std.time.ns_per_ms;
 
-                const dx = mouse_pos.x - self.click_state.drag_state.start_pos.x;
-                const dy = mouse_pos.y - self.click_state.drag_state.start_pos.y;
+                const dx = mouse_pos[0] - self.click_state.drag_state.start_pos[0];
+                const dy = mouse_pos[1] - self.click_state.drag_state.start_pos[1];
                 const dist_sq = dx * dx + dy * dy;
                 const dist_threshold_sq = self.click_state.drag_dist_threshold * self.click_state.drag_dist_threshold;
 
@@ -2953,7 +2955,7 @@ fn generateEvents(self: *Ui) !void {
     }
 
     // --- Handle Wheel Events ---
-    if (self.wheel_delta.x != 0 or self.wheel_delta.y != 0) {
+    if (@reduce(.Or, self.wheel_delta != vec2{ 0, 0 })) {
         // Iterate from the top-most hovered element downwards to find a wheel target.
         for (self.hovered_element_stack.items, 0..) |_, i| {
             const hovered_state = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1 - i];
@@ -2977,7 +2979,7 @@ fn generateEvents(self: *Ui) !void {
     while (scroll_it.next()) |entry| {
         const curr_state = entry.value_ptr.*;
         const last_state = self.last_scroll_states.get(entry.key_ptr.*) orelse continue;
-        if (curr_state.offset.x != last_state.offset.x or curr_state.offset.y != last_state.offset.y) {
+        if (@reduce(.Or, curr_state.offset != last_state.offset)) {
             if (curr_state.elem_state.state.event_flags.scroll) {
                 try self.events.append(self.gpa, .{
                     .info = .{
@@ -2985,10 +2987,7 @@ fn generateEvents(self: *Ui) !void {
                         .bounding_box = curr_state.elem_state.bounding_box,
                         .user_data = curr_state.elem_state.state.getUserData(),
                     },
-                    .data = .{ .scroll = .{ .old_offset = last_state.offset, .new_offset = curr_state.offset, .delta = .{
-                        .x = curr_state.offset.x - last_state.offset.x,
-                        .y = curr_state.offset.y - last_state.offset.y,
-                    } } },
+                    .data = .{ .scroll = .{ .old_offset = last_state.offset, .new_offset = curr_state.offset, .delta = curr_state.offset - last_state.offset } },
                 });
             }
         }
@@ -3004,8 +3003,8 @@ fn draw(self: *Ui) !void {
 
     for (render_commands) |cmd| {
         const bb = cmd.bounding_box;
-        const pos = Batch2D.Vec2{ .x = bb.x, .y = bb.y };
-        const size = Batch2D.Vec2{ .x = bb.width, .y = bb.height };
+        const pos = vec2{ bb.x, bb.y };
+        const size = vec2{ bb.width, bb.height };
 
         switch (cmd.command_type) {
             .none => {},
@@ -3035,23 +3034,23 @@ fn draw(self: *Ui) !void {
                 // We will draw each side as a separate component.
 
                 // Top bar
-                try self.renderer.drawQuad(.{ .x = pos.x + r.top_left, .y = pos.y }, .{ .x = size.x - r.top_left - r.top_right, .y = @floatFromInt(data.width.top) }, color);
+                try self.renderer.drawQuad(.{ pos[0] + r.top_left, pos[1] }, .{ size[0] - r.top_left - r.top_right, @floatFromInt(data.width.top) }, color);
                 // Bottom bar
-                try self.renderer.drawQuad(.{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - @as(f32, @floatFromInt(data.width.bottom)) }, .{ .x = size.x - r.bottom_left - r.bottom_right, .y = @floatFromInt(data.width.bottom) }, color);
+                try self.renderer.drawQuad(.{ pos[0] + r.bottom_left, pos[1] + size[1] - @as(f32, @floatFromInt(data.width.bottom)) }, .{ size[0] - r.bottom_left - r.bottom_right, @floatFromInt(data.width.bottom) }, color);
                 // Left bar
-                try self.renderer.drawQuad(.{ .x = pos.x, .y = pos.y + r.top_left }, .{ .x = @floatFromInt(data.width.left), .y = size.y - r.top_left - r.bottom_left }, color);
+                try self.renderer.drawQuad(.{ pos[0], pos[1] + r.top_left }, .{ @floatFromInt(data.width.left), size[1] - r.top_left - r.bottom_left }, color);
                 // Right bar
-                try self.renderer.drawQuad(.{ .x = pos.x + size.x - @as(f32, @floatFromInt(data.width.right)), .y = pos.y + r.top_right }, .{ .x = @floatFromInt(data.width.right), .y = size.y - r.top_right - r.bottom_right }, color);
+                try self.renderer.drawQuad(.{ pos[0] + size[0] - @as(f32, @floatFromInt(data.width.right)), pos[1] + r.top_right }, .{ @floatFromInt(data.width.right), size[1] - r.top_right - r.bottom_right }, color);
 
                 const pi = std.math.pi;
                 // Top-left corner
-                try self.renderer.drawArcLine(.{ .x = pos.x + r.top_left, .y = pos.y + r.top_left }, r.top_left, pi, 1.5 * pi, @max(@as(f32, @floatFromInt(data.width.top)), @as(f32, @floatFromInt(data.width.left))), color);
+                try self.renderer.drawArcLine(.{ pos[0] + r.top_left, pos[1] + r.top_left }, r.top_left, pi, 1.5 * pi, @max(@as(f32, @floatFromInt(data.width.top)), @as(f32, @floatFromInt(data.width.left))), color);
                 // Top-right corner
-                try self.renderer.drawArcLine(.{ .x = pos.x + size.x - r.top_right, .y = pos.y + r.top_right }, r.top_right, 1.5 * pi, 2.0 * pi, @max(@as(f32, @floatFromInt(data.width.top)), @as(f32, @floatFromInt(data.width.right))), color);
+                try self.renderer.drawArcLine(.{ pos[0] + size[0] - r.top_right, pos[1] + r.top_right }, r.top_right, 1.5 * pi, 2.0 * pi, @max(@as(f32, @floatFromInt(data.width.top)), @as(f32, @floatFromInt(data.width.right))), color);
                 // Bottom-right corner
-                try self.renderer.drawArcLine(.{ .x = pos.x + size.x - r.bottom_right, .y = pos.y + size.y - r.bottom_right }, r.bottom_right, 0, 0.5 * pi, @max(@as(f32, @floatFromInt(data.width.bottom)), @as(f32, @floatFromInt(data.width.right))), color);
+                try self.renderer.drawArcLine(.{ pos[0] + size[0] - r.bottom_right, pos[1] + size[1] - r.bottom_right }, r.bottom_right, 0, 0.5 * pi, @max(@as(f32, @floatFromInt(data.width.bottom)), @as(f32, @floatFromInt(data.width.right))), color);
                 // Bottom-left corner
-                try self.renderer.drawArcLine(.{ .x = pos.x + r.bottom_left, .y = pos.y + size.y - r.bottom_left }, r.bottom_left, 0.5 * pi, pi, @max(@as(f32, @floatFromInt(data.width.bottom)), @as(f32, @floatFromInt(data.width.left))), color);
+                try self.renderer.drawArcLine(.{ pos[0] + r.bottom_left, pos[1] + size[1] - r.bottom_left }, r.bottom_left, 0.5 * pi, pi, @max(@as(f32, @floatFromInt(data.width.bottom)), @as(f32, @floatFromInt(data.width.left))), color);
             },
             .text => {
                 const data = cmd.render_data.text;

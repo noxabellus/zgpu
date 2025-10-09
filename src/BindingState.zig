@@ -5,8 +5,9 @@ const BindingState = @This();
 
 const std = @import("std");
 const InputState = @import("InputState.zig");
+const linalg = @import("linalg.zig");
+const vec2 = linalg.vec2;
 
-pub const Vec2 = InputState.Vec2; // TODO: linalg library
 pub const Action = InputState.Action;
 pub const Char = InputState.Char;
 pub const Modifiers = InputState.Modifiers;
@@ -65,12 +66,12 @@ pub fn getAction(self: *const BindingState, comptime name: @Type(.enum_literal))
 }
 
 /// Get the mouse position from the underlying InputState.
-pub fn getMousePosition(self: *const BindingState) Vec2 {
+pub fn getMousePosition(self: *const BindingState) vec2 {
     return self.input_state.getMousePosition();
 }
 
 /// Consume the mouse wheel delta for this frame from the underlying InputState.
-pub fn consumeScrollDelta(self: *BindingState) Vec2 {
+pub fn consumeScrollDelta(self: *BindingState) vec2 {
     return self.input_state.consumeScrollDelta();
 }
 

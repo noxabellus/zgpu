@@ -5,6 +5,8 @@ const SliderWidget = @This();
 const std = @import("std");
 const Ui = @import("../Ui.zig");
 const BindingState = @import("../BindingState.zig");
+const linalg = @import("../linalg.zig");
+const vec2 = linalg.vec2;
 
 const log = std.log.scoped(.slider_widget);
 
@@ -170,9 +172,9 @@ pub fn For(comptime T: type) type {
                 }
             }
 
-            fn updateValueFromMouse(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_pos: Ui.Vec2) !void {
+            fn updateValueFromMouse(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_pos: vec2) !void {
                 const bb = info.bounding_box;
-                const relative_x = mouse_pos.x - bb.x;
+                const relative_x = mouse_pos[0] - bb.x;
                 const proportion = std.math.clamp(relative_x / bb.width, 0.0, 1.0);
                 const new_value = self.min + proportion * (self.max - self.min);
 
@@ -187,13 +189,13 @@ pub fn For(comptime T: type) type {
 
                 const track_height: f32 = 4.0;
                 const track_y = bb.y + (bb.height - track_height) / 2.0;
-                try ui.renderer.drawRoundedRect(.{ .x = bb.x, .y = track_y }, .{ .x = bb.width, .y = track_height }, .all(track_height / 2.0), self.track_color);
+                try ui.renderer.drawRoundedRect(.{ bb.x, track_y }, .{ bb.width, track_height }, .all(track_height / 2.0), self.track_color);
 
                 const value_proportion: f32 = @floatCast((self.current_value - self.min) / (self.max - self.min));
                 const handle_x = bb.x + (value_proportion * (bb.width - self.handle_size));
                 const handle_y = bb.y + (bb.height - self.handle_size) / 2.0;
 
-                try ui.renderer.drawRoundedRect(.{ .x = handle_x, .y = handle_y }, .{ .x = self.handle_size, .y = self.handle_size }, .all(self.handle_size / 2.0), self.handle_color);
+                try ui.renderer.drawRoundedRect(.{ handle_x, handle_y }, .{ self.handle_size, self.handle_size }, .all(self.handle_size / 2.0), self.handle_color);
             }
         },
 
@@ -331,9 +333,9 @@ pub fn For(comptime T: type) type {
                     }
                 }
 
-                fn updateValueFromMouse(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_pos: Ui.Vec2) !void {
+                fn updateValueFromMouse(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_pos: vec2) !void {
                     const bb = info.bounding_box;
-                    const relative_x = mouse_pos.x - bb.x;
+                    const relative_x = mouse_pos[0] - bb.x;
                     const proportion = std.math.clamp(relative_x / bb.width, 0.0, 1.0);
 
                     const range = @as(f32, @floatFromInt(self.max - self.min));
@@ -351,7 +353,7 @@ pub fn For(comptime T: type) type {
 
                     const track_height: f32 = 4.0;
                     const track_y = bb.y + (bb.height - track_height) / 2.0;
-                    try ui.renderer.drawRoundedRect(.{ .x = bb.x, .y = track_y }, .{ .x = bb.width, .y = track_height }, .all(track_height / 2.0), self.track_color);
+                    try ui.renderer.drawRoundedRect(.{ bb.x, track_y }, .{ bb.width, track_height }, .all(track_height / 2.0), self.track_color);
 
                     const value_proportion = if (self.max - self.min == 0)
                         0.0
@@ -361,7 +363,7 @@ pub fn For(comptime T: type) type {
                     const handle_x = bb.x + (value_proportion * (bb.width - self.handle_size));
                     const handle_y = bb.y + (bb.height - self.handle_size) / 2.0;
 
-                    try ui.renderer.drawRoundedRect(.{ .x = handle_x, .y = handle_y }, .{ .x = self.handle_size, .y = self.handle_size }, .all(self.handle_size / 2.0), self.handle_color);
+                    try ui.renderer.drawRoundedRect(.{ handle_x, handle_y }, .{ self.handle_size, self.handle_size }, .all(self.handle_size / 2.0), self.handle_color);
                 }
             },
 
@@ -509,9 +511,9 @@ pub fn For(comptime T: type) type {
                     }
                 }
 
-                fn updateValueFromMouse(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_pos: Ui.Vec2) !void {
+                fn updateValueFromMouse(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_pos: vec2) !void {
                     const bb = info.bounding_box;
-                    const relative_x = mouse_pos.x - bb.x;
+                    const relative_x = mouse_pos[0] - bb.x;
                     const proportion = std.math.clamp(relative_x / bb.width, 0.0, 1.0);
 
                     const range = @as(f32, @floatFromInt(self.max - self.min));
@@ -529,7 +531,7 @@ pub fn For(comptime T: type) type {
 
                     const track_height: f32 = 4.0;
                     const track_y = bb.y + (bb.height - track_height) / 2.0;
-                    try ui.renderer.drawRoundedRect(.{ .x = bb.x, .y = track_y }, .{ .x = bb.width, .y = track_height }, .all(track_height / 2.0), self.track_color);
+                    try ui.renderer.drawRoundedRect(.{ bb.x, track_y }, .{ bb.width, track_height }, .all(track_height / 2.0), self.track_color);
 
                     const value_proportion = if (self.max - self.min == 0)
                         0.0
@@ -539,7 +541,7 @@ pub fn For(comptime T: type) type {
                     const handle_x = bb.x + (value_proportion * (bb.width - self.handle_size));
                     const handle_y = bb.y + (bb.height - self.handle_size) / 2.0;
 
-                    try ui.renderer.drawRoundedRect(.{ .x = handle_x, .y = handle_y }, .{ .x = self.handle_size, .y = self.handle_size }, .all(self.handle_size / 2.0), self.handle_color);
+                    try ui.renderer.drawRoundedRect(.{ handle_x, handle_y }, .{ self.handle_size, self.handle_size }, .all(self.handle_size / 2.0), self.handle_color);
                 }
             },
         },

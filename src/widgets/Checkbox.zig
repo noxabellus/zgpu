@@ -4,6 +4,8 @@ const CheckboxWidget = @This();
 
 const std = @import("std");
 const Ui = @import("../Ui.zig");
+const linalg = @import("../linalg.zig");
+const vec2 = linalg.vec2;
 
 const log = std.log.scoped(.checkbox_widget);
 
@@ -76,11 +78,11 @@ pub fn render(self: *CheckboxWidget, ui: *Ui, command: Ui.RenderCommand) !void {
     const bb = command.bounding_box;
 
     // Center the checkbox within its bounding box
-    const box_pos = Ui.Vec2{
-        .x = bb.x + (bb.width - self.size) / 2.0,
-        .y = bb.y + (bb.height - self.size) / 2.0,
+    const box_pos = vec2{
+        bb.x + (bb.width - self.size) / 2.0,
+        bb.y + (bb.height - self.size) / 2.0,
     };
-    const box_size = Ui.Vec2{ .x = self.size, .y = self.size };
+    const box_size = vec2{ self.size, self.size };
     const radius = self.size * 0.15; // A small corner radius
 
     // Draw the box
@@ -89,9 +91,9 @@ pub fn render(self: *CheckboxWidget, ui: *Ui, command: Ui.RenderCommand) !void {
     // If checked, draw the checkmark
     if (self.current_value) {
         // Simple checkmark using two lines
-        const p1 = Ui.Vec2{ .x = box_pos.x + self.size * 0.2, .y = box_pos.y + self.size * 0.5 };
-        const p2 = Ui.Vec2{ .x = box_pos.x + self.size * 0.45, .y = box_pos.y + self.size * 0.75 };
-        const p3 = Ui.Vec2{ .x = box_pos.x + self.size * 0.8, .y = box_pos.y + self.size * 0.25 };
+        const p1 = vec2{ box_pos[0] + self.size * 0.2, box_pos[1] + self.size * 0.5 };
+        const p2 = vec2{ box_pos[0] + self.size * 0.45, box_pos[1] + self.size * 0.75 };
+        const p3 = vec2{ box_pos[0] + self.size * 0.8, box_pos[1] + self.size * 0.25 };
         const line_width = self.size * 0.125;
 
         try ui.renderer.drawLine(p1, p2, line_width, self.check_color);

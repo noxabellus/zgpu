@@ -4,6 +4,8 @@ const RadioButtonWidget = @This();
 
 const std = @import("std");
 const Ui = @import("../Ui.zig");
+const linalg = @import("../linalg.zig");
+const vec2 = linalg.vec2;
 
 const log = std.log.scoped(.radio_button_widget);
 
@@ -127,11 +129,11 @@ pub fn For(comptime T: type) type {
             const bb = command.bounding_box;
 
             // Center the radio button within its bounding box
-            const circle_pos = Ui.Vec2{
-                .x = bb.x + (bb.width - self.size) / 2.0,
-                .y = bb.y + (bb.height - self.size) / 2.0,
+            const circle_pos = vec2{
+                bb.x + (bb.width - self.size) / 2.0,
+                bb.y + (bb.height - self.size) / 2.0,
             };
-            const circle_size = Ui.Vec2{ .x = self.size, .y = self.size };
+            const circle_size = vec2{ self.size, self.size };
             const radius = self.size / 2.0;
 
             // Draw the outer circle using a rounded rect
@@ -140,11 +142,11 @@ pub fn For(comptime T: type) type {
             // If selected, draw the inner dot
             if (is_selected) {
                 const dot_size_val = self.size * 0.6;
-                const dot_pos = Ui.Vec2{
-                    .x = bb.x + (bb.width - dot_size_val) / 2.0,
-                    .y = bb.y + (bb.height - dot_size_val) / 2.0,
+                const dot_pos = vec2{
+                    bb.x + (bb.width - dot_size_val) / 2.0,
+                    bb.y + (bb.height - dot_size_val) / 2.0,
                 };
-                const dot_size = Ui.Vec2{ .x = dot_size_val, .y = dot_size_val };
+                const dot_size = vec2{ dot_size_val, dot_size_val };
                 const dot_radius = dot_size_val / 2.0;
                 try ui.renderer.drawRoundedRect(dot_pos, dot_size, .all(dot_radius), self.dot_color);
             }

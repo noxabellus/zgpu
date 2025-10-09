@@ -13,8 +13,7 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-// TODO: move vector type to a linalg file
-pub const Vec2 = @import("Batch2D.zig").Vec2;
+const vec2 = @import("linalg.zig").vec2;
 
 const MIN_KEY_CODE = 32; // The lowest key code we care about (space). See Key enum.
 const KEY_ARRAY_SIZE = 349; // The size of the key state arrays. Must be at least one more than the highest key code in the Key enum.
@@ -407,9 +406,9 @@ keys_last: [KEY_ARRAY_SIZE]bool = [1]bool{false} ** KEY_ARRAY_SIZE,
 
 modifiers: Modifiers = .{},
 
-mouse_position: Vec2 = .{},
+mouse_position: vec2 = .{ 0, 0 },
 
-scroll_delta: Vec2 = .{},
+scroll_delta: vec2 = .{ 0, 0 },
 scroll_multiplier: f32 = 6.0, // Scroll delta from glfw tends to be small, this multiplier can be adjusted as needed but 6 is a good default
 
 chars: []Char = &.{}, // slice into chars_storage
@@ -423,12 +422,12 @@ pub fn init(window: *glfw.Window) InputState {
 }
 
 /// Gets the current scroll delta for the frame, and resets it to zero.
-pub fn consumeScrollDelta(self: *InputState) Vec2 {
-    defer self.scroll_delta = Vec2{};
+pub fn consumeScrollDelta(self: *InputState) vec2 {
+    defer self.scroll_delta = vec2{ 0, 0 };
 
     return .{
-        .x = self.scroll_delta.x * self.scroll_multiplier,
-        .y = self.scroll_delta.y * self.scroll_multiplier,
+        self.scroll_delta[0] * self.scroll_multiplier,
+        self.scroll_delta[1] * self.scroll_multiplier,
     };
 }
 
@@ -452,7 +451,7 @@ pub fn getMouseFocus(self: *const InputState) Focus {
 /// Returns the current mouse position relative to the top-left corner of the window.
 /// Note that this always returns a value, but the coordinates provided may not be within the window bounds.
 /// Use `InputState.getMouseFocus` to determine if the mouse is over the window.
-pub fn getMousePosition(self: *const InputState) Vec2 {
+pub fn getMousePosition(self: *const InputState) vec2 {
     return self.mouse_position;
 }
 
@@ -508,9 +507,9 @@ pub fn listenCharInputGlfw(self: *InputState) void {
 
 /// Manually add to the scroll offset for the frame. This can be used in addition to `InputState.listenMouseScrollGlfw` if needed.
 /// See also `InputState.listenAllGlfw`, `InputState.listenMouseScrollGlfw` for event listeners that collect this input.
-pub fn accumulateScroll(self: *InputState, additional_offset: Vec2) void {
-    self.scroll_delta.x += additional_offset.x;
-    self.scroll_delta.y += additional_offset.y;
+pub fn accumulateScroll(self: *InputState, additional_offset: vec2) void {
+    self.scroll_delta[0] += additional_offset[0];
+    self.scroll_delta[1] += additional_offset[1];
 }
 
 /// Manually add a character input event. This can be used in addition to `InputState.listenCharInputGlfw` if needed.
@@ -552,7 +551,7 @@ pub fn setMouseFocus(self: *InputState, has_focus: bool) void {
 
 /// Manually set the mouse position for the window.
 /// See also `InputState.collectAllGlfw`.
-pub fn setMousePosition(self: *InputState, position: Vec2) void {
+pub fn setMousePosition(self: *InputState, position: vec2) void {
     // we always want the mouse position, even if the window doesn't have mouse focus
     // this allows us to continue drag interactions etc, even if the mouse has moved outside the window
     self.mouse_position = position;
@@ -627,7 +626,7 @@ pub fn collectMouseStateGlfw(self: *InputState) void {
 
     self.mouse_focus_last = self.have_mouse_focus;
     self.have_mouse_focus = mouse_x >= 0 and mouse_y >= 0 and mouse_x <= @as(f64, @floatFromInt(window_w)) and mouse_y <= @as(f64, @floatFromInt(window_h));
-    self.mouse_position = .{ .x = @as(f32, @floatCast(mouse_x)), .y = @as(f32, @floatCast(mouse_y)) };
+    self.mouse_position = .{ @as(f32, @floatCast(mouse_x)), @as(f32, @floatCast(mouse_y)) };
 }
 
 /// Collects mouse button and keyboard key states from the specified glfw window.
@@ -660,10 +659,9 @@ pub fn collectKeysGlfw(self: *InputState) void {
     self.modifiers = Modifiers.fromKeys(&self.keys);
 }
 
-threadlocal var direct_scroll_delta: *Vec2 = undefined;
+threadlocal var direct_scroll_delta: *vec2 = undefined;
 fn directScrollGlfwCallback(_: *glfw.Window, x_offset: f64, y_offset: f64) callconv(.c) void {
-    direct_scroll_delta.x += @as(f32, @floatCast(x_offset));
-    direct_scroll_delta.y += @as(f32, @floatCast(y_offset));
+    direct_scroll_delta.* += .{ @floatCast(x_offset), @floatCast(y_offset) };
 }
 
 threadlocal var direct_char_input: struct { storage: *[CHAR_ARRAY_SIZE]Char, view: *[]Char } = undefined;

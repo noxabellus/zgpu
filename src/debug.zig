@@ -1,4 +1,6 @@
 const std = @import("std");
+const linalg = @import("linalg.zig");
+const vec2 = linalg.vec2;
 const Batch2D = @import("Batch2D.zig");
 
 const FRAME_AVG_LEN = 144;
@@ -48,7 +50,7 @@ pub fn lap() void {
 }
 
 /// Draws a bar chart for all frames in the buffer, with each bar scaled by its size relative to the max frame time
-pub fn drawFpsChart(renderer: *Batch2D, chart_pos: Batch2D.Vec2) !void {
+pub fn drawFpsChart(renderer: *Batch2D, chart_pos: vec2) !void {
     const bar_width: f32 = 4.0;
     const chart_height: f32 = 100.0;
     const chart_color: Batch2D.Color = .{ .r = 0, .g = 0, .b = 0, .a = 0.5 };
@@ -56,12 +58,12 @@ pub fn drawFpsChart(renderer: *Batch2D, chart_pos: Batch2D.Vec2) !void {
     const reference_ms = @max(16.67, max_ms);
 
     const chart_width = @as(f32, FRAME_AVG_LEN) * bar_width;
-    try renderer.drawQuad(chart_pos, .{ .x = chart_width, .y = chart_height }, chart_color);
+    try renderer.drawQuad(chart_pos, .{ chart_width, chart_height }, chart_color);
 
-    var x: f32 = chart_pos.x;
+    var x: f32 = chart_pos[0];
     for (frame_ms_buf) |ms| {
         const height = @as(f32, @floatCast(ms)) / @as(f32, @floatCast(reference_ms)) * chart_height;
-        try renderer.drawQuad(.{ .x = x, .y = chart_pos.y + (chart_height - height) }, .{ .x = bar_width - 1, .y = height }, chart_color);
+        try renderer.drawQuad(.{ x, chart_pos[1] + (chart_height - height) }, .{ bar_width - 1, height }, chart_color);
         x += bar_width;
     }
 
@@ -71,7 +73,7 @@ pub fn drawFpsChart(renderer: *Batch2D, chart_pos: Batch2D.Vec2) !void {
         0,
         16,
         null,
-        .{ .x = chart_pos.x + 5, .y = chart_pos.y + 5 },
+        .{ chart_pos[0] + 5, chart_pos[1] + 5 },
         .{ .r = 1, .g = 1, .b = 1, .a = 1 },
         .{ avg_fps, frame_ms, avg_ms, min_ms, max_ms },
     );

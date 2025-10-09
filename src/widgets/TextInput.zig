@@ -5,6 +5,9 @@ const TextInputWidget = @This();
 const std = @import("std");
 const Ui = @import("../Ui.zig");
 
+const linalg = @import("../linalg.zig");
+const vec2 = linalg.vec2;
+
 const log = std.log.scoped(.text_input_widget);
 
 test {
@@ -342,7 +345,7 @@ pub fn render(self: *TextInputWidget, ui: *Ui, command: Ui.RenderCommand) !void 
                     // The selection covers the rest of the line
                     end_offset.offset.x - start_offset.offset.x;
 
-                try ui.renderer.drawRect(.{ .x = rect_x, .y = rect_y }, .{ .x = rect_w, .y = rect_h }, selection_color);
+                try ui.renderer.drawRect(.{ rect_x, rect_y }, .{ rect_w, rect_h }, selection_color);
 
                 i = end_of_line + 1;
             }
@@ -352,7 +355,7 @@ pub fn render(self: *TextInputWidget, ui: *Ui, command: Ui.RenderCommand) !void 
         if (ui.getCharacterOffset(.fromRawId(command.id), caret.end)) |caret_offset| {
             const caret_x = command.bounding_box.x + caret_offset.offset.x;
             const caret_y = command.bounding_box.y + caret_offset.offset.y;
-            try ui.renderer.drawRect(.{ .x = caret_x, .y = caret_y }, .{ .x = caret_width, .y = caret_offset.line_height }, .{ .r = 1, .a = 1 });
+            try ui.renderer.drawRect(.{ caret_x, caret_y }, .{ caret_width, caret_offset.line_height }, .{ .r = 1, .a = 1 });
         }
     }
 }
@@ -388,9 +391,9 @@ pub fn onDoubleClicked(self: *TextInputWidget, _: *Ui, _: Ui.Event.Info, _: Ui.E
 pub fn onMouseDown(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
     log.info("TextInput received mouse down event: {any}", .{mouse_down_data});
 
-    const location = Ui.Vec2{
-        .x = mouse_down_data.mouse_position.x - info.bounding_box.x,
-        .y = mouse_down_data.mouse_position.y - info.bounding_box.y,
+    const location = vec2{
+        mouse_down_data.mouse_position[0] - info.bounding_box.x,
+        mouse_down_data.mouse_position[1] - info.bounding_box.y,
     };
 
     if (ui.getCharacterIndexAtOffset(self.id, location)) |index| {
@@ -429,9 +432,9 @@ pub fn onMouseUp(self: *TextInputWidget, _: *Ui, _: Ui.Event.Info, _: Ui.Event.P
 pub fn onDrag(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
     log.info("drag event: {any}", .{drag_data});
 
-    const location = Ui.Vec2{
-        .x = drag_data.mouse_position.x - info.bounding_box.x,
-        .y = drag_data.mouse_position.y - info.bounding_box.y,
+    const location = vec2{
+        drag_data.mouse_position[0] - info.bounding_box.x,
+        drag_data.mouse_position[1] - info.bounding_box.y,
     };
 
     // Branch on the interaction mode
@@ -466,8 +469,8 @@ pub fn onDrag(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, drag_data: U
             // Is this line within our vertical selection rectangle?
             if (line_y + line_h > rect_y1 and line_y < rect_y2) {
                 // Yes. Now find the start and end character indices for this line's selection.
-                const start_char_opt = ui.getCharacterIndexAtOffset(self.id, .{ .x = rect_x1, .y = line_y });
-                const end_char_opt = ui.getCharacterIndexAtOffset(self.id, .{ .x = rect_x2, .y = line_y });
+                const start_char_opt = ui.getCharacterIndexAtOffset(self.id, .{ rect_x1, line_y });
+                const end_char_opt = ui.getCharacterIndexAtOffset(self.id, .{ rect_x2, line_y });
 
                 if (start_char_opt != null and end_char_opt != null) {
                     // We found a valid selection range for this line. Add a new caret.
@@ -609,22 +612,22 @@ pub fn onText(self: *TextInputWidget, ui: *Ui, _: Ui.Event.Info, text_data: Ui.E
 
                             if (cmd.modifiers.alt) {
                                 // Alt: Duplicate selection to the next line
-                                const target_start_loc = Ui.Vec2{ .x = start_offset_res.offset.x, .y = start_offset_res.offset.y + target_y_offset };
+                                const target_start_loc = vec2{ start_offset_res.offset.x, start_offset_res.offset.y + target_y_offset };
                                 const new_start_res = ui.getCharacterIndexAtOffset(self.id, target_start_loc) orelse continue;
 
-                                const target_end_loc = Ui.Vec2{ .x = end_offset_res.offset.x, .y = end_offset_res.offset.y + target_y_offset };
+                                const target_end_loc = vec2{ end_offset_res.offset.x, end_offset_res.offset.y + target_y_offset };
                                 const new_end_res = ui.getCharacterIndexAtOffset(self.id, target_end_loc) orelse continue;
 
                                 try new_carets_to_add.append(ui.frame_arena, .{ .start = new_start_res, .end = new_end_res });
                             } else if (cmd.modifiers.shift) {
                                 // Shift: Extend selection to the next line
-                                const target_end_loc = Ui.Vec2{ .x = end_offset_res.offset.x, .y = end_offset_res.offset.y + target_y_offset };
+                                const target_end_loc = vec2{ end_offset_res.offset.x, end_offset_res.offset.y + target_y_offset };
                                 const new_end_res = ui.getCharacterIndexAtOffset(self.id, target_end_loc) orelse continue;
 
                                 caret.end = new_end_res;
                             } else {
                                 // No modifiers: Move caret, collapsing selection
-                                const target_end_loc = Ui.Vec2{ .x = end_offset_res.offset.x, .y = end_offset_res.offset.y + target_y_offset };
+                                const target_end_loc = vec2{ end_offset_res.offset.x, end_offset_res.offset.y + target_y_offset };
                                 const new_end_res = ui.getCharacterIndexAtOffset(self.id, target_end_loc) orelse continue;
                                 caret.start = new_end_res;
                                 caret.end = new_end_res;
@@ -634,7 +637,7 @@ pub fn onText(self: *TextInputWidget, ui: *Ui, _: Ui.Event.Info, text_data: Ui.E
                             if (cmd.modifiers.ctrl) {
                                 caret.end = 0;
                             } else if (ui.getCharacterOffset(self.id, caret.end)) |offset| {
-                                const target_loc = Ui.Vec2{ .x = 0, .y = offset.offset.y };
+                                const target_loc = vec2{ 0, offset.offset.y };
                                 if (ui.getCharacterIndexAtOffset(self.id, target_loc)) |target_index| caret.end = target_index;
                             }
                             if (!cmd.modifiers.shift) caret.start = caret.end;
@@ -644,7 +647,7 @@ pub fn onText(self: *TextInputWidget, ui: *Ui, _: Ui.Event.Info, text_data: Ui.E
                                 caret.end = @intCast(self.currentText().len);
                             } else {
                                 if (ui.getCharacterOffset(self.id, caret.end)) |current_offset_res| {
-                                    const end_of_line_target_loc = Ui.Vec2{ .x = 999999.0, .y = current_offset_res.offset.y };
+                                    const end_of_line_target_loc = vec2{ 999999.0, current_offset_res.offset.y };
                                     if (ui.getCharacterIndexAtOffset(self.id, end_of_line_target_loc)) |end_of_line_res| {
                                         var last_char_idx = end_of_line_res;
                                         const check_offset_res = ui.getCharacterOffset(self.id, last_char_idx);
