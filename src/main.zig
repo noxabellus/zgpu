@@ -2,8 +2,11 @@ const std = @import("std");
 
 pub const example = @import("examples/bare.zig");
 
-pub const std_options = example.std_options;
 pub const main = example.main;
+
+pub const std_options = if (@hasDecl(example, "std_options")) example.std_options else std.Options{
+    .log_level = .info,
+};
 
 pub const AssetCache = @import("AssetCache.zig");
 pub const Atlas = @import("Atlas.zig");
