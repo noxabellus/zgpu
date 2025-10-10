@@ -228,9 +228,10 @@ pub const convert = struct {
 pub const Page = struct {
     is_heterogeneous: bool,
     homogeneous: Voxel,
+    visibility: Visibility = .all,
     heterogeneous: std.AutoHashMapUnmanaged(VoxemeCoord, Voxeme) = .empty,
 
-    pub const empty = Page{ .is_heterogeneous = false, .homogeneous = .empty };
+    pub const empty = Page{ .is_heterogeneous = false, .homogeneous = .empty, .visibility = .all };
 
     pub fn deinit(self: *Page, gpa: std.mem.Allocator) void {
         if (self.is_heterogeneous) {
@@ -246,7 +247,8 @@ pub const Page = struct {
 pub const Voxeme = packed struct(u64) {
     is_homogeneous: bool,
     is_dirty: bool,
-    _reserved: u14 = 0,
+    visibility: Visibility,
+    _reserved: u8 = 0,
     payload: packed union {
         /// A homogeneous Voxeme is represented as a single MaterialId and state value, without allocating the array.
         /// This should never have value.material_id == .none/0, which would indicate a homogeneously empty Voxeme, which should be removed from the Page entirely.
@@ -261,6 +263,7 @@ pub const Voxeme = packed struct(u64) {
         return Voxeme{
             .is_homogeneous = true,
             .is_dirty = false,
+            .visibility = .all,
             .payload = .{ .homogeneous = voxel },
         };
     }
@@ -270,6 +273,7 @@ pub const Voxeme = packed struct(u64) {
         return Voxeme{
             .is_homogeneous = false,
             .is_dirty = true,
+            .visibility = .all,
             .payload = .{ .heterogeneous = @intCast(@intFromPtr(voxels)) },
         };
     }
@@ -312,7 +316,8 @@ pub const Visibility = packed struct(u6) {
     }
 
     /// Sets the visibility state for a face by axis and direction.
-    pub fn set(self: *align(4:10:4) Visibility, axis: Axis, positive: bool, value: bool) void {
+    pub fn set(self: anytype, axis: Axis, positive: bool, value: bool) void {
+        comptime std.debug.assert(@typeInfo(@TypeOf(self)) == .pointer);
         var bits: u6 = @bitCast(self.*);
         const axis_offset: u3 = @intFromEnum(axis);
         const bit_index: u3 = if (positive) axis_offset else axis_offset + 1;
@@ -419,8 +424,6 @@ pub const Voxel = packed struct(u32) {
     }
 };
 
-// --- Meshing Helpers ---
-
 /// Standard vertex format for rendering.
 pub const Vertex = packed struct {
     pos: vec3,
@@ -432,69 +435,6 @@ pub const Vertex = packed struct {
         return .{ .pos = pos, .norm = norm, .uv = uv, .color = color };
     }
 };
-
-/// Utility for mesh building/general voxel polling that can read from either a buffer or a homogeneous voxel.
-pub const VoxelGetter = struct {
-    buffer: ?Buffer,
-    homogeneous_voxel: Voxel,
-
-    fn get(self: @This(), x: u32, y: u32, z: u32) Voxel {
-        if (self.buffer) |b| {
-            return b[convert.bufferToIndex(.{ x, y, z })];
-        } else {
-            return self.homogeneous_voxel;
-        }
-    }
-};
-
-const FaceData = struct {
-    normal: vec3,
-    // Vertices in counter-clockwise order for correct winding
-    vertices: [4]vec3,
-    uvs: [4]vec2 = .{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 } },
-};
-
-// Data for the 6 faces of a unit cube.
-// The order MUST match the bit order of the Visibility struct for the fast meshing path.
-// 0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z
-const face_data = [_]FaceData{
-    // 0: +X
-    .{ .normal = .{ 1, 0, 0 }, .vertices = .{ .{ 1, 0, 0 }, .{ 1, 1, 0 }, .{ 1, 1, 1 }, .{ 1, 0, 1 } } },
-    // 1: -X
-    .{ .normal = .{ -1, 0, 0 }, .vertices = .{ .{ 0, 0, 1 }, .{ 0, 1, 1 }, .{ 0, 1, 0 }, .{ 0, 0, 0 } } },
-    // 2: +Y
-    .{ .normal = .{ 0, 1, 0 }, .vertices = .{ .{ 0, 1, 0 }, .{ 0, 1, 1 }, .{ 1, 1, 1 }, .{ 1, 1, 0 } } },
-    // 3: -Y
-    .{ .normal = .{ 0, -1, 0 }, .vertices = .{ .{ 1, 0, 0 }, .{ 1, 0, 1 }, .{ 0, 0, 1 }, .{ 0, 0, 0 } } },
-    // 4: +Z
-    .{ .normal = .{ 0, 0, 1 }, .vertices = .{ .{ 1, 0, 1 }, .{ 1, 1, 1 }, .{ 0, 1, 1 }, .{ 0, 0, 1 } } },
-    // 5: -Z
-    .{ .normal = .{ 0, 0, -1 }, .vertices = .{ .{ 0, 0, 0 }, .{ 0, 1, 0 }, .{ 1, 1, 0 }, .{ 1, 0, 0 } } },
-};
-
-/// Helper function to generate a quad for a single face.
-fn addFace(
-    gpa: std.mem.Allocator,
-    vertices: *std.ArrayList(Vertex),
-    indices: *std.ArrayList(u32),
-    origin: Position,
-    scale: f32,
-    face_index: usize,
-    color: vec3,
-) !void {
-    const base_vertex_index: u32 = @intCast(vertices.items.len);
-    const data = &face_data[face_index];
-
-    for (data.vertices, data.uvs) |v_offset, uv| {
-        const pos = origin + v_offset * @as(vec3, @splat(scale));
-        try vertices.append(gpa, Vertex.init(pos, data.normal, uv, color));
-    }
-
-    try indices.appendSlice(gpa, &.{
-        base_vertex_index + 0, base_vertex_index + 1, base_vertex_index + 2,
-        base_vertex_index + 0, base_vertex_index + 2, base_vertex_index + 3,
-    });
-}
 
 /// The memory pool used to allocate heterogeneous Buffers.
 pool: std.heap.MemoryPool(BufferData),
@@ -595,53 +535,135 @@ pub fn isPageMapped(self: *const Grid, coord: PageCoord) bool {
     return self.pages.contains(coord);
 }
 
-/// Pre-calculates visibility for all voxels within a single dirty page.
-fn updateVisibilityForPage(self: *Grid, page_coord: PageCoord) void {
-    const page = self.pages.getPtr(page_coord).?;
-    if (!page.is_heterogeneous) return;
+/// Correctly checks if a face of a homogeneous voxeme is occluded by its neighbor.
+fn isVoxemeFaceOccluded(self: *const Grid, occluder_voxel: Voxel, neighbor_coord: VoxemeCoord, axis: Axis, positive: bool) bool {
+    const neighbor_page_coord = convert.voxemeToPage(neighbor_coord);
+    const neighbor_page = self.pages.get(neighbor_page_coord) orelse return false;
 
-    // Iterate Sparsely: only process voxemes that actually exist in the page.
-    var voxeme_it = page.heterogeneous.iterator();
-    while (voxeme_it.next()) |voxeme_entry| {
-        const voxeme_coord = voxeme_entry.key_ptr.*;
-        const voxeme = voxeme_entry.value_ptr.*;
+    if (neighbor_page.is_heterogeneous) {
+        if (neighbor_page.heterogeneous.get(neighbor_coord)) |neighbor_voxeme| {
+            if (neighbor_voxeme.is_homogeneous) {
+                return neighbor_voxeme.payload.homogeneous.eql(occluder_voxel);
+            }
 
-        // Visibility is only calculated for individual voxels, which are only in heterogeneous voxemes.
-        if (voxeme.is_homogeneous) continue;
+            // Neighbor is heterogeneous, must check the full face voxel by voxel.
+            const buffer = neighbor_voxeme.asHeterogeneous();
+            const axis_index = @intFromEnum(axis) / 2;
+            const other_axis_1 = (axis_index + 1) % 3;
+            const other_axis_2 = (axis_index + 2) % 3;
 
-        const buffer = voxeme.asHeterogeneous();
-        const start_voxel_coord = convert.voxemeToVoxel(voxeme_coord, .min);
+            var start_idx: u32 = 0;
+            if (positive) { // Our positive face checks their negative face
+                start_idx = 0;
+            } else { // Our negative face checks their positive face
+                start_idx = voxeme_length - 1;
+            }
 
-        // Iterate Densely: loop through all voxels within this specific voxeme.
-        var z: u32 = 0;
-        while (z < voxeme_length) : (z += 1) {
-            var y: u32 = 0;
-            while (y < voxeme_length) : (y += 1) {
-                var x: u32 = 0;
-                while (x < voxeme_length) : (x += 1) {
-                    const local_u_coord = BufferCoord{ x, y, z };
-                    const current_coord = start_voxel_coord + VoxelCoord{ @intCast(x), @intCast(y), @intCast(z) };
-
-                    const index = convert.bufferToIndex(local_u_coord);
-                    const voxel_ptr = &buffer[index];
-
-                    if (!self.getMaterialProperties(voxel_ptr.material_id).is_opaque) {
-                        voxel_ptr.visibility = .all;
-                        continue;
+            var v: u32 = 0;
+            while (v < voxeme_length) : (v += 1) {
+                var u: u32 = 0;
+                while (u < voxeme_length) : (u += 1) {
+                    var local_coord: BufferCoord = .{ 0, 0, 0 };
+                    local_coord[axis_index] = start_idx;
+                    local_coord[other_axis_1] = u;
+                    local_coord[other_axis_2] = v;
+                    if (!buffer[convert.bufferToIndex(local_coord)].eql(occluder_voxel)) {
+                        return false; // Found a non-matching voxel, face is not occluded.
                     }
+                }
+            }
+            return true; // All voxels on the face matched.
+        }
+    }
+    // Neighbor is implicit or explicit homogeneous page
+    return neighbor_page.homogeneous.eql(occluder_voxel);
+}
 
-                    comptime var vis_iterator = Neighbor.Iterator{};
-                    inline while (comptime vis_iterator.next()) |info| {
-                        const neighbor_voxel = self.getVoxel(current_coord + info.coord_offset);
-                        if (!self.getMaterialProperties(neighbor_voxel.material_id).is_opaque) {
-                            voxel_ptr.visibility.set(info.axis, info.positive, true);
-                        } else {
-                            voxel_ptr.visibility.set(info.axis, info.positive, false);
+/// Performs a full visibility pre-calculation pass for a single page.
+fn recalculateVisibilityForPage(self: *Grid, page_coord: PageCoord) void {
+    const page = self.pages.getPtr(page_coord) orelse return;
+
+    // --- Pass 1: Voxel-level visibility for HETEROGENEOUS voxemes ---
+    if (page.is_heterogeneous) {
+        var voxeme_it = page.heterogeneous.iterator();
+        while (voxeme_it.next()) |voxeme_entry| {
+            if (voxeme_entry.value_ptr.is_homogeneous) continue;
+
+            const voxeme_coord = voxeme_entry.key_ptr.*;
+            const buffer = voxeme_entry.value_ptr.asHeterogeneous();
+            const start_voxel_coord = convert.voxemeToVoxel(voxeme_coord, .min);
+
+            var z: u32 = 0;
+            while (z < voxeme_length) : (z += 1) {
+                var y: u32 = 0;
+                while (y < voxeme_length) : (y += 1) {
+                    var x: u32 = 0;
+                    while (x < voxeme_length) : (x += 1) {
+                        const current_coord = start_voxel_coord + VoxelCoord{ @intCast(x), @intCast(y), @intCast(z) };
+                        const voxel_ptr = &buffer[convert.bufferToIndex(.{ x, y, z })];
+                        if (!self.getMaterialProperties(voxel_ptr.material_id).is_opaque) {
+                            voxel_ptr.visibility = .all;
+                            continue;
+                        }
+                        comptime var neighbor_it = Neighbor.Iterator{};
+                        inline while (comptime neighbor_it.next()) |n| {
+                            const neighbor_voxel = self.getVoxel(current_coord + n.coord_offset);
+                            voxel_ptr.visibility.set(n.axis, n.positive, !self.getMaterialProperties(neighbor_voxel.material_id).is_opaque);
                         }
                     }
                 }
             }
         }
+    }
+
+    // --- Pass 2: Voxeme-level visibility for HOMOGENEOUS voxemes ---
+    if (page.is_heterogeneous) {
+        var voxeme_it = page.heterogeneous.iterator();
+        while (voxeme_it.next()) |entry| {
+            if (!entry.value_ptr.is_homogeneous) continue;
+            if (entry.value_ptr.payload.homogeneous.material_id == .none) {
+                entry.value_ptr.visibility = .all;
+                continue;
+            }
+
+            const voxeme_coord = entry.key_ptr.*;
+            const current_voxel = entry.value_ptr.payload.homogeneous;
+            var new_vis = Visibility.none;
+
+            comptime var neighbor_it = Neighbor.Iterator{};
+            inline while (comptime neighbor_it.next()) |n| {
+                const neighbor_voxeme_coord = voxeme_coord + n.coord_offset;
+                if (!isVoxemeFaceOccluded(self, current_voxel, neighbor_voxeme_coord, n.axis, n.positive)) {
+                    new_vis.set(n.axis, n.positive, true);
+                }
+            }
+            entry.value_ptr.visibility = new_vis;
+        }
+    }
+
+    // --- Pass 3: Page-level visibility for HOMOGENEOUS pages ---
+    if (!page.is_heterogeneous) {
+        if (page.homogeneous.material_id == .none) {
+            page.visibility = .all;
+            return;
+        }
+        var new_vis = Visibility.none;
+        comptime var neighbor_it = Neighbor.Iterator{};
+        inline while (comptime neighbor_it.next()) |n| {
+            const neighbor_page_coord = page_coord + n.coord_offset;
+            const neighbor_page = self.pages.get(neighbor_page_coord);
+            var occluded = false;
+            if (neighbor_page) |np| {
+                // A heterogeneous neighbor never fully occludes a homogeneous page.
+                if (!np.is_heterogeneous and np.homogeneous.eql(page.homogeneous)) {
+                    occluded = true;
+                }
+            }
+            if (!occluded) {
+                new_vis.set(n.axis, n.positive, true);
+            }
+        }
+        page.visibility = new_vis;
     }
 }
 
@@ -758,21 +780,32 @@ pub fn update(self: *Grid, frame_arena: std.mem.Allocator) !void {
     // If no pages are dirty, we're done.
     if (self.dirty_pages.count() == 0) return;
 
-    // --- Pass 1: Pre-calculate visibility for all dirty pages ---
-    // This must happen before homogenization, as homogenization might deallocate the buffers we need to read from.
-    var vis_it = self.dirty_pages.keyIterator();
-    while (vis_it.next()) |page_coord_ptr| {
-        self.updateVisibilityForPage(page_coord_ptr.*);
+    var pages_to_update = std.AutoHashMap(PageCoord, void).init(frame_arena);
+    defer pages_to_update.deinit();
+
+    var dirty_it = self.dirty_pages.keyIterator();
+    while (dirty_it.next()) |page_coord_ptr| {
+        try pages_to_update.put(page_coord_ptr.*, {});
+        // Also add neighbors to the update list, as their visibility might have changed.
+        comptime var neighbor_it = Neighbor.Iterator{};
+        inline while (comptime neighbor_it.next()) |n| {
+            try pages_to_update.put(page_coord_ptr.* + n.coord_offset, {});
+        }
     }
 
-    // --- Pass 2: Homogenize and prune the dirty pages ---
+    // --- Pass 1: Pre-calculate visibility for all affected pages ---
+    var vis_it = pages_to_update.keyIterator();
+    while (vis_it.next()) |page_coord_ptr| {
+        self.recalculateVisibilityForPage(page_coord_ptr.*);
+    }
+
+    // --- Pass 2: Homogenize and prune the originally dirty pages ---
     var pages_to_remove = std.ArrayList(PageCoord).empty;
     defer pages_to_remove.deinit(frame_arena);
 
     var clean_it = self.dirty_pages.keyIterator();
     while (clean_it.next()) |page_coord_ptr| {
         const page_coord = page_coord_ptr.*;
-        // The page must exist, as it had to be modified to be marked dirty.
         const page = self.pages.getPtr(page_coord).?;
 
         try self.homogenizeVoxemesInPage(page, frame_arena);
@@ -842,6 +875,10 @@ pub fn getVoxel(self: *const Grid, coord: VoxelCoord) Voxel {
     }
 }
 
+fn markDirty(self: *Grid, page_coord: PageCoord) !void {
+    try self.dirty_pages.put(self.allocator(), page_coord, {});
+}
+
 /// Delete the Voxel at the given voxel-space coordinate.
 pub fn delVoxel(self: *Grid, coord: VoxelCoord) !void {
     if (!self.isVoxelMapped(coord)) return;
@@ -903,7 +940,7 @@ pub fn delVoxel(self: *Grid, coord: VoxelCoord) !void {
     }
 
     // if we made it here, something in the page was changed
-    try self.dirty_pages.put(self.allocator(), page_coord, {});
+    try self.markDirty(page_coord);
 }
 
 /// Set the Voxel at the given voxel-space coordinate.
@@ -1007,80 +1044,211 @@ pub fn setVoxel(self: *Grid, coord: VoxelCoord, value: LiteVoxel) !void {
     }
 
     if (was_modified) {
-        try self.dirty_pages.put(self.allocator(), page_coord, {});
+        try self.markDirty(page_coord);
     }
 }
 
+// --- Meshing Helpers ---
+
+const VoxelGetter = struct {
+    buffer: ?Buffer,
+    homogeneous_voxel: Voxel,
+
+    fn get(self: @This(), x: u32, y: u32, z: u32) Voxel {
+        if (self.buffer) |b| {
+            return b[convert.bufferToIndex(.{ x, y, z })];
+        } else {
+            return self.homogeneous_voxel;
+        }
+    }
+};
+
+const FaceData = struct {
+    normal: vec3,
+    // Vertices in counter-clockwise order for correct winding
+    vertices: [4]vec3,
+    uvs: [4]vec2 = .{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 } },
+};
+
+// Data for the 6 faces of a unit cube.
+// The order MUST match the bit order of the Visibility struct for the fast meshing path.
+// 0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z
+const face_data = [_]FaceData{
+    // 0: +X
+    .{ .normal = .{ 1, 0, 0 }, .vertices = .{ .{ 1, 0, 0 }, .{ 1, 1, 0 }, .{ 1, 1, 1 }, .{ 1, 0, 1 } } },
+    // 1: -X
+    .{ .normal = .{ -1, 0, 0 }, .vertices = .{ .{ 0, 0, 1 }, .{ 0, 1, 1 }, .{ 0, 1, 0 }, .{ 0, 0, 0 } } },
+    // 2: +Y
+    .{ .normal = .{ 0, 1, 0 }, .vertices = .{ .{ 0, 1, 0 }, .{ 0, 1, 1 }, .{ 1, 1, 1 }, .{ 1, 1, 0 } } },
+    // 3: -Y
+    .{ .normal = .{ 0, -1, 0 }, .vertices = .{ .{ 1, 0, 0 }, .{ 1, 0, 1 }, .{ 0, 0, 1 }, .{ 0, 0, 0 } } },
+    // 4: +Z
+    .{ .normal = .{ 0, 0, 1 }, .vertices = .{ .{ 1, 0, 1 }, .{ 1, 1, 1 }, .{ 0, 1, 1 }, .{ 0, 0, 1 } } },
+    // 5: -Z
+    .{ .normal = .{ 0, 0, -1 }, .vertices = .{ .{ 0, 0, 0 }, .{ 0, 1, 0 }, .{ 1, 1, 0 }, .{ 1, 0, 0 } } },
+};
+
+/// Helper function to generate a quad for a single face.
+fn addFace(
+    gpa: std.mem.Allocator,
+    vertices: *std.ArrayList(Vertex),
+    indices: *std.ArrayList(u32),
+    origin: Position,
+    scale: f32,
+    face_index: usize,
+    color: vec3,
+) !void {
+    const base_vertex_index: u32 = @intCast(vertices.items.len);
+    const data = &face_data[face_index];
+
+    for (data.vertices, data.uvs) |v_offset, uv| {
+        const pos = origin + v_offset * @as(vec3, @splat(scale));
+        try vertices.append(gpa, Vertex.init(pos, data.normal, uv, color));
+    }
+
+    try indices.appendSlice(gpa, &.{
+        base_vertex_index + 0, base_vertex_index + 1, base_vertex_index + 2,
+        base_vertex_index + 0, base_vertex_index + 2, base_vertex_index + 3,
+    });
+}
+
 /// Generates a simple, blocky, non-greedy mesh for a single Voxeme.
-/// This function has two paths:
-/// 1. A fast path for heterogeneous voxemes that uses pre-calculated visibility flags.
-/// 2. A slower path for homogeneous (or implicitly homogeneous) voxemes that checks the 6 neighboring voxemes.
 pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, voxeme_coord: VoxemeCoord, vertices: *std.ArrayList(Vertex), indices: *std.ArrayList(u32)) !void {
     const voxeme_ptr = self.getVoxeme(voxeme_coord);
 
-    // Fast path for heterogeneous voxemes using pre-calculated visibility flags.
     if (voxeme_ptr) |v_ptr| {
-        if (!v_ptr.is_homogeneous) {
+        // Path for EXPLICIT voxemes that exist in the hashmap.
+        if (v_ptr.is_homogeneous) {
+            // --- Fast path for homogeneous voxemes ---
+            const material_props = self.getMaterialProperties(v_ptr.payload.homogeneous.material_id);
+            if (!material_props.is_opaque) return;
+
+            const vis_bits: u6 = @bitCast(v_ptr.visibility);
+            if (vis_bits == 0) return;
+
+            const voxeme_world_pos = convert.voxemeToWorld(voxeme_coord, .min);
+            const color = material_props.color;
+            for (0..6) |face_index| {
+                if ((vis_bits >> @as(u3, @intCast(face_index))) & 1 == 1) {
+                    try addFace(gpa, vertices, indices, voxeme_world_pos, voxeme_scale, face_index, color);
+                }
+            }
+        } else {
+            // --- Fast path for heterogeneous voxemes ---
             const buffer = v_ptr.asHeterogeneous();
             const start_voxel_coord = convert.voxemeToVoxel(voxeme_coord, .min);
-
             var z: u32 = 0;
             while (z < voxeme_length) : (z += 1) {
                 var y: u32 = 0;
                 while (y < voxeme_length) : (y += 1) {
                     var x: u32 = 0;
                     while (x < voxeme_length) : (x += 1) {
-                        const index = convert.bufferToIndex(.{ x, y, z });
-                        const voxel = buffer[index];
-
+                        const voxel = buffer[convert.bufferToIndex(.{ x, y, z })];
                         const material_props = self.getMaterialProperties(voxel.material_id);
-                        if (!material_props.is_opaque) {
-                            continue;
-                        }
+                        if (!material_props.is_opaque) continue;
 
                         const vis_bits: u6 = @bitCast(voxel.visibility);
-                        if (vis_bits == 0) continue; // Quick skip if no faces are visible
+                        if (vis_bits == 0) continue;
 
                         const voxel_world_pos = convert.voxelToWorld(start_voxel_coord + VoxelCoord{ @intCast(x), @intCast(y), @intCast(z) }, .min);
-                        const color = material_props.color;
-
-                        // Iterate through the 6 faces, adding a quad for each visible one.
                         for (0..6) |face_index| {
                             if ((vis_bits >> @as(u3, @intCast(face_index))) & 1 == 1) {
-                                try addFace(gpa, vertices, indices, voxel_world_pos, voxel_scale, face_index, color);
+                                try addFace(gpa, vertices, indices, voxel_world_pos, voxel_scale, face_index, material_props.color);
                             }
                         }
                     }
                 }
             }
-            return; // Finished with the fast path.
         }
-    }
-
-    // Slow path: For homogeneous voxemes or empty space within a page that resolves to a solid color.
-    // This is taken if getVoxeme returns null (implicit homogeneous) or a homogeneous voxeme.
-    const first_voxel_coord = convert.voxemeToVoxel(voxeme_coord, .min);
-    const sample_voxel = self.getVoxel(first_voxel_coord);
-
-    const material_props = self.getMaterialProperties(sample_voxel.material_id);
-    // If the entire voxeme is effectively empty/non-opaque, there's nothing to mesh.
-    if (!material_props.is_opaque) {
         return;
     }
 
-    const color = material_props.color;
-    // The voxeme is solid. Mesh it as one large cube, checking 6 neighbors for visibility.
-    const voxeme_world_pos = convert.voxemeToWorld(voxeme_coord, .min);
-    const neighbor_offsets = [_]VoxelCoord{ .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 1, 0 }, .{ 0, -1, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 } };
+    // Path for IMPLICIT voxemes (part of a homogeneous page).
+    // These should only be meshed if the parent page is heterogeneous.
+    // If the page itself is homogeneous, the new page-level meshing fast path handles it.
+    const page_coord = convert.voxemeToPage(voxeme_coord);
+    if (self.pages.get(page_coord)) |page| {
+        if (!page.is_heterogeneous) return; // Handled by pageMeshBasic fast path.
 
-    for (neighbor_offsets, 0..) |offset, face_index| {
-        // To check the neighbor, we get a voxel from the adjacent voxeme.
-        const neighbor_voxeme_coord = voxeme_coord + offset;
-        const sample_voxel_in_neighbor = self.getVoxel(convert.voxemeToVoxel(neighbor_voxeme_coord, .min));
+        const sample_voxel = page.homogeneous;
+        const material_props = self.getMaterialProperties(sample_voxel.material_id);
+        if (!material_props.is_opaque) return;
 
-        if (!self.getMaterialProperties(sample_voxel_in_neighbor.material_id).is_opaque) {
-            // Neighbor is not opaque, so this face is visible.
-            try addFace(gpa, vertices, indices, voxeme_world_pos, voxeme_scale, face_index, color);
+        // Since this is an implicit voxeme, it has no pre-calculated visibility.
+        // We must calculate it now. This is the new, correct "slow path".
+        const voxeme_world_pos = convert.voxemeToWorld(voxeme_coord, .min);
+        comptime var neighbor_it = Neighbor.Iterator{};
+        inline while (comptime neighbor_it.next()) |n| {
+            if (!isVoxemeFaceOccluded(self, sample_voxel, voxeme_coord + n.coord_offset, n.axis, n.positive)) {
+                try addFace(gpa, vertices, indices, voxeme_world_pos, voxeme_scale, @intFromEnum(n.axis) + (if (n.positive) 0 else 1), material_props.color);
+            }
+        }
+    }
+}
+
+/// Generates a simple, blocky, non-greedy mesh for an entire Page.
+pub fn pageMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_coord: PageCoord, vertices: *std.ArrayList(Vertex), indices: *std.ArrayList(u32)) !void {
+    const page = self.pages.get(page_coord) orelse return;
+
+    // --- Fast path for homogeneous pages ---
+    if (!page.is_heterogeneous) {
+        const material_props = self.getMaterialProperties(page.homogeneous.material_id);
+        if (!material_props.is_opaque) return;
+
+        const vis_bits: u6 = @bitCast(page.visibility);
+        if (vis_bits == 0) return;
+
+        const page_world_pos = convert.pageToWorld(page_coord, .min);
+        const color = material_props.color;
+        for (0..6) |face_index| {
+            if ((vis_bits >> @as(u3, @intCast(face_index))) & 1 == 1) {
+                try addFace(gpa, vertices, indices, page_world_pos, page_scale, face_index, color);
+            }
+        }
+        return;
+    }
+
+    // --- Path for heterogeneous pages ---
+    const start_voxeme_coord = convert.pageToVoxeme(page_coord, .min);
+    var z: u32 = 0;
+    while (z < page_length) : (z += 1) {
+        var y: u32 = 0;
+        while (y < page_length) : (y += 1) {
+            var x: u32 = 0;
+            while (x < page_length) : (x += 1) {
+                const offset = VoxemeCoord{ @intCast(x), @intCast(y), @intCast(z) };
+                try self.voxemeMeshBasic(gpa, start_voxeme_coord + offset, vertices, indices);
+            }
+        }
+    }
+}
+
+/// Generates a mesh for all pages within the rectangular volume defined by start_coord and end_coord (inclusive).
+pub fn worldMeshBasic(
+    self: *const Grid,
+    gpa: std.mem.Allocator,
+    start_coord: PageCoord,
+    end_coord: PageCoord,
+    vertices: *std.ArrayList(Vertex),
+    indices: *std.ArrayList(u32),
+) !void {
+    // Determine the iteration bounds, ensuring we handle cases where start > end.
+    const min_x = @min(start_coord[0], end_coord[0]);
+    const max_x = @max(start_coord[0], end_coord[0]);
+    const min_y = @min(start_coord[1], end_coord[1]);
+    const max_y = @max(start_coord[1], end_coord[1]);
+    const min_z = @min(start_coord[2], end_coord[2]);
+    const max_z = @max(start_coord[2], end_coord[2]);
+
+    var z = min_z;
+    while (z <= max_z) : (z += 1) {
+        var y = min_y;
+        while (y <= max_y) : (y += 1) {
+            var x = min_x;
+            while (x <= max_x) : (x += 1) {
+                const current_page_coord = PageCoord{ x, y, z };
+                try self.pageMeshBasic(gpa, current_page_coord, vertices, indices);
+            }
         }
     }
 }
@@ -1549,10 +1717,19 @@ test "voxeme meshing" {
         try insertHomoVoxeme(&grid, gpa, v_coord1, stone);
         try insertHomoVoxeme(&grid, gpa, v_coord2, stone);
 
+        // Manually mark the page(s) as dirty because we used a test helper
+        // that bypasses the normal setVoxel logic.
+        const page_coord = convert.voxemeToPage(v_coord1);
+        try grid.dirty_pages.put(gpa, page_coord, {});
+
+        // Run the update to pre-calculate visibility. This is a crucial step.
+        // The old comment "No update needed" was removed as it's now incorrect.
+        try grid.update(fa);
+
         // Mesh the first voxeme
         try grid.voxemeMeshBasic(gpa, v_coord1, &vertices, &indices);
 
-        // It should have 5 faces, as its +X face is occluded
+        // It should have 5 faces, as its +X face is now correctly calculated as occluded
         try std.testing.expectEqual(@as(usize, 20), vertices.items.len); // 5 faces * 4 vertices
         try std.testing.expectEqual(@as(usize, 30), indices.items.len); // 5 faces * 6 indices
     }
