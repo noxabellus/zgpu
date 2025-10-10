@@ -226,12 +226,11 @@ pub const convert = struct {
 
 /// A sparse map of all existing Voxemes in a particular area, keyed by their VoxemeCoord.
 pub const Page = struct {
-    is_dirty: bool,
     is_heterogeneous: bool,
     homogeneous: Voxel,
     heterogeneous: std.AutoHashMapUnmanaged(VoxemeCoord, Voxeme) = .empty,
 
-    pub const empty = Page{ .is_dirty = false, .is_heterogeneous = false, .homogeneous = .empty };
+    pub const empty = Page{ .is_heterogeneous = false, .homogeneous = .empty };
 
     pub fn deinit(self: *Page, gpa: std.mem.Allocator) void {
         if (self.is_heterogeneous) {
@@ -283,6 +282,13 @@ pub const Voxeme = packed struct(u64) {
     }
 };
 
+/// The axis along which a Voxel face lies.
+pub const Axis = enum(u3) {
+    x = 0,
+    y = 2,
+    z = 4,
+};
+
 /// Pre-calculated visibility flags for each face-neighbor of a Voxel.
 pub const Visibility = packed struct(u6) {
     // Note: fields of packed structs are arranged in the provided order from LSB to MSB
@@ -295,12 +301,6 @@ pub const Visibility = packed struct(u6) {
 
     pub const all = Visibility{ .pos_x = true, .neg_x = true, .pos_y = true, .neg_y = true, .pos_z = true, .neg_z = true };
     pub const none = Visibility{ .pos_x = false, .neg_x = false, .pos_y = false, .neg_y = false, .pos_z = false, .neg_z = false };
-
-    pub const Axis = enum(u3) {
-        x = 0,
-        y = 2,
-        z = 4,
-    };
 
     /// Gets the visibility state for a face by axis and direction.
     pub fn get(self: Visibility, axis: Axis, positive: bool) bool {
@@ -324,8 +324,14 @@ pub const Visibility = packed struct(u6) {
         }
         self.* = @bitCast(bits);
     }
+};
 
-    pub const neighbor_coordinates = [_]VoxelCoord{
+pub const Neighbor = struct {
+    axis: Axis,
+    positive: bool,
+    coord_offset: VoxelCoord,
+
+    pub const coordinates = [_]VoxelCoord{
         .{ 1, 0, 0 }, // pos_x
         .{ -1, 0, 0 }, // neg_x
         .{ 0, 1, 0 }, // pos_y
@@ -334,17 +340,11 @@ pub const Visibility = packed struct(u6) {
         .{ 0, 0, -1 }, // neg_z
     };
 
-    pub const Neighbor = struct {
-        axis: Axis,
-        positive: bool,
-        coord_offset: VoxelCoord,
-    };
-
-    pub const NeighborIterator = struct {
+    pub const Iterator = struct {
         index: usize = 0,
 
-        pub fn next(self: *NeighborIterator) ?Neighbor {
-            if (self.index >= neighbor_coordinates.len) return null;
+        pub fn next(self: *Iterator) ?Neighbor {
+            if (self.index >= coordinates.len) return null;
             const axis = switch (self.index) {
                 0, 1 => Axis.x,
                 2, 3 => Axis.y,
@@ -352,7 +352,7 @@ pub const Visibility = packed struct(u6) {
                 else => unreachable,
             };
             const positive = (self.index % 2) == 0;
-            const coord_offset = neighbor_coordinates[self.index];
+            const coord_offset = coordinates[self.index];
             self.index += 1;
             return Neighbor{ .axis = axis, .positive = positive, .coord_offset = coord_offset };
         }
@@ -505,6 +505,9 @@ pages: std.AutoHashMapUnmanaged(PageCoord, Page) = .empty,
 /// A map of all material properties in this Grid, keyed by their MaterialId.
 materials: std.AutoHashMapUnmanaged(MaterialId, MaterialProperties) = .empty,
 
+/// A set of all Pages that need processing in the next `update` tick.
+dirty_pages: std.AutoHashMapUnmanaged(PageCoord, void) = .empty,
+
 /// Create a new empty Grid with a preheated pool for Buffers.
 pub fn init(backing_allocator: std.mem.Allocator) !Grid {
     var out = Grid{
@@ -513,6 +516,7 @@ pub fn init(backing_allocator: std.mem.Allocator) !Grid {
 
     try out.pages.ensureTotalCapacity(backing_allocator, 4096);
     try out.materials.ensureTotalCapacity(backing_allocator, std.math.maxInt(std.meta.Tag(MaterialId)));
+    try out.dirty_pages.ensureTotalCapacity(backing_allocator, 1024);
 
     out.materials.putAssumeCapacity(.none, .none);
 
@@ -527,11 +531,9 @@ pub fn deinit(self: *Grid) void {
     var it = self.pages.valueIterator();
     while (it.next()) |page| page.deinit(gpa);
 
-    // Free the Page hashmap
     self.pages.deinit(gpa);
-
-    // Free the MaterialProperties hashmap
     self.materials.deinit(gpa);
+    self.dirty_pages.deinit(gpa);
 
     // Destroying the pool will free all allocated Buffers
     self.pool.deinit();
@@ -584,7 +586,7 @@ pub fn isVoxelMapped(self: *const Grid, coord: VoxelCoord) bool {
 pub fn isVoxemeMapped(self: *const Grid, coord: VoxemeCoord) bool {
     const page_coord = convert.voxemeToPage(coord);
 
-    const page = self.pages.getPtr(page_coord) orelse return false;
+    const page = self.pages.get(page_coord) orelse return false;
     return page.is_heterogeneous and page.heterogeneous.contains(coord);
 }
 
@@ -593,200 +595,216 @@ pub fn isPageMapped(self: *const Grid, coord: PageCoord) bool {
     return self.pages.contains(coord);
 }
 
-/// Loop all Pages and for each dirty Page, precalculates Voxel visibility, then homogenizes and prunes extraneous data structures.
-/// Loop all Pages and for each dirty Page, precalculates Voxel visibility, then homogenizes and prunes extraneous data structures.
-pub fn update(self: *Grid, frame_arena: std.mem.Allocator) !void {
-    const gpa = self.allocator();
+/// Pre-calculates visibility for all voxels within a single dirty page.
+fn updateVisibilityForPage(self: *Grid, page_coord: PageCoord) void {
+    const page = self.pages.getPtr(page_coord).?;
+    if (!page.is_heterogeneous) return;
 
-    // --- Pass 1: Collect coordinates of all dirty pages ---
-    var dirty_pages = std.ArrayList(PageCoord).empty;
-    defer dirty_pages.deinit(frame_arena);
+    // Iterate Sparsely: only process voxemes that actually exist in the page.
+    var voxeme_it = page.heterogeneous.iterator();
+    while (voxeme_it.next()) |voxeme_entry| {
+        const voxeme_coord = voxeme_entry.key_ptr.*;
+        const voxeme = voxeme_entry.value_ptr.*;
 
-    var page_key_it = self.pages.keyIterator();
-    while (page_key_it.next()) |page_coord_ptr| {
-        if (self.pages.get(page_coord_ptr.*).?.is_dirty) {
-            try dirty_pages.append(frame_arena, page_coord_ptr.*);
-        }
-    }
+        // Visibility is only calculated for individual voxels, which are only in heterogeneous voxemes.
+        if (voxeme.is_homogeneous) continue;
 
-    // If no pages are dirty, we're done.
-    if (dirty_pages.items.len == 0) return;
+        const buffer = voxeme.asHeterogeneous();
+        const start_voxel_coord = convert.voxemeToVoxel(voxeme_coord, .min);
 
-    // --- Pass 2: Process the collected dirty pages ---
-    var pages_to_remove = std.ArrayList(PageCoord).empty;
-    defer pages_to_remove.deinit(frame_arena);
-    var voxemes_to_remove = std.ArrayList(VoxemeCoord).empty;
-    defer voxemes_to_remove.deinit(frame_arena);
+        // Iterate Densely: loop through all voxels within this specific voxeme.
+        var z: u32 = 0;
+        while (z < voxeme_length) : (z += 1) {
+            var y: u32 = 0;
+            while (y < voxeme_length) : (y += 1) {
+                var x: u32 = 0;
+                while (x < voxeme_length) : (x += 1) {
+                    const local_u_coord = BufferCoord{ x, y, z };
+                    const current_coord = start_voxel_coord + VoxelCoord{ @intCast(x), @intCast(y), @intCast(z) };
 
-    for (dirty_pages.items) |page_coord| {
-        // The page must exist, as we just found it.
-        const page = self.pages.getPtr(page_coord).?;
+                    const index = convert.bufferToIndex(local_u_coord);
+                    const voxel_ptr = &buffer[index];
 
-        // --- Stage A: Pre-calculate Visibility ---
-        // --- Step 1: Pre-calculate Visibility for the entire dirty page ---
-        // This must be done before homogenization, as homogenization might deallocate the very buffers we need to read from.
-        if (page.is_heterogeneous) {
-            // Iterate Sparsely: only process voxemes that actually exist in the page.
-            var voxeme_it = page.heterogeneous.iterator();
-            while (voxeme_it.next()) |voxeme_entry| {
-                const voxeme_coord = voxeme_entry.key_ptr.*;
-                const voxeme = voxeme_entry.value_ptr.*;
+                    if (!self.getMaterialProperties(voxel_ptr.material_id).is_opaque) {
+                        voxel_ptr.visibility = .all;
+                        continue;
+                    }
 
-                // Visibility is only calculated for individual voxels, which are only in heterogeneous voxemes.
-                if (voxeme.is_homogeneous) continue;
-
-                const buffer = voxeme.asHeterogeneous();
-                const start_voxel_coord = convert.voxemeToVoxel(voxeme_coord, .min);
-
-                // Iterate Densely: loop through all voxels within this specific voxeme.
-                var z: u32 = 0;
-                while (z < voxeme_length) : (z += 1) {
-                    var y: u32 = 0;
-                    while (y < voxeme_length) : (y += 1) {
-                        var x: u32 = 0;
-                        while (x < voxeme_length) : (x += 1) {
-                            const local_u_coord = BufferCoord{ x, y, z };
-                            const current_coord = start_voxel_coord + VoxelCoord{ @intCast(x), @intCast(y), @intCast(z) };
-
-                            const index = convert.bufferToIndex(local_u_coord);
-                            const voxel_ptr = &buffer[index];
-
-                            if (!self.getMaterialProperties(voxel_ptr.material_id).is_opaque) {
-                                voxel_ptr.visibility = .all;
-                                continue;
-                            }
-
-                            comptime var vis_iterator = Visibility.NeighborIterator{};
-                            inline while (comptime vis_iterator.next()) |info| {
-                                const neighbor_voxel = self.getVoxel(current_coord + info.coord_offset);
-                                if (!self.getMaterialProperties(neighbor_voxel.material_id).is_opaque) {
-                                    voxel_ptr.visibility.set(info.axis, info.positive, true);
-                                } else {
-                                    voxel_ptr.visibility.set(info.axis, info.positive, false);
-                                }
-                            }
+                    comptime var vis_iterator = Neighbor.Iterator{};
+                    inline while (comptime vis_iterator.next()) |info| {
+                        const neighbor_voxel = self.getVoxel(current_coord + info.coord_offset);
+                        if (!self.getMaterialProperties(neighbor_voxel.material_id).is_opaque) {
+                            voxel_ptr.visibility.set(info.axis, info.positive, true);
+                        } else {
+                            voxel_ptr.visibility.set(info.axis, info.positive, false);
                         }
                     }
                 }
             }
         }
+    }
+}
 
-        // --- Stage B: Homogenize ---
-        page.is_dirty = false;
-        if (!page.is_heterogeneous) {
-            if (page.homogeneous.material_id == .none) {
-                // It's possible for a page to be dirty and homogeneous if it was just
-                // created via setVoxel in an empty region and needs to be cleaned up.
-                try pages_to_remove.append(frame_arena, page_coord);
-            }
-            continue;
-        }
+/// Checks dirty voxemes for homogenization and prunes any that become empty.
+fn homogenizeVoxemesInPage(self: *Grid, page: *Page, frame_arena: std.mem.Allocator) !void {
+    if (!page.is_heterogeneous) return;
 
-        voxemes_to_remove.clearRetainingCapacity();
-        var voxeme_it = page.heterogeneous.iterator();
-        while (voxeme_it.next()) |voxeme_entry| {
-            const voxeme_coord = voxeme_entry.key_ptr.*;
-            const voxeme = voxeme_entry.value_ptr;
+    var voxemes_to_remove = std.ArrayList(VoxemeCoord).empty;
+    defer voxemes_to_remove.deinit(frame_arena);
 
-            if (!voxeme.is_dirty) continue;
-            voxeme.is_dirty = false;
-            if (voxeme.is_homogeneous) continue;
+    var voxeme_it = page.heterogeneous.iterator();
+    while (voxeme_it.next()) |voxeme_entry| {
+        const voxeme_coord = voxeme_entry.key_ptr.*;
+        const voxeme = voxeme_entry.value_ptr;
 
-            const buffer = voxeme.asHeterogeneous();
-            const reference_voxel = buffer[0];
-            var is_now_homogeneous = true;
-            for (buffer[1..]) |v| {
-                if (!v.eql(reference_voxel)) {
-                    is_now_homogeneous = false;
-                    break;
-                }
-            }
+        if (!voxeme.is_dirty) continue;
+        voxeme.is_dirty = false;
+        if (voxeme.is_homogeneous) continue;
 
-            if (is_now_homogeneous) {
-                if (reference_voxel.material_id == .none) {
-                    self.deallocateBuffer(buffer);
-                    try voxemes_to_remove.append(frame_arena, voxeme_coord);
-                } else {
-                    voxeme.* = Voxeme.homogeneous(reference_voxel);
-                    self.deallocateBuffer(buffer);
-                }
+        const buffer = voxeme.asHeterogeneous();
+        const reference_voxel = buffer[0];
+        var is_now_homogeneous = true;
+        for (buffer[1..]) |v| {
+            if (!v.eql(reference_voxel)) {
+                is_now_homogeneous = false;
+                break;
             }
         }
 
-        for (voxemes_to_remove.items) |voxeme_coord| {
-            _ = page.heterogeneous.remove(voxeme_coord);
-        }
-
-        voxemes_to_remove.clearRetainingCapacity();
-        var prune_it = page.heterogeneous.iterator();
-        while (prune_it.next()) |entry| {
-            const voxeme = entry.value_ptr.*;
-            if (voxeme.is_homogeneous and voxeme.payload.homogeneous.eql(page.homogeneous)) {
-                try voxemes_to_remove.append(frame_arena, entry.key_ptr.*);
+        if (is_now_homogeneous) {
+            if (reference_voxel.material_id == .none) {
+                self.deallocateBuffer(buffer);
+                try voxemes_to_remove.append(frame_arena, voxeme_coord);
+            } else {
+                voxeme.* = Voxeme.homogeneous(reference_voxel);
+                self.deallocateBuffer(buffer);
             }
         }
-        for (voxemes_to_remove.items) |coord| {
-            _ = page.heterogeneous.remove(coord);
-        }
+    }
 
-        if (page.heterogeneous.count() == 0) {
-            page.heterogeneous.deinit(gpa);
-            page.is_heterogeneous = false;
-            if (page.homogeneous.material_id == .none) {
-                try pages_to_remove.append(frame_arena, page_coord);
+    for (voxemes_to_remove.items) |voxeme_coord| {
+        _ = page.heterogeneous.remove(voxeme_coord);
+    }
+}
+
+/// Checks if a page can be simplified (e.g., made fully homogeneous) or if it has become empty.
+/// Returns true if the page should be removed from the grid entirely.
+fn pruneAndHomogenizePage(self: *Grid, page: *Page, frame_arena: std.mem.Allocator) !bool {
+    if (!page.is_heterogeneous) {
+        // If a homogeneous page was marked dirty, it's because it was just
+        // created and might be an empty page that needs pruning.
+        return page.homogeneous.material_id == .none;
+    }
+
+    // Prune voxemes that are now redundant (i.e., they match the page's homogeneous material).
+    var voxemes_to_remove = std.ArrayList(VoxemeCoord).empty;
+    defer voxemes_to_remove.deinit(frame_arena);
+    var prune_it = page.heterogeneous.iterator();
+    while (prune_it.next()) |entry| {
+        const voxeme = entry.value_ptr.*;
+        if (voxeme.is_homogeneous and voxeme.payload.homogeneous.eql(page.homogeneous)) {
+            try voxemes_to_remove.append(frame_arena, entry.key_ptr.*);
+        }
+    }
+    for (voxemes_to_remove.items) |coord| {
+        _ = page.heterogeneous.remove(coord);
+    }
+
+    // If all override voxemes were pruned, the page is now fully homogeneous.
+    if (page.heterogeneous.count() == 0) {
+        page.heterogeneous.deinit(self.allocator());
+        page.is_heterogeneous = false;
+        return page.homogeneous.material_id == .none;
+    }
+
+    // If the page is completely full of voxemes, check if they are all the same
+    // homogeneous type, allowing the entire page to become homogeneous.
+    if (page.heterogeneous.count() == voxemes_per_page) {
+        var first_voxel: ?Voxel = null;
+        var all_same = true;
+        var check_it = page.heterogeneous.valueIterator();
+        while (check_it.next()) |voxeme| {
+            if (!voxeme.is_homogeneous) {
+                all_same = false;
+                break;
             }
-        } else if (page.heterogeneous.count() == voxemes_per_page) {
-            var first_voxel: ?Voxel = null;
-            var all_same = true;
-            var check_it = page.heterogeneous.valueIterator();
-            while (check_it.next()) |voxeme| {
-                if (!voxeme.is_homogeneous) {
+            const current_voxel = voxeme.payload.homogeneous;
+            if (first_voxel) |fv| {
+                if (!current_voxel.eql(fv)) {
                     all_same = false;
                     break;
                 }
-                const current_voxel = voxeme.payload.homogeneous;
-                if (first_voxel) |fv| {
-                    if (!current_voxel.eql(fv)) {
-                        all_same = false;
-                        break;
-                    }
-                } else {
-                    first_voxel = current_voxel;
-                }
+            } else {
+                first_voxel = current_voxel;
             }
+        }
 
-            if (all_same) {
-                if (first_voxel) |new_homogeneous_voxel| {
-                    if (new_homogeneous_voxel.material_id != .none) {
-                        page.heterogeneous.deinit(gpa);
-                        page.is_heterogeneous = false;
-                        page.homogeneous = new_homogeneous_voxel;
-                    }
+        if (all_same) {
+            if (first_voxel) |new_homogeneous_voxel| {
+                if (new_homogeneous_voxel.material_id != .none) {
+                    page.heterogeneous.deinit(self.allocator());
+                    page.is_heterogeneous = false;
+                    page.homogeneous = new_homogeneous_voxel;
                 }
             }
         }
     }
 
-    // --- Pass 3: Prune any pages that became empty ---
+    return false;
+}
+
+/// Loop all dirty Pages, precalculate Voxel visibility, then homogenize and prune extraneous data structures.
+pub fn update(self: *Grid, frame_arena: std.mem.Allocator) !void {
+    // If no pages are dirty, we're done.
+    if (self.dirty_pages.count() == 0) return;
+
+    // --- Pass 1: Pre-calculate visibility for all dirty pages ---
+    // This must happen before homogenization, as homogenization might deallocate the buffers we need to read from.
+    var vis_it = self.dirty_pages.keyIterator();
+    while (vis_it.next()) |page_coord_ptr| {
+        self.updateVisibilityForPage(page_coord_ptr.*);
+    }
+
+    // --- Pass 2: Homogenize and prune the dirty pages ---
+    var pages_to_remove = std.ArrayList(PageCoord).empty;
+    defer pages_to_remove.deinit(frame_arena);
+
+    var clean_it = self.dirty_pages.keyIterator();
+    while (clean_it.next()) |page_coord_ptr| {
+        const page_coord = page_coord_ptr.*;
+        // The page must exist, as it had to be modified to be marked dirty.
+        const page = self.pages.getPtr(page_coord).?;
+
+        try self.homogenizeVoxemesInPage(page, frame_arena);
+
+        if (try self.pruneAndHomogenizePage(page, frame_arena)) {
+            try pages_to_remove.append(frame_arena, page_coord);
+        }
+    }
+
+    // The work for this frame is done, clear the queue for the next frame.
+    self.dirty_pages.clearRetainingCapacity();
+
+    // --- Pass 3: Remove any pages that became completely empty ---
     for (pages_to_remove.items) |page_coord_to_remove| {
         if (self.pages.fetchRemove(page_coord_to_remove)) |removed_entry| {
             var removed_mut = removed_entry.value;
-            removed_mut.deinit(gpa);
+            removed_mut.deinit(self.allocator());
         }
     }
 }
 
 /// Get the Voxeme at the given voxeme-space coordinate, if it exists.
-pub fn getVoxeme(self: *const Grid, coord: VoxemeCoord) ?*Voxeme {
+pub fn getVoxeme(self: *const Grid, coord: VoxemeCoord) ?*const Voxeme {
     const page_coord = convert.voxemeToPage(coord);
-    const page = self.pages.getPtr(page_coord) orelse return null;
+    const page = self.pages.get(page_coord) orelse return null;
     if (!page.is_heterogeneous) return null;
     return page.heterogeneous.getPtr(coord);
 }
 
 /// Get a mutable pointer to the Voxel at a given coordinate, if it exists within a heterogeneous buffer.
 /// This will return null for voxels in homogeneous pages or voxemes, as they have no unique memory location.
-pub fn getVoxelPtr(self: *const Grid, coord: VoxelCoord) ?*Voxel {
+pub fn getVoxelPtr(self: *Grid, coord: VoxelCoord) ?*Voxel {
     const page_coord = convert.voxelToPage(coord);
     const page = self.pages.getPtr(page_coord) orelse return null;
     // Can only get a pointer if the page is heterogeneous.
@@ -809,7 +827,7 @@ pub fn getVoxel(self: *const Grid, coord: VoxelCoord) Voxel {
     const voxeme_coord = convert.voxelToVoxeme(coord);
     const local_voxel_coord = convert.voxelToBuffer(coord);
 
-    const page = self.pages.getPtr(page_coord) orelse return .empty;
+    const page = self.pages.get(page_coord) orelse return .empty;
     if (!page.is_heterogeneous) {
         return page.homogeneous;
     }
@@ -885,7 +903,7 @@ pub fn delVoxel(self: *Grid, coord: VoxelCoord) !void {
     }
 
     // if we made it here, something in the page was changed
-    page.is_dirty = true;
+    try self.dirty_pages.put(self.allocator(), page_coord, {});
 }
 
 /// Set the Voxel at the given voxel-space coordinate.
@@ -901,6 +919,7 @@ pub fn setVoxel(self: *Grid, coord: VoxelCoord, value: LiteVoxel) !void {
     if (!page_gop.found_existing) page_gop.value_ptr.* = .empty;
 
     const page = page_gop.value_ptr;
+    var was_modified = false;
 
     if (!page.is_heterogeneous) {
         const old_voxel = page.homogeneous;
@@ -923,6 +942,7 @@ pub fn setVoxel(self: *Grid, coord: VoxelCoord, value: LiteVoxel) !void {
 
         // Insert the new heterogeneous voxeme
         try page.heterogeneous.put(self.allocator(), voxeme_coord, Voxeme.heterogeneous(new_buffer));
+        was_modified = true;
     } else {
         const voxeme_gop = try page.heterogeneous.getOrPut(self.allocator(), voxeme_coord);
 
@@ -942,6 +962,7 @@ pub fn setVoxel(self: *Grid, coord: VoxelCoord, value: LiteVoxel) !void {
             const local_voxel_coord = convert.voxelToBuffer(coord);
             const index = convert.bufferToIndex(local_voxel_coord);
             new_buffer[index].set(value);
+            was_modified = true;
         } else {
             const voxeme = voxeme_gop.value_ptr;
 
@@ -964,6 +985,7 @@ pub fn setVoxel(self: *Grid, coord: VoxelCoord, value: LiteVoxel) !void {
 
                 // Replace the voxeme in the page with a dirty heterogeneous one
                 voxeme.* = Voxeme.heterogeneous(new_buffer);
+                was_modified = true;
             } else {
                 // we can just set the voxel in the existing buffer
                 const buffer = voxeme.asHeterogeneous();
@@ -979,11 +1001,14 @@ pub fn setVoxel(self: *Grid, coord: VoxelCoord, value: LiteVoxel) !void {
 
                 // Mark dirty so that it can be checked for homogenization later
                 voxeme.is_dirty = true;
+                was_modified = true;
             }
         }
     }
 
-    page.is_dirty = true;
+    if (was_modified) {
+        try self.dirty_pages.put(self.allocator(), page_coord, {});
+    }
 }
 
 /// Generates a simple, blocky, non-greedy mesh for a single Voxeme.
@@ -991,7 +1016,6 @@ pub fn setVoxel(self: *Grid, coord: VoxelCoord, value: LiteVoxel) !void {
 /// 1. A fast path for heterogeneous voxemes that uses pre-calculated visibility flags.
 /// 2. A slower path for homogeneous (or implicitly homogeneous) voxemes that checks the 6 neighboring voxemes.
 pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, voxeme_coord: VoxemeCoord, vertices: *std.ArrayList(Vertex), indices: *std.ArrayList(u32)) !void {
-    // getVoxel and getVoxeme are behaviorally const but are not marked as such.
     const voxeme_ptr = self.getVoxeme(voxeme_coord);
 
     // Fast path for heterogeneous voxemes using pre-calculated visibility flags.
@@ -1128,7 +1152,6 @@ test "Grid API" {
     const coord1 = VoxelCoord{ 5, 5, 5 };
     const coord2 = VoxelCoord{ 6, 6, 6 };
     const voxeme_coord = convert.voxelToVoxeme(coord1);
-    const page_coord = convert.voxelToPage(coord1);
 
     // --- 1. Set Voxel and verify it creates a HETEROGENEOUS voxeme ---
     try grid.setVoxel(coord1, stone);
@@ -1137,16 +1160,18 @@ test "Grid API" {
     try std.testing.expectEqual(stone, grid.getVoxel(coord1).toLite());
     try std.testing.expectEqual(LiteVoxel.empty, grid.getVoxel(coord2).toLite());
 
-    var voxeme = grid.getVoxeme(voxeme_coord) orelse return error.TestFailed;
-    var page = grid.pages.getPtr(page_coord) orelse return error.TestFailed;
-    try std.testing.expect(!voxeme.is_homogeneous);
+    var voxeme_const = grid.getVoxeme(voxeme_coord) orelse return error.TestFailed;
+    try std.testing.expect(!voxeme_const.is_homogeneous);
 
     // --- 2. Verify that a partially full voxeme does NOT homogenize ---
     try grid.update(frame_arena.allocator());
 
     // The voxeme should STILL be heterogeneous because it contains empty voxels.
-    voxeme = grid.getVoxeme(voxeme_coord) orelse return error.TestFailed;
-    try std.testing.expect(!voxeme.is_homogeneous);
+    voxeme_const = grid.getVoxeme(voxeme_coord) orelse return error.TestFailed;
+    try std.testing.expect(!voxeme_const.is_homogeneous);
+
+    // We need a mutable pointer to the voxeme for the next part of the test.
+    var voxeme = grid.pages.getPtr(convert.voxemeToPage(voxeme_coord)).?.heterogeneous.getPtr(voxeme_coord).?;
     try std.testing.expect(!voxeme.is_dirty); // Dirty flag should be cleared though.
 
     // --- 3. Manually fill a voxeme to test TRUE homogenization (Hetero -> Homo) ---
@@ -1156,19 +1181,19 @@ test "Grid API" {
 
     // Mark it as dirty so update() will process it.
     voxeme.is_dirty = true;
-    page.is_dirty = true;
+    try grid.dirty_pages.put(gpa, convert.voxelToPage(coord1), {}); // Mark page dirty for update
     try grid.update(frame_arena.allocator());
 
     // NOW it should be homogeneous.
-    voxeme = grid.getVoxeme(voxeme_coord) orelse return error.TestFailed;
-    try std.testing.expect(voxeme.is_homogeneous);
-    try std.testing.expectEqual(stone, voxeme.payload.homogeneous.toLite());
+    voxeme_const = grid.getVoxeme(voxeme_coord) orelse return error.TestFailed;
+    try std.testing.expect(voxeme_const.is_homogeneous);
+    try std.testing.expectEqual(stone, voxeme_const.payload.homogeneous.toLite());
 
     // --- 4. Test De-homogenization (Homo -> Hetero) on setVoxel ---
     // Change one voxel in the now-homogeneous voxeme.
     try grid.setVoxel(coord2, dirt);
-    voxeme = grid.getVoxeme(voxeme_coord) orelse return error.TestFailed;
-    try std.testing.expect(!voxeme.is_homogeneous); // Should be heterogeneous again.
+    voxeme_const = grid.getVoxeme(voxeme_coord) orelse return error.TestFailed;
+    try std.testing.expect(!voxeme_const.is_homogeneous); // Should be heterogeneous again.
 
     // Check that the change was applied correctly and other voxels retain the old value.
     try std.testing.expectEqual(dirt, grid.getVoxel(coord2).toLite());
@@ -1176,15 +1201,16 @@ test "Grid API" {
 
     // --- 5. Test Homogenization to Empty and Pruning ---
     // Manually clear the entire buffer to test removal.
-    const new_buffer = voxeme.asHeterogeneous();
+    const new_buffer = voxeme_const.asHeterogeneous();
     @memset(new_buffer, Voxel.empty);
 
     // Mark as dirty and run update.
-    voxeme.is_dirty = true;
-    page.is_dirty = true;
+    grid.pages.getPtr(convert.voxemeToPage(voxeme_coord)).?.heterogeneous.getPtr(voxeme_coord).?.is_dirty = true;
+    try grid.dirty_pages.put(gpa, convert.voxelToPage(coord1), {});
     try grid.update(frame_arena.allocator());
 
     // The voxeme and its containing page should now be completely gone.
+    const page_coord = convert.voxelToPage(coord1);
     try std.testing.expect(!grid.isVoxemeMapped(voxeme_coord));
     try std.testing.expect(!grid.isPageMapped(page_coord));
 }
@@ -1210,7 +1236,6 @@ test "Page Homogenization Lifecycle" {
     {
         const page_gop = try grid.pages.getOrPut(gpa, page_coord);
         page_gop.value_ptr.* = .{
-            .is_dirty = true,
             .is_heterogeneous = true,
             .homogeneous = .fromLite(stone), // This value doesn't matter yet, but will be the result
             .heterogeneous = .{},
@@ -1221,11 +1246,12 @@ test "Page Homogenization Lifecycle" {
             const voxeme_coord = convert.pageIndexToVoxemeCoord(page_coord, i);
             try page_ptr.heterogeneous.put(gpa, voxeme_coord, Voxeme.homogeneous(.fromLite(stone)));
         }
+        try grid.dirty_pages.put(gpa, page_coord, {});
 
         try grid.update(frame_arena.allocator());
 
         // Assert that the page is now a single homogeneous entity.
-        const page = grid.pages.getPtr(page_coord) orelse return error.TestFailed;
+        const page = grid.pages.get(page_coord) orelse return error.TestFailed;
         try std.testing.expect(!page.is_heterogeneous);
         try std.testing.expectEqual(stone, page.homogeneous.toLite());
     }
@@ -1237,7 +1263,7 @@ test "Page Homogenization Lifecycle" {
         try grid.setVoxel(mod_coord, dirt);
 
         // Assert that the page has become heterogeneous and contains exactly one override voxeme.
-        const page = grid.pages.getPtr(page_coord) orelse return error.TestFailed;
+        const page = grid.pages.get(page_coord) orelse return error.TestFailed;
         try std.testing.expect(page.is_heterogeneous);
         try std.testing.expectEqual(@as(usize, 1), page.heterogeneous.count());
     }
@@ -1264,7 +1290,7 @@ test "Page Homogenization Lifecycle" {
         // After homogenization, the override should be removed and the page should become pure again.
         try grid.update(frame_arena.allocator());
 
-        const page = grid.pages.getPtr(page_coord) orelse return error.TestFailed;
+        const page = grid.pages.get(page_coord) orelse return error.TestFailed;
         try std.testing.expect(!page.is_heterogeneous);
         try std.testing.expectEqual(stone, page.homogeneous.toLite());
     }
@@ -1416,7 +1442,6 @@ test "Visibility Precalculation" {
         const solid_page_coord = PageCoord{ 1, 1, 1 };
         const page_gop = try grid.pages.getOrPut(gpa, solid_page_coord);
         page_gop.value_ptr.* = .{
-            .is_dirty = false, // Not dirty, already homogeneous
             .is_heterogeneous = false,
             .homogeneous = .fromLite(stone),
             .heterogeneous = .{},
@@ -1503,14 +1528,8 @@ test "voxeme meshing" {
         indices.clearRetainingCapacity();
 
         const voxeme_coord = VoxemeCoord{ 5, 5, 5 };
-        const page_coord = convert.voxemeToPage(voxeme_coord);
-
-        // Manually create a homogeneous voxeme
-        const page_gop = try grid.pages.getOrPut(gpa, page_coord);
-        if (!page_gop.found_existing) page_gop.value_ptr.* = .empty;
-        page_gop.value_ptr.is_heterogeneous = true; // Make page hetero to hold the voxeme
-        _ = try page_gop.value_ptr.heterogeneous.getOrPutValue(gpa, voxeme_coord, Voxeme.homogeneous(.fromLite(stone)));
-        page_gop.value_ptr.is_dirty = true;
+        try insertHomoVoxeme(&grid, gpa, voxeme_coord, stone);
+        // No update needed as the grid is in a valid state for meshing already.
 
         try grid.voxemeMeshBasic(gpa, voxeme_coord, &vertices, &indices);
 
