@@ -40,11 +40,14 @@
           libxkbcommon
           # wine for testing windows builds
           wineWowPackages.stable
+          # renderdoc for debugging
+          renderdoc
         ];
 
         shellHook = ''
           echo "Zig version: ${zig.version}"
           echo "ZLS version: ${zls.version}"
+          echo "$(qrenderdoc --version | head -n 1)"
 
           export PROMPT_NAME='dev:zig@${zig.version}';
 
