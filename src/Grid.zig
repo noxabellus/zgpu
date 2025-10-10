@@ -786,7 +786,7 @@ pub fn getVoxeme(self: *const Grid, coord: VoxemeCoord) ?*Voxeme {
 
 /// Get a mutable pointer to the Voxel at a given coordinate, if it exists within a heterogeneous buffer.
 /// This will return null for voxels in homogeneous pages or voxemes, as they have no unique memory location.
-pub fn getVoxelPtr(self: *Grid, coord: VoxelCoord) ?*Voxel {
+pub fn getVoxelPtr(self: *const Grid, coord: VoxelCoord) ?*Voxel {
     const page_coord = convert.voxelToPage(coord);
     const page = self.pages.getPtr(page_coord) orelse return null;
     // Can only get a pointer if the page is heterogeneous.
@@ -804,7 +804,7 @@ pub fn getVoxelPtr(self: *Grid, coord: VoxelCoord) ?*Voxel {
 }
 
 /// Get the Voxel at the given voxel-space coordinate, if it exists.
-pub fn getVoxel(self: *Grid, coord: VoxelCoord) Voxel {
+pub fn getVoxel(self: *const Grid, coord: VoxelCoord) Voxel {
     const page_coord = convert.voxelToPage(coord);
     const voxeme_coord = convert.voxelToVoxeme(coord);
     const local_voxel_coord = convert.voxelToBuffer(coord);
@@ -992,8 +992,6 @@ pub fn setVoxel(self: *Grid, coord: VoxelCoord, value: LiteVoxel) !void {
 /// 2. A slower path for homogeneous (or implicitly homogeneous) voxemes that checks the 6 neighboring voxemes.
 pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, voxeme_coord: VoxemeCoord, vertices: *std.ArrayList(Vertex), indices: *std.ArrayList(u32)) !void {
     // getVoxel and getVoxeme are behaviorally const but are not marked as such.
-    // We use @constCast to call them, assuming read-only operations are safe.
-    var mut_self = @constCast(self);
     const voxeme_ptr = self.getVoxeme(voxeme_coord);
 
     // Fast path for heterogeneous voxemes using pre-calculated visibility flags.
@@ -1038,7 +1036,7 @@ pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, voxeme_coord: 
     // Slow path: For homogeneous voxemes or empty space within a page that resolves to a solid color.
     // This is taken if getVoxeme returns null (implicit homogeneous) or a homogeneous voxeme.
     const first_voxel_coord = convert.voxemeToVoxel(voxeme_coord, .min);
-    const sample_voxel = mut_self.getVoxel(first_voxel_coord);
+    const sample_voxel = self.getVoxel(first_voxel_coord);
 
     const material_props = self.getMaterialProperties(sample_voxel.material_id);
     // If the entire voxeme is effectively empty/non-opaque, there's nothing to mesh.
@@ -1054,7 +1052,7 @@ pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, voxeme_coord: 
     for (neighbor_offsets, 0..) |offset, face_index| {
         // To check the neighbor, we get a voxel from the adjacent voxeme.
         const neighbor_voxeme_coord = voxeme_coord + offset;
-        const sample_voxel_in_neighbor = mut_self.getVoxel(convert.voxemeToVoxel(neighbor_voxeme_coord, .min));
+        const sample_voxel_in_neighbor = self.getVoxel(convert.voxemeToVoxel(neighbor_voxeme_coord, .min));
 
         if (!self.getMaterialProperties(sample_voxel_in_neighbor.material_id).is_opaque) {
             // Neighbor is not opaque, so this face is visible.
