@@ -23,11 +23,17 @@ test {
     std.testing.refAllDecls(@This());
 }
 
+// Define a depth format that we'll use for our depth texture.
+const DEPTH_FORMAT = wgpu.TextureFormat.depth32_float;
+
 const Demo = struct {
     instance: wgpu.Instance = null,
     surface: wgpu.Surface = null,
     adapter: wgpu.Adapter = null,
     device: wgpu.Device = null,
+    // We need to store the depth texture and its view.
+    depth_texture: wgpu.Texture = null,
+    depth_view: wgpu.TextureView = null,
     config: wgpu.SurfaceConfiguration = .{},
 };
 
@@ -77,6 +83,28 @@ const shader_text =
     \\}
 ;
 
+// This function creates the depth texture and its view.
+// It will be called on startup and whenever the window is resized.
+fn createDepthTexture(d: *Demo) void {
+    // If old resources exist, release them first.
+    if (d.depth_view) |v| wgpu.textureViewRelease(v);
+    if (d.depth_texture) |t| wgpu.textureRelease(t);
+
+    const depth_texture_descriptor = wgpu.TextureDescriptor{
+        .label = .fromSlice("depth_texture"),
+        .size = .{ .width = d.config.width, .height = d.config.height, .depth_or_array_layers = 1 },
+        .mip_level_count = 1,
+        .sample_count = 1,
+        .dimension = .@"2d",
+        .format = DEPTH_FORMAT,
+        .usage = wgpu.TextureUsage.renderAttachmentUsage,
+        .view_format_count = 1,
+        .view_formats = &.{DEPTH_FORMAT},
+    };
+    d.depth_texture = wgpu.deviceCreateTexture(d.device, &depth_texture_descriptor);
+    d.depth_view = wgpu.textureCreateView(d.depth_texture, null);
+}
+
 pub fn main() !void {
     var timer = try std.time.Timer.start();
 
@@ -123,6 +151,8 @@ pub fn main() !void {
     defer glfw.destroyWindow(window);
     glfw.setWindowUserPointer(window, &demo);
 
+    // --- UPDATE RESIZE CALLBACK ---
+    // The resize callback must now also recreate the depth texture.
     _ = glfw.setFramebufferSizeCallback(window, &struct {
         fn handle_glfw_framebuffer_size(w: *glfw.Window, width: i32, height: i32) callconv(.c) void {
             if (width <= 0 and height <= 0) return;
@@ -131,6 +161,8 @@ pub fn main() !void {
             d.config.width = @intCast(width);
             d.config.height = @intCast(height);
             wgpu.surfaceConfigure(d.surface, &d.config);
+            // Recreate depth texture with new size.
+            createDepthTexture(d);
         }
     }.handle_glfw_framebuffer_size);
     if (comptime builtin.os.tag != .windows) {
@@ -175,6 +207,10 @@ pub fn main() !void {
     while (demo.device == null) wgpu.instanceProcessEvents(demo.instance);
     defer wgpu.deviceRelease(demo.device);
 
+    // Make sure to release the depth resources on exit.
+    defer if (demo.depth_view) |v| wgpu.textureViewRelease(v);
+    defer if (demo.depth_texture) |t| wgpu.textureRelease(t);
+
     const queue = wgpu.deviceGetQueue(demo.device);
     defer wgpu.queueRelease(queue);
     var surface_capabilities: wgpu.SurfaceCapabilities = undefined;
@@ -198,8 +234,10 @@ pub fn main() !void {
         demo.config.height = @intCast(height);
     }
     wgpu.surfaceConfigure(demo.surface, &demo.config);
+    // Create the depth texture for the first time.
+    createDepthTexture(&demo);
 
-    // --- (3) CREATE UNIFORM BUFFER & BIND GROUP ---
+    // --- CREATE UNIFORM BUFFER & BIND GROUP ---
     const camera_buffer = wgpu.deviceCreateBuffer(demo.device, &.{
         .label = .fromSlice("camera_buffer"),
         .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
@@ -238,7 +276,6 @@ pub fn main() !void {
     const shader_module = try wgpu.loadShaderText(demo.device, "triangle.wgsl", shader_text);
     defer wgpu.shaderModuleRelease(shader_module);
 
-    // The pipeline layout needs to know about the bind group layout.
     const pipeline_layout = wgpu.deviceCreatePipelineLayout(demo.device, &.{
         .label = .fromSlice("pipeline_layout"),
         .bind_group_layout_count = 1,
@@ -271,6 +308,24 @@ pub fn main() !void {
         .targets = &.{color_target_state},
     };
 
+    // --- CONFIGURE DEPTH/STENCIL STATE ---
+    // Create a depth stencil state to enable depth testing.
+    const depth_stencil_state = wgpu.DepthStencilState{
+        .format = DEPTH_FORMAT,
+        .depth_write_enabled = .true,
+        .depth_compare = .less, // 1.
+        .stencil_front = .{}, // 2.
+        .stencil_back = .{}, // 2.
+        .stencil_read_mask = 0, // 3.
+        .stencil_write_mask = 0, // 3.
+        .depth_bias = 0,
+        .depth_bias_slope_scale = 0.0,
+        .depth_bias_clamp = 0.0,
+    };
+    // 1. Fragments with smaller Z values (closer) will pass the test.
+    // 2. We aren't using stencil operations, so these are empty.
+    // 3. We aren't using stencil operations, so these are zero.
+
     const render_pipeline = wgpu.deviceCreateRenderPipeline(demo.device, &wgpu.RenderPipelineDescriptor{
         .label = .fromSlice("render_pipeline"),
         .layout = pipeline_layout,
@@ -283,10 +338,11 @@ pub fn main() !void {
         .primitive = .{
             .topology = .triangle_list,
             .strip_index_format = .undefined,
-            .cull_mode = .none,
+            .cull_mode = .back,
             .front_face = .ccw,
         },
-        .depth_stencil = null,
+        // --- ATTACH DEPTH/STENCIL STATE TO PIPELINE ---
+        .depth_stencil = &depth_stencil_state,
         .multisample = .{
             .count = 1,
             .mask = 0xFFFFFFFF,
@@ -296,14 +352,21 @@ pub fn main() !void {
     });
     defer wgpu.renderPipelineRelease(render_pipeline);
 
-    // --- Create Buffers ---
-    // The vertices now lie on the X/Z plane.
+    // --- ADD A SECOND TRIANGLE ---
     const vertices = [_]Vertex{
-        .{ .position = .{ 0.0, 0.0, 0.5 }, .color = .{ 1.0, 0.0, 0.0 } }, // Top point
-        .{ .position = .{ -0.5, 0.0, -0.5 }, .color = .{ 0.0, 1.0, 0.0 } }, // Bottom-left
-        .{ .position = .{ 0.5, 0.0, -0.5 }, .color = .{ 0.0, 0.0, 1.0 } }, // Bottom-right
+        // Original triangle (now in the back, at z=0.0)
+        .{ .position = .{ 0.0, 0.5, 0.0 }, .color = .{ 1.0, 0.0, 0.0 } }, // Top
+        .{ .position = .{ 0.5, -0.5, 0.0 }, .color = .{ 0.0, 0.0, 1.0 } }, // Bottom-right
+        .{ .position = .{ -0.5, -0.5, 0.0 }, .color = .{ 0.0, 1.0, 0.0 } }, // Bottom-left
+        // New magenta triangle (in front, at z=-0.5)
+        .{ .position = .{ 0.0 - 0.2, 0.5 - 0.2, 0.5 }, .color = .{ 1.0, 0.0, 1.0 } }, // Top
+        .{ .position = .{ 0.5 - 0.2, -0.5 - 0.2, 0.5 }, .color = .{ 1.0, 0.0, 1.0 } }, // Bottom-right
+        .{ .position = .{ -0.5 - 0.2, -0.5 - 0.2, 0.5 }, .color = .{ 1.0, 0.0, 1.0 } }, // Bottom-left
     };
-    const indices = [_]u32{ 0, 1, 2 };
+    const indices = [_]u32{
+        0, 2, 1, // First triangle (CCW winding order)
+        3, 5, 4, // Second triangle (CCW winding order)
+    };
 
     const vertex_buffer = wgpu.deviceCreateBuffer(demo.device, &.{
         .label = .fromSlice("vertex_buffer"),
@@ -335,7 +398,6 @@ pub fn main() !void {
         glfw.pollEvents();
         _ = arena_state.reset(.free_all);
 
-        // Calculate the view-projection matrix each frame.
         var camera_uniform: CameraUniform = undefined;
         {
             var width: i32 = 0;
@@ -345,12 +407,11 @@ pub fn main() !void {
 
             const proj = linalg.mat4_perspective(linalg.deg_to_rad * 45.0, aspect, 0.1, 100.0);
             const view = linalg.mat4_look_at(
-                .{ 0.5, 1.0, 2.0 }, // Eye position (off-center and above)
-                .{ 0.0, 0.0, 0.0 }, // Target (center of the triangle)
+                .{ 0.5, 1.0, 2.0 }, // Eye position
+                .{ 0.0, 0.0, 0.0 }, // Target
                 .{ 0.0, 1.0, 0.0 }, // Up vector
             );
 
-            // Remember: matrix multiplication order is important!
             camera_uniform.view_proj = linalg.mat4_mul(proj, view);
         }
         wgpu.queueWriteBuffer(queue, camera_buffer, 0, &camera_uniform, @sizeOf(CameraUniform));
@@ -368,6 +429,8 @@ pub fn main() !void {
                     demo.config.width = @intCast(width);
                     demo.config.height = @intCast(height);
                     wgpu.surfaceConfigure(demo.surface, &demo.config);
+                    // Also recreate depth texture if surface is lost/outdated.
+                    createDepthTexture(&demo);
                 }
                 continue :main_loop;
             },
@@ -383,6 +446,17 @@ pub fn main() !void {
         const encoder = wgpu.deviceCreateCommandEncoder(demo.device, &.{ .label = .fromSlice("main_encoder") });
         defer wgpu.commandEncoderRelease(encoder);
 
+        // --- ATTACH DEPTH VIEW TO RENDER PASS ---
+        var depth_stencil_attachment = wgpu.RenderPassDepthStencilAttachment{
+            .view = demo.depth_view,
+            .depth_load_op = .clear,
+            .depth_store_op = .store,
+            .depth_clear_value = 1.0,
+            .depth_read_only = .False,
+            .stencil_load_op = .undefined, // not using stencil
+            .stencil_store_op = .undefined, // not using stencil
+        };
+
         const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
             .label = .fromSlice("main_render_pass"),
             .color_attachment_count = 1,
@@ -393,13 +467,14 @@ pub fn main() !void {
                 .store_op = .store,
                 .clear_value = wgpu.Color{ .r = 0.1, .g = 0.1, .b = 0.1, .a = 1 },
             }},
+            .depth_stencil_attachment = &depth_stencil_attachment,
         });
 
-        // --- SET BIND GROUP & DRAW ---
         wgpu.renderPassEncoderSetPipeline(render_pass, render_pipeline);
-        wgpu.renderPassEncoderSetBindGroup(render_pass, 0, camera_bind_group, 0, null); // Set the camera bind group
+        wgpu.renderPassEncoderSetBindGroup(render_pass, 0, camera_bind_group, 0, null);
         wgpu.renderPassEncoderSetIndexBuffer(render_pass, index_buffer, .uint32, 0, @sizeOf(@TypeOf(indices)));
         wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, vertex_buffer, 0, @sizeOf(@TypeOf(vertices)));
+        // --- DRAW ALL 6 INDICES ---
         wgpu.renderPassEncoderDrawIndexed(render_pass, indices.len, 1, 0, 0, 0);
 
         wgpu.renderPassEncoderEnd(render_pass);
