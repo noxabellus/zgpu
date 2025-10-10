@@ -362,8 +362,9 @@ pub const Visibility = packed struct(u6) {
 /// Material properties associated with a MaterialId in a Grid.
 pub const MaterialProperties = packed struct {
     is_opaque: bool,
+    color: vec3,
 
-    pub const none = MaterialProperties{ .is_opaque = false };
+    pub const none = MaterialProperties{ .is_opaque = false, .color = .{ 0, 0, 0 } };
 };
 
 /// A Lite voxel for input with setVoxel.
@@ -425,9 +426,10 @@ pub const Vertex = packed struct {
     pos: vec3,
     norm: vec3,
     uv: vec2,
+    color: vec3,
 
-    pub fn init(pos: vec3, norm: vec3, uv: vec2) Vertex {
-        return .{ .pos = pos, .norm = norm, .uv = uv };
+    pub fn init(pos: vec3, norm: vec3, uv: vec2, color: vec3) Vertex {
+        return .{ .pos = pos, .norm = norm, .uv = uv, .color = color };
     }
 };
 
@@ -478,13 +480,14 @@ fn addFace(
     origin: Position,
     scale: f32,
     face_index: usize,
+    color: vec3,
 ) !void {
     const base_vertex_index: u32 = @intCast(vertices.items.len);
     const data = &face_data[face_index];
 
     for (data.vertices, data.uvs) |v_offset, uv| {
         const pos = origin + v_offset * @as(vec3, @splat(scale));
-        try vertices.append(gpa, Vertex.init(pos, data.normal, uv));
+        try vertices.append(gpa, Vertex.init(pos, data.normal, uv, color));
     }
 
     try indices.appendSlice(gpa, &.{
@@ -1008,7 +1011,8 @@ pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, voxeme_coord: 
                         const index = convert.bufferToIndex(.{ x, y, z });
                         const voxel = buffer[index];
 
-                        if (!self.getMaterialProperties(voxel.material_id).is_opaque) {
+                        const material_props = self.getMaterialProperties(voxel.material_id);
+                        if (!material_props.is_opaque) {
                             continue;
                         }
 
@@ -1016,11 +1020,12 @@ pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, voxeme_coord: 
                         if (vis_bits == 0) continue; // Quick skip if no faces are visible
 
                         const voxel_world_pos = convert.voxelToWorld(start_voxel_coord + VoxelCoord{ @intCast(x), @intCast(y), @intCast(z) }, .min);
+                        const color = material_props.color;
 
                         // Iterate through the 6 faces, adding a quad for each visible one.
                         for (0..6) |face_index| {
                             if ((vis_bits >> @as(u3, @intCast(face_index))) & 1 == 1) {
-                                try addFace(gpa, vertices, indices, voxel_world_pos, voxel_scale, face_index);
+                                try addFace(gpa, vertices, indices, voxel_world_pos, voxel_scale, face_index, color);
                             }
                         }
                     }
@@ -1035,11 +1040,13 @@ pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, voxeme_coord: 
     const first_voxel_coord = convert.voxemeToVoxel(voxeme_coord, .min);
     const sample_voxel = mut_self.getVoxel(first_voxel_coord);
 
+    const material_props = self.getMaterialProperties(sample_voxel.material_id);
     // If the entire voxeme is effectively empty/non-opaque, there's nothing to mesh.
-    if (!self.getMaterialProperties(sample_voxel.material_id).is_opaque) {
+    if (!material_props.is_opaque) {
         return;
     }
 
+    const color = material_props.color;
     // The voxeme is solid. Mesh it as one large cube, checking 6 neighbors for visibility.
     const voxeme_world_pos = convert.voxemeToWorld(voxeme_coord, .min);
     const neighbor_offsets = [_]VoxelCoord{ .{ 1, 0, 0 }, .{ -1, 0, 0 }, .{ 0, 1, 0 }, .{ 0, -1, 0 }, .{ 0, 0, 1 }, .{ 0, 0, -1 } };
@@ -1051,7 +1058,7 @@ pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, voxeme_coord: 
 
         if (!self.getMaterialProperties(sample_voxel_in_neighbor.material_id).is_opaque) {
             // Neighbor is not opaque, so this face is visible.
-            try addFace(gpa, vertices, indices, voxeme_world_pos, voxeme_scale, face_index);
+            try addFace(gpa, vertices, indices, voxeme_world_pos, voxeme_scale, face_index, color);
         }
     }
 }
@@ -1114,8 +1121,8 @@ test "Grid API" {
     var frame_arena = std.heap.ArenaAllocator.init(gpa);
     defer frame_arena.deinit();
 
-    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true });
-    const dirt_mat = try grid.bindMaterial(.{ .is_opaque = true });
+    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.5, 0.5, 0.5 } });
+    const dirt_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.6, 0.4, 0.2 } });
 
     const stone: LiteVoxel = .{ .material_id = stone_mat, .state = 10 };
     const dirt: LiteVoxel = .{ .material_id = dirt_mat, .state = 20 };
@@ -1192,8 +1199,8 @@ test "Page Homogenization Lifecycle" {
     var frame_arena = std.heap.ArenaAllocator.init(gpa);
     defer frame_arena.deinit();
 
-    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true });
-    const dirt_mat = try grid.bindMaterial(.{ .is_opaque = true });
+    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.5, 0.5, 0.5 } });
+    const dirt_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.6, 0.4, 0.2 } });
 
     const stone: LiteVoxel = .{ .material_id = stone_mat, .state = 10 };
     const dirt: LiteVoxel = .{ .material_id = dirt_mat };
@@ -1294,8 +1301,8 @@ test "Visibility Precalculation" {
     defer frame_arena.deinit();
 
     // --- Setup Materials ---
-    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true });
-    const glass_mat = try grid.bindMaterial(.{ .is_opaque = false });
+    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.5, 0.5, 0.5 } });
+    const glass_mat = try grid.bindMaterial(.{ .is_opaque = false, .color = .{ 0.8, 0.9, 1.0 } });
     const stone: LiteVoxel = .{ .material_id = stone_mat };
     const glass: LiteVoxel = .{ .material_id = glass_mat };
 
@@ -1443,7 +1450,7 @@ test "voxeme meshing" {
     var indices = std.ArrayList(u32).empty;
     defer indices.deinit(gpa);
 
-    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true });
+    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.5, 0.5, 0.5 } });
     const stone: LiteVoxel = .{ .material_id = stone_mat };
 
     // --- Case 1: Single Voxel (Heterogeneous Path) ---

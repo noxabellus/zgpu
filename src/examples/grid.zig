@@ -53,11 +53,13 @@ const shader_text =
     \\    @location(0) pos: vec3<f32>,
     \\    @location(1) norm: vec3<f32>,
     \\    @location(2) uv: vec2<f32>,
+    \\    @location(3) color: vec3<f32>,
     \\};
     \\
     \\struct VertexOutput {
     \\    @builtin(position) clip_position: vec4<f32>,
     \\    @location(0) norm: vec3<f32>,
+    \\    @location(1) color: vec3<f32>,
     \\};
     \\
     \\@vertex
@@ -67,6 +69,7 @@ const shader_text =
     \\    var out: VertexOutput;
     \\    out.clip_position = u_camera.view_proj * vec4<f32>(model.pos, 1.0);
     \\    out.norm = model.norm;
+    \\    out.color = model.color;
     \\    return out;
     \\}
     \\
@@ -77,7 +80,7 @@ const shader_text =
     \\    let ambient = 0.2;
     \\    let diffuse = max(dot(in.norm, light_dir), 0.0) * 0.8;
     \\    let intensity = ambient + diffuse;
-    \\    return vec4<f32>(intensity, intensity, intensity, 1.0);
+    \\    return vec4<f32>(in.color * intensity, 1.0);
     \\}
 ;
 
@@ -249,11 +252,12 @@ pub fn main() !void {
     });
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
 
-    // Vertex attributes now match Grid.Vertex: pos, norm, uv
+    // Vertex attributes now match Grid.Vertex: pos, norm, uv, color
     const vertex_attributes = [_]wgpu.VertexAttribute{
         .{ .shaderLocation = 0, .offset = @offsetOf(Vertex, "pos"), .format = .float32x3 },
         .{ .shaderLocation = 1, .offset = @offsetOf(Vertex, "norm"), .format = .float32x3 },
         .{ .shaderLocation = 2, .offset = @offsetOf(Vertex, "uv"), .format = .float32x2 },
+        .{ .shaderLocation = 3, .offset = @offsetOf(Vertex, "color"), .format = .float32x3 },
     };
 
     const vertex_buffer_layout = wgpu.VertexBufferLayout{
@@ -327,26 +331,47 @@ pub fn main() !void {
     var grid = try Grid.init(gpa);
     defer grid.deinit();
 
-    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true });
+    // --- DEFINE MATERIALS ---
+    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.5, 0.55, 0.6 } });
     const stone: Grid.LiteVoxel = .{ .material_id = stone_mat };
 
-    // Create a 3x3x3 cube of voxels
+    // Define a second material for dirt
+    const dirt_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.6, 0.4, 0.2 } });
+    const dirt: Grid.LiteVoxel = .{ .material_id = dirt_mat };
+
+    // --- GENERATE A SPHERE ---
+    // Create a sphere made of two materials
+    const radius: i32 = 7;
+    const radius_sq = @as(f32, @floatFromInt(radius * radius));
     {
-        var z: i32 = -1;
-        while (z <= 1) : (z += 1) {
-            var y: i32 = -1;
-            while (y <= 1) : (y += 1) {
-                var x: i32 = -1;
-                while (x <= 1) : (x += 1) {
-                    try grid.setVoxel(.{ x, y, z }, stone);
+        var z: i32 = -radius;
+        while (z <= radius) : (z += 1) {
+            var y: i32 = -radius;
+            while (y <= radius) : (y += 1) {
+                var x: i32 = -radius;
+                while (x <= radius) : (x += 1) {
+                    const xf = @as(f32, @floatFromInt(x));
+                    const yf = @as(f32, @floatFromInt(y));
+                    const zf = @as(f32, @floatFromInt(z));
+
+                    // Check if the point is within the sphere's radius
+                    if (xf * xf + yf * yf + zf * zf <= radius_sq) {
+                        // Use dirt for the top half, stone for the bottom half
+                        if (y <= 0) {
+                            try grid.setVoxel(.{ x + radius, y + radius, z + radius }, stone);
+                        } else {
+                            try grid.setVoxel(.{ x + radius, y + radius, z + radius }, dirt);
+                        }
+                    }
                 }
             }
         }
     }
+
     // Update the grid to calculate visibility, etc.
     try grid.update(frame_arena);
 
-    // Generate the mesh for the voxeme containing our cube
+    // Generate the mesh for the voxeme containing our sphere
     var vertices = std.ArrayList(Vertex).empty;
     defer vertices.deinit(gpa);
     var indices = std.ArrayList(u32).empty;
@@ -379,6 +404,8 @@ pub fn main() !void {
 
     log.info("startup completed in {d} ms", .{startup_ms});
 
+    var time = try std.time.Timer.start();
+
     // --- Main Loop ---
     main_loop: while (!glfw.windowShouldClose(window)) {
         glfw.pollEvents();
@@ -393,9 +420,15 @@ pub fn main() !void {
             const aspect = if (height == 0) 1.0 else @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(height));
 
             const proj = linalg.mat4_perspective(linalg.deg_to_rad * 60.0, aspect, 0.1, 100.0);
+
+            const ns_since_start = time.read();
+            const time_since_start = @as(f32, @floatFromInt(ns_since_start)) / std.time.ns_per_s;
+            const x = std.math.sin(time_since_start) * 2.0;
+            const z = std.math.cos(time_since_start) * 2.0;
+            // Adjust camera position to view the larger sphere
             const view = linalg.mat4_look_at(
-                .{ 5.0, 5.0, 5.0 }, // Eye position
-                .{ 0.0, 0.0, 0.0 }, // Target (center of the cube)
+                .{ x, 2.0, z }, // Eye position
+                .{ 0.0, 0.0, 0.0 }, // Target (center of the sphere)
                 .{ 0.0, 1.0, 0.0 }, // Up vector
             );
 
