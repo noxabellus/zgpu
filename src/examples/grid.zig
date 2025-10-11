@@ -412,6 +412,7 @@ pub fn main() !void {
     const dirt_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.6, 0.4, 0.2 } });
     const dirt: Grid.LiteVoxel = .{ .material_id = dirt_mat };
 
+    const gen_start = timer.read();
     // --- GENERATE A SPHERE ---
     const radius: i32 = 32;
     const radius_sq = @as(f32, @floatFromInt(radius * radius));
@@ -439,11 +440,14 @@ pub fn main() !void {
             }
         }
     }
+    const gen_end = timer.read();
 
     log.info("generated sphere with radius {d} voxels", .{radius});
 
+    const update_start = timer.read();
     // Update the grid to calculate visibility, etc.
     try grid.update(frame_arena);
+    const update_end = timer.read();
 
     log.info("grid update complete", .{});
 
@@ -471,6 +475,7 @@ pub fn main() !void {
         }
     }
 
+    const mesh_start = timer.read();
     // Generate the mesh for the world containing our sphere
     var vertices = std.ArrayList(Grid.Vertex).empty;
     defer vertices.deinit(gpa);
@@ -478,6 +483,8 @@ pub fn main() !void {
     defer indices.deinit(gpa);
 
     try grid.worldMeshBasic(gpa, .{ -1, -1, -1 }, .{ 1, 1, 1 }, &vertices, &indices);
+
+    const mesh_end = timer.read();
 
     log.info("generated mesh with {d} vertices and {d} indices", .{ vertices.items.len, indices.items.len });
 
@@ -501,8 +508,15 @@ pub fn main() !void {
     wgpu.queueWriteBuffer(queue, index_buffer, 0, indices.items.ptr, indices.items.len * @sizeOf(u32));
 
     const startup_ms = debug.start(&timer);
+    const gen_ns = gen_end - gen_start;
+    const update_ns = update_end - update_start;
+    const mesh_ns = mesh_end - mesh_start;
 
-    log.info("startup completed in {d} ms", .{startup_ms});
+    const gen_ms = @as(f64, @floatFromInt(gen_ns)) / @as(f64, std.time.ns_per_ms);
+    const update_ms = @as(f64, @floatFromInt(update_ns)) / @as(f64, std.time.ns_per_ms);
+    const mesh_ms = @as(f64, @floatFromInt(mesh_ns)) / @as(f64, std.time.ns_per_ms);
+
+    log.info("startup completed in {d:0.3}ms\n  gen: {d:0.3}ms, update: {d:0.3}ms, mesh: {d:0.3}ms", .{ startup_ms, gen_ms, update_ms, mesh_ms });
 
     var frame_timer = try std.time.Timer.start();
 

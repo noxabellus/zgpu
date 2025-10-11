@@ -16,23 +16,23 @@ test "coordinate conversions" {
     const page_length_in_voxels: i32 = @intCast(Grid.page_length * Grid.voxeme_length);
 
     try std.testing.expectEqual(@as(VoxemeCoord, .{ 0, 0, 0 }), Grid.convert.voxelToVoxeme(.{ 0, 0, 0 }));
-    try std.testing.expectEqual(@as(BufferCoord, .{ 0, 0, 0 }), Grid.convert.voxelToBuffer(.{ 0, 0, 0 }));
+    try std.testing.expectEqual(@as(BufferCoord, .{ 0, 0, 0 }), Grid.convert.voxelToLocal(.{ 0, 0, 0 }));
 
     try std.testing.expectEqual(@as(VoxemeCoord, .{ 0, 0, 0 }), Grid.convert.voxelToVoxeme(.{ 15, 5, 1 }));
-    try std.testing.expectEqual(@as(BufferCoord, .{ 15, 5, 1 }), Grid.convert.voxelToBuffer(.{ 15, 5, 1 }));
+    try std.testing.expectEqual(@as(BufferCoord, .{ 15, 5, 1 }), Grid.convert.voxelToLocal(.{ 15, 5, 1 }));
 
     try std.testing.expectEqual(@as(VoxemeCoord, .{ 1, 2, 3 }), Grid.convert.voxelToVoxeme(.{ 16, 32, 48 }));
-    try std.testing.expectEqual(@as(BufferCoord, .{ 0, 0, 0 }), Grid.convert.voxelToBuffer(.{ 16, 32, 48 }));
+    try std.testing.expectEqual(@as(BufferCoord, .{ 0, 0, 0 }), Grid.convert.voxelToLocal(.{ 16, 32, 48 }));
 
     // Test negative coordinates, the most common failure point
     try std.testing.expectEqual(@as(VoxemeCoord, .{ -1, -1, -1 }), Grid.convert.voxelToVoxeme(.{ -1, -1, -1 }));
-    try std.testing.expectEqual(@as(BufferCoord, .{ 15, 15, 15 }), Grid.convert.voxelToBuffer(.{ -1, -1, -1 }));
+    try std.testing.expectEqual(@as(BufferCoord, .{ 15, 15, 15 }), Grid.convert.voxelToLocal(.{ -1, -1, -1 }));
 
     try std.testing.expectEqual(@as(VoxemeCoord, .{ -1, -1, -1 }), Grid.convert.voxelToVoxeme(.{ -16, -16, -16 }));
-    try std.testing.expectEqual(@as(BufferCoord, .{ 0, 0, 0 }), Grid.convert.voxelToBuffer(.{ -16, -16, -16 }));
+    try std.testing.expectEqual(@as(BufferCoord, .{ 0, 0, 0 }), Grid.convert.voxelToLocal(.{ -16, -16, -16 }));
 
     try std.testing.expectEqual(@as(VoxemeCoord, .{ -2, -2, -2 }), Grid.convert.voxelToVoxeme(.{ -17, -17, -17 }));
-    try std.testing.expectEqual(@as(BufferCoord, .{ 15, 15, 15 }), Grid.convert.voxelToBuffer(.{ -17, -17, -17 }));
+    try std.testing.expectEqual(@as(BufferCoord, .{ 15, 15, 15 }), Grid.convert.voxelToLocal(.{ -17, -17, -17 }));
 
     // Test voxel -> page conversions using the corrected length
     try std.testing.expectEqual(@as(PageCoord, .{ 0, 0, 0 }), Grid.convert.voxelToPage(.{ 0, 0, 0 }));
