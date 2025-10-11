@@ -17,6 +17,7 @@ pub const Grid = @import("Grid.zig");
 pub const InputState = @import("InputState.zig");
 pub const linalg = @import("linalg.zig");
 pub const Ui = @import("Ui.zig");
+pub const tests = @import("tests.zig");
 
 test {
     std.testing.refAllDecls(@This());

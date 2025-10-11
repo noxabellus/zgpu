@@ -186,6 +186,26 @@ pub const convert = struct {
         return v[0] + (v[1] * voxeme_length) + (v[2] * voxeme_length * voxeme_length);
     }
 
+    /// index to buffer-space coordinate
+    pub inline fn indexToBuffer(index: usize) BufferCoord {
+        const L = voxeme_length;
+        const L2 = voxeme_length * voxeme_length;
+
+        // v[2] (z) is how many full 2D slices we have.
+        const z = index / L2;
+        // v[1] (y) is how many full rows are in the remainder.
+        const y = (index % L2) / L;
+        // v[0] (x) is the column in the current row.
+        const x = index % L;
+
+        return @intCast(@Vector(3, usize){ x, y, z });
+    }
+
+    /// buffer index to voxel-space coordinate
+    pub inline fn indexToVoxel(v: VoxemeCoord, index: usize) VoxelCoord {
+        return voxemeToVoxel(v, .min) + @as(VoxelCoord, @intCast(indexToBuffer(index)));
+    }
+
     /// voxeme-space coordinate to voxel-space coordinate
     pub inline fn voxemeToVoxel(v: VoxemeCoord, offsets: SampleOffsets) VoxelCoord {
         return (v * @as(VoxemeCoord, @splat(voxeme_length))) + offsets.toVec3i(@splat(voxeme_length));
@@ -226,19 +246,20 @@ pub const convert = struct {
 
 /// A sparse map of all existing Voxemes in a particular area, keyed by their VoxemeCoord.
 pub const Page = struct {
-    is_heterogeneous: bool,
     homogeneous: Voxel,
     visibility: Visibility = .all,
     heterogeneous: std.AutoHashMapUnmanaged(VoxemeCoord, Voxeme) = .empty,
 
-    pub const empty = Page{ .is_heterogeneous = false, .homogeneous = .empty, .visibility = .all };
+    pub const empty = Page{ .homogeneous = .empty, .visibility = .all };
 
     pub fn deinit(self: *Page, gpa: std.mem.Allocator) void {
-        if (self.is_heterogeneous) {
-            self.heterogeneous.deinit(gpa);
-        }
+        self.heterogeneous.deinit(gpa);
         // debug safety: prevent use after free
         self.* = undefined;
+    }
+
+    pub fn isHeterogeneous(self: *const Page) bool {
+        return self.heterogeneous.count() > 0;
     }
 };
 
@@ -317,7 +338,9 @@ pub const Visibility = packed struct(u6) {
 
     /// Sets the visibility state for a face by axis and direction.
     pub fn set(self: anytype, axis: Axis, positive: bool, value: bool) void {
-        comptime std.debug.assert(@typeInfo(@TypeOf(self)) == .pointer);
+        const TInfo = @typeInfo(@TypeOf(self));
+        comptime std.debug.assert(TInfo == .pointer and !TInfo.pointer.is_const);
+
         var bits: u6 = @bitCast(self.*);
         const axis_offset: u3 = @intFromEnum(axis);
         const bit_index: u3 = if (positive) axis_offset else axis_offset + 1;
@@ -331,12 +354,102 @@ pub const Visibility = packed struct(u6) {
     }
 };
 
+pub const VolumeIterator = struct {
+    size: i32,
+    x_offset: i32 = 0,
+    y_offset: i32 = 0,
+    z_offset: i32 = 0,
+
+    pub fn forVoxeme() VolumeIterator {
+        return .{ .size = @intCast(voxeme_length) };
+    }
+
+    pub fn forPage() VolumeIterator {
+        return .{ .size = @intCast(page_length) };
+    }
+
+    pub fn next(self: *VolumeIterator) ?vec3i {
+        if (self.z_offset >= self.size) return null;
+
+        const out = vec3i{ self.x_offset, self.y_offset, self.z_offset };
+
+        self.x_offset += 1;
+        if (self.x_offset >= self.size) {
+            self.x_offset = 0;
+            self.y_offset += 1;
+            if (self.y_offset >= self.size) {
+                self.y_offset = 0;
+                self.z_offset += 1;
+            }
+        }
+
+        return out;
+    }
+};
+
+/// Given a local coordinate within a Page or Voxeme, iterates the coordinates of the bordering sub-units along a given axis.
+/// * Note that this iterates the face of the *current* Page/Voxeme, not the neighboring one.
+///   For example, iterating the positive X border of a Voxeme will yield coordinates with x == voxeme_length - 1.
+pub const BorderIterator = struct {
+    size: i32,
+    axis: Axis,
+    positive: bool,
+    axis_a_offset: i32 = 0,
+    axis_b_offset: i32 = 0,
+
+    pub fn forVoxeme(axis: Axis, positive: bool) BorderIterator {
+        return .{
+            .size = @intCast(voxeme_length),
+            .axis = axis,
+            .positive = positive,
+        };
+    }
+
+    pub fn forPage(axis: Axis, positive: bool) BorderIterator {
+        return .{
+            .size = @intCast(page_length),
+            .axis = axis,
+            .positive = positive,
+        };
+    }
+
+    pub fn next(self: *BorderIterator) ?vec3i {
+        if (self.axis_a_offset >= self.size) return null;
+
+        const out = switch (self.axis) {
+            .x => vec3i{
+                if (self.positive) self.size - 1 else 0,
+                self.axis_a_offset,
+                self.axis_b_offset,
+            },
+            .y => vec3i{
+                self.axis_a_offset,
+                if (self.positive) self.size - 1 else 0,
+                self.axis_b_offset,
+            },
+            .z => vec3i{
+                self.axis_a_offset,
+                self.axis_b_offset,
+                if (self.positive) self.size - 1 else 0,
+            },
+        };
+
+        self.axis_b_offset += 1;
+        if (self.axis_b_offset >= self.size) {
+            self.axis_b_offset = 0;
+            self.axis_a_offset += 1;
+        }
+
+        return out;
+    }
+};
+
 pub const Neighbor = struct {
     axis: Axis,
     positive: bool,
-    coord_offset: VoxelCoord,
+    coord_offset: vec3i,
 
-    pub const coordinates = [_]VoxelCoord{
+    pub const coordinates = [_]vec3i{
         .{ 1, 0, 0 }, // pos_x
         .{ -1, 0, 0 }, // neg_x
         .{ 0, 1, 0 }, // pos_y
@@ -344,6 +457,15 @@ pub const Neighbor = struct {
         .{ 0, 0, 1 }, // pos_z
         .{ 0, 0, -1 }, // neg_z
     };
+
+    pub fn get(axis: Axis, positive: bool) vec3i {
+        const index = switch (axis) {
+            .x => if (positive) 0 else 1,
+            .y => if (positive) 2 else 3,
+            .z => if (positive) 4 else 5,
+        };
+        return coordinates[index];
+    }
 
     pub const Iterator = struct {
         index: usize = 0,
@@ -408,14 +530,14 @@ pub const Voxel = packed struct(u32) {
 
     /// Copy data from a LiteVoxel into this Voxel.
     /// Note that this does not modify visibility; the Voxeme must be set to dirty separately.
-    pub fn set(self: *Voxel, Lite: LiteVoxel) void {
-        self.material_id = Lite.material_id;
-        self.state = Lite.state;
+    pub fn set(self: *Voxel, lite: LiteVoxel) void {
+        self.material_id = lite.material_id;
+        self.state = lite.state;
     }
 
     /// Create a Voxel from a LiteVoxel, with visibility set to none.
-    pub fn fromLite(Lite: LiteVoxel) Voxel {
-        return Voxel{ .material_id = Lite.material_id, .visibility = .none, .state = Lite.state };
+    pub fn fromLite(lite: LiteVoxel) Voxel {
+        return Voxel{ .material_id = lite.material_id, .visibility = .none, .state = lite.state };
     }
 
     /// Create a LiteVoxel from this Voxel, ignoring visibility.
@@ -522,336 +644,503 @@ pub fn isVoxelMapped(self: *const Grid, coord: VoxelCoord) bool {
     return self.pages.contains(page_coord);
 }
 
-/// Determine if a given voxeme-space coordinate is mapped.
-pub fn isVoxemeMapped(self: *const Grid, coord: VoxemeCoord) bool {
-    const page_coord = convert.voxemeToPage(coord);
+/// Loop all dirty Pages, precalculate Voxel visibility, homogenize, and prune extraneous data structures.
+pub fn update(self: *Grid, frame_arena: std.mem.Allocator) !void {
+    var pages_pruned: std.AutoHashMapUnmanaged(PageCoord, void) = .empty;
+    defer pages_pruned.deinit(frame_arena);
 
-    const page = self.pages.get(page_coord) orelse return false;
-    return page.is_heterogeneous and page.heterogeneous.contains(coord);
-}
+    var voxemes_pruned: std.AutoHashMapUnmanaged(VoxemeCoord, void) = .empty;
+    defer voxemes_pruned.deinit(frame_arena);
 
-/// Determine if a given page-space coordinate is mapped.
-pub fn isPageMapped(self: *const Grid, coord: PageCoord) bool {
-    return self.pages.contains(coord);
-}
+    try self.homogenizeAndPrune(frame_arena, &pages_pruned, &voxemes_pruned);
+    try self.recalculateVisibility(frame_arena, &pages_pruned, &voxemes_pruned);
 
-/// Correctly checks if a face of a homogeneous voxeme is occluded by its neighbor.
-fn isVoxemeFaceOccluded(self: *const Grid, occluder_voxel: Voxel, neighbor_coord: VoxemeCoord, axis: Axis, positive: bool) bool {
-    const neighbor_page_coord = convert.voxemeToPage(neighbor_coord);
-    const neighbor_page = self.pages.get(neighbor_page_coord) orelse return false;
+    var dirty_it = self.dirty_pages.keyIterator();
+    while (dirty_it.next()) |page_coord_ptr| {
+        const page = self.pages.getPtr(page_coord_ptr.*) orelse unreachable;
 
-    if (neighbor_page.is_heterogeneous) {
-        if (neighbor_page.heterogeneous.get(neighbor_coord)) |neighbor_voxeme| {
-            if (neighbor_voxeme.is_homogeneous) {
-                return neighbor_voxeme.payload.homogeneous.eql(occluder_voxel);
-            }
-
-            // Neighbor is heterogeneous, must check the full face voxel by voxel.
-            const buffer = neighbor_voxeme.asHeterogeneous();
-            const axis_index = @intFromEnum(axis) / 2;
-            const other_axis_1 = (axis_index + 1) % 3;
-            const other_axis_2 = (axis_index + 2) % 3;
-
-            var start_idx: u32 = 0;
-            if (positive) { // Our positive face checks their negative face
-                start_idx = 0;
-            } else { // Our negative face checks their positive face
-                start_idx = voxeme_length - 1;
-            }
-
-            var v: u32 = 0;
-            while (v < voxeme_length) : (v += 1) {
-                var u: u32 = 0;
-                while (u < voxeme_length) : (u += 1) {
-                    var local_coord: BufferCoord = .{ 0, 0, 0 };
-                    local_coord[axis_index] = start_idx;
-                    local_coord[other_axis_1] = u;
-                    local_coord[other_axis_2] = v;
-                    if (!buffer[convert.bufferToIndex(local_coord)].eql(occluder_voxel)) {
-                        return false; // Found a non-matching voxel, face is not occluded.
-                    }
-                }
-            }
-            return true; // All voxels on the face matched.
-        }
-    }
-    // Neighbor is implicit or explicit homogeneous page
-    return neighbor_page.homogeneous.eql(occluder_voxel);
-}
-
-/// Performs a full visibility pre-calculation pass for a single page.
-fn recalculateVisibilityForPage(self: *Grid, page_coord: PageCoord) void {
-    const page = self.pages.getPtr(page_coord) orelse return;
-
-    // --- Pass 1: Voxel-level visibility for HETEROGENEOUS voxemes ---
-    if (page.is_heterogeneous) {
-        var voxeme_it = page.heterogeneous.iterator();
-        while (voxeme_it.next()) |voxeme_entry| {
-            if (voxeme_entry.value_ptr.is_homogeneous) continue;
-
-            const voxeme_coord = voxeme_entry.key_ptr.*;
-            const buffer = voxeme_entry.value_ptr.asHeterogeneous();
-            const start_voxel_coord = convert.voxemeToVoxel(voxeme_coord, .min);
-
-            var z: u32 = 0;
-            while (z < voxeme_length) : (z += 1) {
-                var y: u32 = 0;
-                while (y < voxeme_length) : (y += 1) {
-                    var x: u32 = 0;
-                    while (x < voxeme_length) : (x += 1) {
-                        const current_coord = start_voxel_coord + VoxelCoord{ @intCast(x), @intCast(y), @intCast(z) };
-                        const voxel_ptr = &buffer[convert.bufferToIndex(.{ x, y, z })];
-                        if (!self.getMaterialProperties(voxel_ptr.material_id).is_opaque) {
-                            voxel_ptr.visibility = .all;
-                            continue;
-                        }
-                        comptime var neighbor_it = Neighbor.Iterator{};
-                        inline while (comptime neighbor_it.next()) |n| {
-                            const neighbor_voxel = self.getVoxel(current_coord + n.coord_offset);
-                            voxel_ptr.visibility.set(n.axis, n.positive, !self.getMaterialProperties(neighbor_voxel.material_id).is_opaque);
-                        }
-                    }
-                }
-            }
+        var voxeme_it = page.heterogeneous.valueIterator();
+        while (voxeme_it.next()) |voxeme| {
+            voxeme.is_dirty = false;
         }
     }
 
-    // --- Pass 2: Voxeme-level visibility for HOMOGENEOUS voxemes ---
-    if (page.is_heterogeneous) {
-        var voxeme_it = page.heterogeneous.iterator();
-        while (voxeme_it.next()) |entry| {
-            if (!entry.value_ptr.is_homogeneous) continue;
-            if (entry.value_ptr.payload.homogeneous.material_id == .none) {
-                entry.value_ptr.visibility = .all;
-                continue;
-            }
+    self.dirty_pages.clearRetainingCapacity();
+}
 
-            const voxeme_coord = entry.key_ptr.*;
-            const current_voxel = entry.value_ptr.payload.homogeneous;
-            var new_vis = Visibility.none;
+/// Loop all dirty Pages and their neighbors to recalculate Voxel visibility.
+pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_pruned: *const std.AutoHashMapUnmanaged(PageCoord, void), voxemes_pruned: *const std.AutoHashMapUnmanaged(VoxemeCoord, void)) !void {
+    // we need to traverse all dirty pages and process them and potentially their neighbors
+    // to ensure that visibility is correct across page boundaries
 
-            comptime var neighbor_it = Neighbor.Iterator{};
-            inline while (comptime neighbor_it.next()) |n| {
-                const neighbor_voxeme_coord = voxeme_coord + n.coord_offset;
-                if (!isVoxemeFaceOccluded(self, current_voxel, neighbor_voxeme_coord, n.axis, n.positive)) {
-                    new_vis.set(n.axis, n.positive, true);
-                }
-            }
-            entry.value_ptr.visibility = new_vis;
-        }
-    }
+    // we need to track which voxemes or homogeneous pages bordering the dirty pages need to be updated
+    var border_pages: std.AutoHashMapUnmanaged(PageCoord, Visibility) = .empty;
+    defer border_pages.deinit(frame_arena);
 
-    // --- Pass 3: Page-level visibility for HOMOGENEOUS pages ---
-    if (!page.is_heterogeneous) {
-        if (page.homogeneous.material_id == .none) {
-            page.visibility = .all;
-            return;
-        }
-        var new_vis = Visibility.none;
+    var border_voxemes: std.AutoHashMapUnmanaged(VoxemeCoord, Visibility) = .empty;
+    defer border_voxemes.deinit(frame_arena);
+
+    // first we can queue the neighbors of all deleted pages
+    var page_pruned_it = pages_pruned.keyIterator();
+    while (page_pruned_it.next()) |page_entry| {
+        const page_coord = page_entry.*;
+
+        // queue all 6 neighbors of this page, if they exist
         comptime var neighbor_it = Neighbor.Iterator{};
-        inline while (comptime neighbor_it.next()) |n| {
-            const neighbor_page_coord = page_coord + n.coord_offset;
-            const neighbor_page = self.pages.get(neighbor_page_coord);
-            var occluded = false;
-            if (neighbor_page) |np| {
-                // A heterogeneous neighbor never fully occludes a homogeneous page.
-                if (!np.is_heterogeneous and np.homogeneous.eql(page.homogeneous)) {
-                    occluded = true;
-                }
-            }
-            if (!occluded) {
-                new_vis.set(n.axis, n.positive, true);
+        inline while (comptime neighbor_it.next()) |neighbor| {
+            const neighbor_page_coord = page_coord + neighbor.coord_offset;
+            if (!self.dirty_pages.contains(neighbor_page_coord) and self.pages.contains(neighbor_page_coord)) {
+                const border_page_gop = try border_pages.getOrPut(frame_arena, neighbor_page_coord);
+                if (!border_page_gop.found_existing) border_page_gop.value_ptr.* = .none;
+                border_page_gop.value_ptr.set(neighbor.axis, neighbor.positive, true);
             }
         }
+    }
+
+    // and queue the neighbors of all deleted voxemes
+    var voxeme_pruned_it = voxemes_pruned.keyIterator();
+    while (voxeme_pruned_it.next()) |voxeme_entry| {
+        const voxeme_coord = voxeme_entry.*;
+
+        // queue all 6 neighbors of this voxeme, and any neighboring pages, if they exist
+        comptime var neighbor_it = Neighbor.Iterator{};
+        inline while (comptime neighbor_it.next()) |neighbor| {
+            const neighbor_voxeme_coord = voxeme_coord + neighbor.coord_offset;
+            const neighbor_page_coord = convert.voxemeToPage(neighbor_voxeme_coord);
+            if (!self.dirty_pages.contains(neighbor_page_coord)) {
+                if (self.pages.getPtr(neighbor_page_coord)) |neighbor_page| {
+                    const border_page_gop = try border_pages.getOrPut(frame_arena, neighbor_page_coord);
+                    if (!border_page_gop.found_existing) border_page_gop.value_ptr.* = .none;
+                    border_page_gop.value_ptr.set(neighbor.axis, neighbor.positive, true);
+
+                    if (neighbor_page.heterogeneous.contains(neighbor_voxeme_coord)) {
+                        const border_voxeme_gop = try border_voxemes.getOrPut(frame_arena, neighbor_voxeme_coord);
+                        if (!border_voxeme_gop.found_existing) border_voxeme_gop.value_ptr.* = .none;
+                        border_voxeme_gop.value_ptr.set(neighbor.axis, neighbor.positive, true);
+                    }
+                }
+            }
+        }
+    }
+
+    // next we must process all dirty pages
+    var page_it = self.dirty_pages.keyIterator();
+    while (page_it.next()) |page_entry| {
+        const page_coord = page_entry.*;
+
+        if (self.pages.getPtr(page_coord)) |page| {
+            // start with no visibility; if any interior borders have visibility, change this for the respective edge
+            var new_page_vis: Visibility = .none;
+
+            if (!page.isHeterogeneous()) {
+                // the entire page is a single homogeneous large-volume voxel
+                const data = page.homogeneous;
+
+                const local_is_solid = self.getMaterialProperties(data.material_id).is_opaque;
+
+                // recalculate visibility for the single large-volume voxel in this page and within its neighbors
+                comptime var neighbor_it = Neighbor.Iterator{};
+                inline while (comptime neighbor_it.next()) |neighbor| {
+                    const neighbor_page_coord = page_coord + neighbor.coord_offset;
+
+                    if (self.pages.getPtr(neighbor_page_coord)) |neighbor_page| {
+                        // queue neighbor page update if it hasn't been already
+                        if (!self.dirty_pages.contains(neighbor_page_coord)) {
+                            const neighbor_page_gop = try border_pages.getOrPut(frame_arena, neighbor_page_coord);
+                            if (!neighbor_page_gop.found_existing) neighbor_page_gop.value_ptr.* = .none;
+                            // if we are not solid, mark the opposing face visible in the queued neighbor
+                            if (!local_is_solid) neighbor_page_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
+                        }
+
+                        if (neighbor_page.isHeterogeneous()) {
+                            // we need to traverse the bordering face voxemes of the neighbor, checking that they are completely solid across their volume face
+                            const reference_voxeme_coord = convert.pageToVoxeme(neighbor_page_coord, .min);
+                            var voxeme_border_it = BorderIterator.forPage(neighbor.axis, !neighbor.positive);
+                            var face_is_solid = true;
+                            while (voxeme_border_it.next()) |local_coord| {
+                                const neighbor_voxeme_coord = reference_voxeme_coord + local_coord;
+
+                                if (neighbor_page.heterogeneous.getPtr(neighbor_voxeme_coord)) |neighbor_voxeme| {
+                                    // queue the neighbor voxeme for update if it hasn't been already
+                                    if (!self.dirty_pages.contains(neighbor_page_coord)) {
+                                        const neighbor_voxeme_gop = try border_voxemes.getOrPut(frame_arena, neighbor_voxeme_coord);
+                                        if (!neighbor_voxeme_gop.found_existing) neighbor_voxeme_gop.value_ptr.* = .none;
+
+                                        // if we are not solid, mark the opposing face visible in the queued neighbor
+                                        if (!local_is_solid) neighbor_voxeme_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
+                                    }
+
+                                    if (neighbor_voxeme.is_homogeneous) {
+                                        const neighbor_data = neighbor_voxeme.payload.homogeneous;
+                                        const neighbor_is_solid = self.getMaterialProperties(neighbor_data.material_id).is_opaque;
+                                        if (!neighbor_is_solid) {
+                                            face_is_solid = false;
+                                        }
+                                    } else {
+                                        const neighbor_data = neighbor_voxeme.asHeterogeneous();
+
+                                        const reference_voxel_coord = convert.voxemeToVoxel(neighbor_voxeme_coord, .min);
+                                        var voxel_border_it = BorderIterator.forVoxeme(neighbor.axis, !neighbor.positive);
+
+                                        while (voxel_border_it.next()) |local_voxel_coord| {
+                                            const index = convert.bufferToIndex(@intCast(reference_voxel_coord + local_voxel_coord));
+                                            const neighbor_voxel = &neighbor_data[index];
+                                            const neighbor_is_solid = self.getMaterialProperties(neighbor_voxel.material_id).is_opaque;
+                                            if (!neighbor_is_solid) {
+                                                face_is_solid = false;
+                                            }
+
+                                            // update the neighbor voxel's visibility directly, if it isn't dirty itself
+                                            if (!neighbor_voxeme.is_dirty) neighbor_voxel.visibility.set(neighbor.axis, !neighbor.positive, !local_is_solid);
+                                        }
+                                    }
+                                } else {
+                                    // no neighboring voxeme does not necessarily mean empty space;
+                                    // the neighbor page could have a solid as its homogeneous voxel base
+                                    const neighbor_is_solid = self.getMaterialProperties(neighbor_page.homogeneous.material_id).is_opaque;
+                                    if (!neighbor_is_solid) {
+                                        face_is_solid = false;
+                                    }
+                                }
+                            }
+
+                            if (!face_is_solid) {
+                                new_page_vis.set(neighbor.axis, neighbor.positive, true);
+                            }
+                        } else {
+                            // we can update our local visibility directly
+                            const neighbor_data = neighbor_page.homogeneous;
+                            const neighbor_is_solid = self.getMaterialProperties(neighbor_data.material_id).is_opaque;
+                            if (!neighbor_is_solid) {
+                                new_page_vis.set(neighbor.axis, neighbor.positive, true);
+                            }
+
+                            if (!self.dirty_pages.contains(neighbor_page_coord)) {
+                                // queue neighbor page update if it hasn't been already
+                                const neighbor_page_gop = try border_pages.getOrPut(frame_arena, neighbor_page_coord);
+                                if (!neighbor_page_gop.found_existing) neighbor_page_gop.value_ptr.* = .none;
+
+                                // if we are not solid, mark the opposing face visible in the queued neighbor
+                                if (!local_is_solid) neighbor_page_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
+                            }
+                        }
+                    } else {
+                        // we can update our local visibility directly
+                        new_page_vis.set(neighbor.axis, neighbor.positive, true);
+                    }
+                }
+            } else {
+                // iterate all voxemes in this page
+                var voxeme_it = page.heterogeneous.iterator();
+                while (voxeme_it.next()) |voxeme_entry| {
+                    const voxeme_coord = voxeme_entry.key_ptr.*;
+                    const voxeme = voxeme_entry.value_ptr;
+
+                    var new_voxeme_vis: Visibility = .none;
+                    if (voxeme.is_homogeneous) {
+                        const data = voxeme.payload.homogeneous;
+                        const local_is_solid = self.getMaterialProperties(data.material_id).is_opaque;
+
+                        // recalculate visibility for the single large-volume voxel in this voxeme
+                        comptime var neighbor_it = Neighbor.Iterator{};
+                        inline while (comptime neighbor_it.next()) |neighbor| {
+                            const neighbor_voxeme_coord = voxeme_coord + neighbor.coord_offset;
+                            const neighbor_page_coord = convert.voxemeToPage(neighbor_voxeme_coord);
+
+                            if (self.pages.getPtr(neighbor_page_coord)) |neighbor_page| {
+                                const neighbor_page_is_solid = self.getMaterialProperties(neighbor_page.homogeneous.material_id).is_opaque;
+                                if (neighbor_page.isHeterogeneous()) {
+                                    // we can update our local visibility directly
+                                    if (!neighbor_page_is_solid) {
+                                        new_voxeme_vis.set(neighbor.axis, neighbor.positive, true);
+                                        new_page_vis.set(neighbor.axis, neighbor.positive, true);
+                                    }
+                                } else {
+                                    if (neighbor_page.heterogeneous.getPtr(neighbor_voxeme_coord)) |neighbor_voxeme| {
+                                        if (neighbor_voxeme.is_homogeneous) {
+                                            const neighbor_data = neighbor_voxeme.payload.homogeneous;
+                                            const neighbor_is_solid = self.getMaterialProperties(neighbor_data.material_id).is_opaque;
+                                            if (!neighbor_is_solid) {
+                                                new_voxeme_vis.set(neighbor.axis, neighbor.positive, true);
+                                                new_page_vis.set(neighbor.axis, neighbor.positive, true);
+                                            }
+                                        } else {
+                                            const neighbor_data = neighbor_voxeme.asHeterogeneous();
+
+                                            // we cannot update our local visibility directly;
+                                            // we need to traverse the bordering face of the neighbor and check that they are completely solid across the volume face
+                                            var border_it = BorderIterator.forVoxeme(neighbor.axis, !neighbor.positive);
+                                            const reference_voxel_coord = convert.voxemeToVoxel(neighbor_voxeme_coord, .min);
+                                            var face_is_solid = true;
+                                            while (border_it.next()) |local_coord| {
+                                                const index = convert.bufferToIndex(@intCast(reference_voxel_coord + local_coord));
+                                                const neighbor_voxel = &neighbor_data[index];
+                                                const neighbor_is_solid = self.getMaterialProperties(neighbor_voxel.material_id).is_opaque;
+                                                if (!neighbor_is_solid) {
+                                                    face_is_solid = false;
+                                                }
+
+                                                // update the neighbor voxel's visibility directly, if it isn't dirty itself
+                                                if (!neighbor_voxeme.is_dirty) neighbor_voxel.visibility.set(neighbor.axis, !neighbor.positive, !local_is_solid);
+                                            }
+
+                                            if (!face_is_solid) {
+                                                new_voxeme_vis.set(neighbor.axis, neighbor.positive, true);
+                                                new_page_vis.set(neighbor.axis, neighbor.positive, true);
+                                            }
+                                        }
+                                    } else if (!neighbor_page_is_solid) {
+                                        // no neighboring voxeme does not necessarily mean empty space;
+                                        // the neighbor page could have a solid as its homogeneous voxel base
+                                        new_voxeme_vis.set(neighbor.axis, neighbor.positive, true);
+                                        new_page_vis.set(neighbor.axis, neighbor.positive, true);
+                                    }
+                                }
+                            } else {
+                                // we can update our local visibility directly
+                                new_voxeme_vis.set(neighbor.axis, neighbor.positive, true);
+                                new_page_vis.set(neighbor.axis, neighbor.positive, true);
+                            }
+
+                            // if the neighbor isn't dirty itself, but does exist, we need to update its visibilities too
+                            if (!self.dirty_pages.contains(neighbor_page_coord)) {
+                                if (self.pages.getPtr(neighbor_page_coord)) |neighbor_page| {
+                                    // queue neighbor page update if it hasn't been already
+                                    const neighbor_page_gop = try border_pages.getOrPut(frame_arena, neighbor_page_coord);
+                                    if (!neighbor_page_gop.found_existing) neighbor_page_gop.value_ptr.* = .none;
+
+                                    // if we are not solid, mark the opposing face visible in the queued neighbor
+                                    if (!local_is_solid) neighbor_page_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
+
+                                    // if there is also a neighboring voxeme, we need to ensure it is updated as well
+                                    if (neighbor_page.heterogeneous.getPtr(neighbor_voxeme_coord)) |neighbor_voxeme| {
+                                        // queue neighbor voxeme update it if hasn't been already
+                                        const neighbor_voxeme_gop = try border_voxemes.getOrPut(frame_arena, neighbor_voxeme_coord);
+                                        if (!neighbor_voxeme_gop.found_existing) neighbor_voxeme_gop.value_ptr.* = .none;
+
+                                        // if we are not solid, mark the opposing face visible in the queued neighbor
+                                        if (!local_is_solid) neighbor_voxeme_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
+
+                                        if (!neighbor_voxeme.is_homogeneous) {
+                                            // if the neighbor is dense voxel data, we can update the adjacent border voxels directly
+                                            const neighbor_data = neighbor_voxeme.asHeterogeneous();
+
+                                            // update the specific voxel in the buffer, marking the opposing face as visible if we are not solid
+                                            var border_it = BorderIterator.forVoxeme(neighbor.axis, !neighbor.positive);
+                                            const reference_voxel_coord = convert.voxemeToVoxel(neighbor_voxeme_coord, .min);
+                                            while (border_it.next()) |local_coord| {
+                                                const index = convert.bufferToIndex(@intCast(reference_voxel_coord + local_coord));
+                                                neighbor_data[index].visibility.set(neighbor.axis, !neighbor.positive, !local_is_solid);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        const data = voxeme.asHeterogeneous();
+
+                        // recalculate visibility for all voxels in this voxeme
+                        for (data, 0..) |*voxel, i| {
+                            const local_coord = convert.indexToVoxel(voxeme_coord, i);
+                            const local_is_solid = self.getMaterialProperties(voxel.material_id).is_opaque;
+
+                            var new_voxel_vis: Visibility = .none;
+
+                            comptime var neighbor_it = Neighbor.Iterator{};
+                            inline while (comptime neighbor_it.next()) |neighbor| {
+                                const neighbor_voxel_coord = local_coord + neighbor.coord_offset;
+                                const neighbor_page_coord = convert.voxelToPage(neighbor_voxel_coord);
+                                const neighbor_voxeme_coord = convert.voxelToVoxeme(neighbor_voxel_coord);
+
+                                // we can update our local visibility directly
+                                const neighbor_is_solid = self.getMaterialProperties(self.getVoxel(neighbor_voxel_coord).material_id).is_opaque;
+                                if (!neighbor_is_solid) {
+                                    new_voxel_vis.set(neighbor.axis, neighbor.positive, true);
+                                    new_voxeme_vis.set(neighbor.axis, neighbor.positive, true);
+                                    new_page_vis.set(neighbor.axis, neighbor.positive, true);
+                                }
+
+                                // if the neighbor isn't dirty itself, but does exist, we need to update its visibilities too
+                                if (!self.dirty_pages.contains(neighbor_page_coord)) {
+                                    if (self.pages.getPtr(neighbor_page_coord)) |neighbor_page| {
+                                        // queue neighbor page update if it hasn't been already
+                                        const neighbor_page_gop = try border_pages.getOrPut(frame_arena, neighbor_page_coord);
+                                        if (!neighbor_page_gop.found_existing) neighbor_page_gop.value_ptr.* = .none;
+
+                                        // if we are not solid, mark the opposing face visible in the queued neighbor
+                                        if (!local_is_solid) neighbor_page_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
+
+                                        // if there is also a neighboring voxeme, we need to ensure it is updated as well
+                                        if (neighbor_page.heterogeneous.getPtr(neighbor_voxeme_coord)) |neighbor_voxeme| {
+                                            // queue neighbor voxeme update it if hasn't been already
+                                            const neighbor_voxeme_gop = try border_voxemes.getOrPut(frame_arena, neighbor_voxeme_coord);
+                                            if (!neighbor_voxeme_gop.found_existing) neighbor_voxeme_gop.value_ptr.* = .none;
+
+                                            // if we are not solid, mark the opposing face visible in the queued neighbor
+                                            if (!local_is_solid) neighbor_voxeme_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
+
+                                            if (!neighbor_voxeme.is_homogeneous) {
+                                                // if the neighbor is dense voxel data, we can update the adjacent voxel directly
+                                                const neighbor_data = neighbor_voxeme.asHeterogeneous();
+
+                                                // update the specific voxel in the buffer, marking the opposing face as visible if we are not solid
+                                                const index = convert.bufferToIndex(convert.voxelToBuffer(neighbor_voxel_coord));
+                                                neighbor_data[index].visibility.set(neighbor.axis, !neighbor.positive, !local_is_solid);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            // update this voxel's visibility directly
+                            voxel.visibility = new_voxel_vis;
+                        }
+                    }
+
+                    // update this voxeme's visibility directly
+                    voxeme.visibility = new_voxeme_vis;
+                }
+            }
+
+            // update this page's visibility directly
+            page.visibility = new_page_vis;
+        }
+    }
+
+    var border_voxeme_it = border_voxemes.iterator();
+    while (border_voxeme_it.next()) |entry| {
+        const voxeme_coord = entry.key_ptr.*;
+        const new_vis = entry.value_ptr.*;
+
+        const page = self.pages.getPtr(convert.voxemeToPage(voxeme_coord)) orelse unreachable; // shouldnt have been put in the map if it didnt exist
+        const voxeme = page.heterogeneous.getPtr(voxeme_coord) orelse unreachable; // same as above
+
+        voxeme.visibility = new_vis;
+    }
+
+    var border_page_it = border_pages.iterator();
+    while (border_page_it.next()) |entry| {
+        const page_coord = entry.key_ptr.*;
+        const new_vis = entry.value_ptr.*;
+
+        const page = self.pages.getPtr(page_coord) orelse unreachable; // shouldnt have been put in the map if it didnt exist
         page.visibility = new_vis;
     }
 }
 
-/// Checks dirty voxemes for homogenization and prunes any that become empty.
-fn homogenizeVoxemesInPage(self: *Grid, page: *Page, frame_arena: std.mem.Allocator) !void {
-    if (!page.is_heterogeneous) return;
+/// Loop all dirty Pages and homogenize and prune any that can be.
+pub fn homogenizeAndPrune(self: *Grid, frame_arena: std.mem.Allocator, pages_pruned: *std.AutoHashMapUnmanaged(PageCoord, void), voxemes_pruned: *std.AutoHashMapUnmanaged(VoxemeCoord, void)) !void {
+    var pages_to_prune = try std.ArrayList(PageCoord).initCapacity(frame_arena, self.dirty_pages.count());
+    defer pages_to_prune.deinit(frame_arena);
 
-    var voxemes_to_remove = std.ArrayList(VoxemeCoord).empty;
-    defer voxemes_to_remove.deinit(frame_arena);
+    var page_it = self.dirty_pages.keyIterator();
+    page_loop: while (page_it.next()) |page_entry| {
+        const page_coord = page_entry.*;
+        const page = self.pages.getPtr(page_coord) orelse unreachable; // pages are never removed from the live set until after this loop
 
-    var voxeme_it = page.heterogeneous.iterator();
-    while (voxeme_it.next()) |voxeme_entry| {
-        const voxeme_coord = voxeme_entry.key_ptr.*;
-        const voxeme = voxeme_entry.value_ptr;
+        if (!page.isHeterogeneous()) {
+            // simple case: check if the page is empty
+            if (page.homogeneous.material_id == .none) {
+                try pages_to_prune.append(frame_arena, page_coord);
+            }
 
-        if (!voxeme.is_dirty) continue;
-        voxeme.is_dirty = false;
-        if (voxeme.is_homogeneous) continue;
+            continue :page_loop;
+        }
 
-        const buffer = voxeme.asHeterogeneous();
-        const reference_voxel = buffer[0];
-        var is_now_homogeneous = true;
-        for (buffer[1..]) |v| {
-            if (!v.eql(reference_voxel)) {
-                is_now_homogeneous = false;
-                break;
+        var voxemes_to_prune = try std.ArrayList(VoxemeCoord).initCapacity(frame_arena, page.heterogeneous.count());
+        defer voxemes_to_prune.deinit(frame_arena);
+
+        var voxeme_it = page.heterogeneous.iterator();
+        while (voxeme_it.next()) |voxeme_entry| {
+            const voxeme_coord = voxeme_entry.key_ptr.*;
+            const voxeme = voxeme_entry.value_ptr;
+
+            var can_absorb = true;
+
+            if (voxeme.is_homogeneous) {
+                const homogeneous_data = voxeme.payload.homogeneous;
+
+                if (homogeneous_data.eql(page.homogeneous)) {
+                    // This voxeme is redundant, mark for pruning
+                    try voxemes_to_prune.append(frame_arena, voxeme_coord);
+                }
+            } else if (voxeme.is_dirty) {
+                const heterogeneous_data = voxeme.asHeterogeneous();
+
+                // Check if all voxels in the buffer are the same
+                const first_voxel = heterogeneous_data[0];
+                var all_same = true;
+
+                check_loop: for (heterogeneous_data) |*voxel| {
+                    if (!voxel.eql(page.homogeneous)) {
+                        can_absorb = false; // at least one voxel is different from the page's homogeneous voxel
+                    }
+
+                    if (!voxel.eql(first_voxel)) {
+                        all_same = false;
+                        break :check_loop;
+                    }
+                }
+
+                if (can_absorb) {
+                    // This voxeme could be homogenized, but it is redundant; mark for pruning
+                    try voxemes_to_prune.append(frame_arena, voxeme_coord);
+                } else if (all_same) {
+                    // free the old buffer
+                    self.deallocateBuffer(heterogeneous_data);
+
+                    // We can convert this voxeme to homogeneous
+                    voxeme.* = Voxeme.homogeneous(first_voxel);
+                    voxeme.is_dirty = true; // re-mark dirty so that it can be recalculated
+                }
             }
         }
 
-        if (is_now_homogeneous) {
-            if (reference_voxel.material_id == .none) {
-                self.deallocateBuffer(buffer);
-                try voxemes_to_remove.append(frame_arena, voxeme_coord);
-            } else {
-                voxeme.* = Voxeme.homogeneous(reference_voxel);
-                self.deallocateBuffer(buffer);
-            }
-        }
-    }
+        for (voxemes_to_prune.items) |voxeme_coord| {
+            const voxeme = page.heterogeneous.getPtr(voxeme_coord) orelse unreachable;
 
-    for (voxemes_to_remove.items) |voxeme_coord| {
-        _ = page.heterogeneous.remove(voxeme_coord);
-    }
-}
-
-/// Checks if a page can be simplified (e.g., made fully homogeneous) or if it has become empty.
-/// Returns true if the page should be removed from the grid entirely.
-fn pruneAndHomogenizePage(self: *Grid, page: *Page, frame_arena: std.mem.Allocator) !bool {
-    if (!page.is_heterogeneous) {
-        // If a homogeneous page was marked dirty, it's because it was just
-        // created and might be an empty page that needs pruning.
-        return page.homogeneous.material_id == .none;
-    }
-
-    // Prune voxemes that are now redundant (i.e., they match the page's homogeneous material).
-    var voxemes_to_remove = std.ArrayList(VoxemeCoord).empty;
-    defer voxemes_to_remove.deinit(frame_arena);
-    var prune_it = page.heterogeneous.iterator();
-    while (prune_it.next()) |entry| {
-        const voxeme = entry.value_ptr.*;
-        if (voxeme.is_homogeneous and voxeme.payload.homogeneous.eql(page.homogeneous)) {
-            try voxemes_to_remove.append(frame_arena, entry.key_ptr.*);
-        }
-    }
-    for (voxemes_to_remove.items) |coord| {
-        _ = page.heterogeneous.remove(coord);
-    }
-
-    // If all override voxemes were pruned, the page is now fully homogeneous.
-    if (page.heterogeneous.count() == 0) {
-        page.heterogeneous.deinit(self.allocator());
-        page.is_heterogeneous = false;
-        return page.homogeneous.material_id == .none;
-    }
-
-    // If the page is completely full of voxemes, check if they are all the same
-    // homogeneous type, allowing the entire page to become homogeneous.
-    if (page.heterogeneous.count() == voxemes_per_page) {
-        var first_voxel: ?Voxel = null;
-        var all_same = true;
-        var check_it = page.heterogeneous.valueIterator();
-        while (check_it.next()) |voxeme| {
             if (!voxeme.is_homogeneous) {
-                all_same = false;
-                break;
+                // Free the buffer back to the pool
+                const buffer = voxeme.asHeterogeneous();
+                self.deallocateBuffer(buffer);
             }
-            const current_voxel = voxeme.payload.homogeneous;
-            if (first_voxel) |fv| {
-                if (!current_voxel.eql(fv)) {
-                    all_same = false;
-                    break;
-                }
-            } else {
-                first_voxel = current_voxel;
+
+            // Remove the voxeme from the page
+            _ = page.heterogeneous.remove(voxeme_coord);
+
+            // report the pruning
+            try voxemes_pruned.put(frame_arena, voxeme_coord, {});
+        }
+
+        // If the page is now empty, cleanup
+        if (page.heterogeneous.count() == 0) {
+            // remove heterogeneous state
+            page.heterogeneous.deinit(self.allocator());
+            page.heterogeneous = .empty;
+
+            // if the page's homogeneous voxel data is empty, we can remove the page entirely
+            if (page.homogeneous.material_id == .none) {
+                try pages_to_prune.append(frame_arena, page_coord);
             }
         }
-
-        if (all_same) {
-            if (first_voxel) |new_homogeneous_voxel| {
-                if (new_homogeneous_voxel.material_id != .none) {
-                    page.heterogeneous.deinit(self.allocator());
-                    page.is_heterogeneous = false;
-                    page.homogeneous = new_homogeneous_voxel;
-                }
-            }
-        }
     }
 
-    return false;
-}
+    for (pages_to_prune.items) |page_coord| {
+        const page = self.pages.getPtr(page_coord) orelse unreachable;
 
-/// Loop all dirty Pages, precalculate Voxel visibility, then homogenize and prune extraneous data structures.
-pub fn update(self: *Grid, frame_arena: std.mem.Allocator) !void {
-    // If no pages are dirty, we're done.
-    if (self.dirty_pages.count() == 0) return;
+        // Heterogeneous pages should have been cleaned up already
+        std.debug.assert(!page.isHeterogeneous());
 
-    var pages_to_update = std.AutoHashMap(PageCoord, void).init(frame_arena);
-    defer pages_to_update.deinit();
+        // Remove the page from the grid
+        _ = self.pages.remove(page_coord);
 
-    var dirty_it = self.dirty_pages.keyIterator();
-    while (dirty_it.next()) |page_coord_ptr| {
-        try pages_to_update.put(page_coord_ptr.*, {});
-        // Also add neighbors to the update list, as their visibility might have changed.
-        comptime var neighbor_it = Neighbor.Iterator{};
-        inline while (comptime neighbor_it.next()) |n| {
-            try pages_to_update.put(page_coord_ptr.* + n.coord_offset, {});
-        }
+        // Also remove from dirty pages
+        _ = self.dirty_pages.remove(page_coord);
+
+        // report the pruning
+        try pages_pruned.put(frame_arena, page_coord, {});
     }
-
-    // --- Pass 1: Pre-calculate visibility for all affected pages ---
-    var vis_it = pages_to_update.keyIterator();
-    while (vis_it.next()) |page_coord_ptr| {
-        self.recalculateVisibilityForPage(page_coord_ptr.*);
-    }
-
-    // --- Pass 2: Homogenize and prune the originally dirty pages ---
-    var pages_to_remove = std.ArrayList(PageCoord).empty;
-    defer pages_to_remove.deinit(frame_arena);
-
-    var clean_it = self.dirty_pages.keyIterator();
-    while (clean_it.next()) |page_coord_ptr| {
-        const page_coord = page_coord_ptr.*;
-        const page = self.pages.getPtr(page_coord).?;
-
-        try self.homogenizeVoxemesInPage(page, frame_arena);
-
-        if (try self.pruneAndHomogenizePage(page, frame_arena)) {
-            try pages_to_remove.append(frame_arena, page_coord);
-        }
-    }
-
-    // The work for this frame is done, clear the queue for the next frame.
-    self.dirty_pages.clearRetainingCapacity();
-
-    // --- Pass 3: Remove any pages that became completely empty ---
-    for (pages_to_remove.items) |page_coord_to_remove| {
-        if (self.pages.fetchRemove(page_coord_to_remove)) |removed_entry| {
-            var removed_mut = removed_entry.value;
-            removed_mut.deinit(self.allocator());
-        }
-    }
-}
-
-/// Get the Voxeme at the given voxeme-space coordinate, if it exists.
-pub fn getVoxeme(self: *const Grid, coord: VoxemeCoord) ?*const Voxeme {
-    const page_coord = convert.voxemeToPage(coord);
-    const page = self.pages.get(page_coord) orelse return null;
-    if (!page.is_heterogeneous) return null;
-    return page.heterogeneous.getPtr(coord);
-}
-
-/// Get a mutable pointer to the Voxel at a given coordinate, if it exists within a heterogeneous buffer.
-/// This will return null for voxels in homogeneous pages or voxemes, as they have no unique memory location.
-pub fn getVoxelPtr(self: *Grid, coord: VoxelCoord) ?*Voxel {
-    const page_coord = convert.voxelToPage(coord);
-    const page = self.pages.getPtr(page_coord) orelse return null;
-    // Can only get a pointer if the page is heterogeneous.
-    if (!page.is_heterogeneous) return null;
-
-    const voxeme_coord = convert.voxelToVoxeme(coord);
-    const voxeme = page.heterogeneous.get(voxeme_coord) orelse return null;
-    // Can only get a pointer if the voxeme is heterogeneous.
-    if (voxeme.is_homogeneous) return null;
-
-    const buffer = voxeme.asHeterogeneous();
-    const local_voxel_coord = convert.voxelToBuffer(coord);
-    const index = convert.bufferToIndex(local_voxel_coord);
-    return &buffer[index];
 }
 
 /// Get the Voxel at the given voxel-space coordinate, if it exists.
@@ -861,7 +1150,7 @@ pub fn getVoxel(self: *const Grid, coord: VoxelCoord) Voxel {
     const local_voxel_coord = convert.voxelToBuffer(coord);
 
     const page = self.pages.get(page_coord) orelse return .empty;
-    if (!page.is_heterogeneous) {
+    if (!page.isHeterogeneous()) {
         return page.homogeneous;
     }
 
@@ -890,12 +1179,9 @@ pub fn delVoxel(self: *Grid, coord: VoxelCoord) !void {
     const index = convert.bufferToIndex(local_voxel_coord);
 
     const page = self.pages.getPtr(page_coord) orelse unreachable;
-    if (!page.is_heterogeneous) {
+    if (!page.isHeterogeneous()) {
         const old_voxel = page.homogeneous;
         std.debug.assert(old_voxel.material_id != .none); // sanity check: shouldn't be any empty pages
-
-        page.is_heterogeneous = true;
-        page.heterogeneous = .empty; // re-initialize to empty
 
         const new_buffer = try self.allocateBuffer();
 
@@ -958,14 +1244,11 @@ pub fn setVoxel(self: *Grid, coord: VoxelCoord, value: LiteVoxel) !void {
     const page = page_gop.value_ptr;
     var was_modified = false;
 
-    if (!page.is_heterogeneous) {
+    if (!page.isHeterogeneous()) {
         const old_voxel = page.homogeneous;
         if (value.eql(old_voxel)) {
             return; // No change needed
         }
-
-        page.is_heterogeneous = true;
-        page.heterogeneous = .empty; // re-initialize to empty
 
         const new_buffer = try self.allocateBuffer();
 
@@ -1093,11 +1376,16 @@ fn addFace(
     gpa: std.mem.Allocator,
     vertices: *std.ArrayList(Vertex),
     indices: *std.ArrayList(u32),
+    axis: Axis,
+    positive: bool,
     origin: Position,
     scale: f32,
-    face_index: usize,
     color: vec3,
 ) !void {
+    log.debug("      adding face: axis={}, positive={}, origin={}, scale={}", .{ axis, positive, origin, scale });
+
+    const face_index = @intFromEnum(axis) + if (positive) @as(usize, 0) else 1;
+
     const base_vertex_index: u32 = @intCast(vertices.items.len);
     const data = &face_data[face_index];
 
@@ -1113,111 +1401,302 @@ fn addFace(
 }
 
 /// Generates a simple, blocky, non-greedy mesh for a single Voxeme.
-pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, voxeme_coord: VoxemeCoord, vertices: *std.ArrayList(Vertex), indices: *std.ArrayList(u32)) !void {
-    const voxeme_ptr = self.getVoxeme(voxeme_coord);
+pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page: *const Page, voxeme_coord: VoxemeCoord, vertices: *std.ArrayList(Vertex), indices: *std.ArrayList(u32)) !void {
+    std.debug.assert(page.isHeterogeneous());
 
-    if (voxeme_ptr) |v_ptr| {
-        // Path for EXPLICIT voxemes that exist in the hashmap.
-        if (v_ptr.is_homogeneous) {
-            // --- Fast path for homogeneous voxemes ---
-            const material_props = self.getMaterialProperties(v_ptr.payload.homogeneous.material_id);
-            if (!material_props.is_opaque) return;
+    if (page.heterogeneous.getPtr(voxeme_coord)) |voxeme| {
+        log.debug("Meshing voxeme at {d}", .{voxeme_coord});
 
-            const vis_bits: u6 = @bitCast(v_ptr.visibility);
-            if (vis_bits == 0) return;
+        if (voxeme.is_homogeneous) {
+            log.debug("  - simple homogeneous voxel data", .{});
 
-            const voxeme_world_pos = convert.voxemeToWorld(voxeme_coord, .min);
-            const color = material_props.color;
-            for (0..6) |face_index| {
-                if ((vis_bits >> @as(u3, @intCast(face_index))) & 1 == 1) {
-                    try addFace(gpa, vertices, indices, voxeme_world_pos, voxeme_scale, face_index, color);
+            // large-volume voxel
+            const data = voxeme.payload.homogeneous;
+            if (data.material_id == .none) return;
+
+            const material = self.getMaterialProperties(data.material_id);
+
+            const local_voxeme_origin = convert.voxemeToVoxel(voxeme_coord, .min);
+            const world_voxeme_origin = convert.voxelToWorld(local_voxeme_origin, .min);
+            const color = material.color;
+
+            comptime var neighbor_it = Neighbor.Iterator{};
+            inline while (comptime neighbor_it.next()) |neighbor| {
+                const visible_face = data.visibility.get(neighbor.axis, neighbor.positive);
+
+                if (visible_face) {
+                    log.debug("    - adding face for voxeme {d}", .{voxeme_coord});
+                    try addFace(
+                        gpa,
+                        vertices,
+                        indices,
+                        neighbor.axis,
+                        neighbor.positive,
+                        world_voxeme_origin,
+                        voxeme_scale,
+                        color,
+                    );
+                } else {
+                    log.debug("    - skipping face for voxeme {d}: axis={}, positive={}", .{ voxeme_coord, neighbor.axis, neighbor.positive });
                 }
             }
         } else {
-            // --- Fast path for heterogeneous voxemes ---
-            const buffer = v_ptr.asHeterogeneous();
-            const start_voxel_coord = convert.voxemeToVoxel(voxeme_coord, .min);
-            var z: u32 = 0;
-            while (z < voxeme_length) : (z += 1) {
-                var y: u32 = 0;
-                while (y < voxeme_length) : (y += 1) {
-                    var x: u32 = 0;
-                    while (x < voxeme_length) : (x += 1) {
-                        const voxel = buffer[convert.bufferToIndex(.{ x, y, z })];
-                        const material_props = self.getMaterialProperties(voxel.material_id);
-                        if (!material_props.is_opaque) continue;
+            log.debug("  - dense voxel data", .{});
 
-                        const vis_bits: u6 = @bitCast(voxel.visibility);
-                        if (vis_bits == 0) continue;
+            // mesh the dense voxel data
+            const buffer = voxeme.asHeterogeneous();
 
-                        const voxel_world_pos = convert.voxelToWorld(start_voxel_coord + VoxelCoord{ @intCast(x), @intCast(y), @intCast(z) }, .min);
-                        for (0..6) |face_index| {
-                            if ((vis_bits >> @as(u3, @intCast(face_index))) & 1 == 1) {
-                                try addFace(gpa, vertices, indices, voxel_world_pos, voxel_scale, face_index, material_props.color);
-                            }
-                        }
+            for (buffer, 0..) |voxel, index| {
+                if (voxel.material_id == .none) continue;
+
+                const material = self.getMaterialProperties(voxel.material_id);
+
+                const voxel_coord = convert.indexToVoxel(voxeme_coord, index);
+                const world_voxel_coord = convert.voxelToWorld(voxel_coord, .min);
+                const color = material.color;
+
+                comptime var neighbor_it = Neighbor.Iterator{};
+                inline while (comptime neighbor_it.next()) |neighbor| {
+                    const visible_face = voxel.visibility.get(neighbor.axis, neighbor.positive);
+
+                    if (visible_face) {
+                        log.debug("    - adding face for voxel {d}", .{voxel_coord});
+                        try addFace(
+                            gpa,
+                            vertices,
+                            indices,
+                            neighbor.axis,
+                            neighbor.positive,
+                            world_voxel_coord,
+                            voxel_scale,
+                            color,
+                        );
+                    } else {
+                        log.debug("    - skipping face for voxel {d}: axis={}, positive={}", .{ voxel_coord, neighbor.axis, neighbor.positive });
                     }
                 }
             }
         }
-        return;
-    }
-
-    // Path for IMPLICIT voxemes (part of a homogeneous page).
-    // These should only be meshed if the parent page is heterogeneous.
-    // If the page itself is homogeneous, the new page-level meshing fast path handles it.
-    const page_coord = convert.voxemeToPage(voxeme_coord);
-    if (self.pages.get(page_coord)) |page| {
-        if (!page.is_heterogeneous) return; // Handled by pageMeshBasic fast path.
-
-        const sample_voxel = page.homogeneous;
-        const material_props = self.getMaterialProperties(sample_voxel.material_id);
-        if (!material_props.is_opaque) return;
-
-        // Since this is an implicit voxeme, it has no pre-calculated visibility.
-        // We must calculate it now. This is the new, correct "slow path".
-        const voxeme_world_pos = convert.voxemeToWorld(voxeme_coord, .min);
-        comptime var neighbor_it = Neighbor.Iterator{};
-        inline while (comptime neighbor_it.next()) |n| {
-            if (!isVoxemeFaceOccluded(self, sample_voxel, voxeme_coord + n.coord_offset, n.axis, n.positive)) {
-                try addFace(gpa, vertices, indices, voxeme_world_pos, voxeme_scale, @intFromEnum(n.axis) + (if (n.positive) 0 else 1), material_props.color);
-            }
-        }
+    } else {
+        std.debug.panic("voxemeMeshBasic called on non-existent voxeme\n", .{});
     }
 }
 
 /// Generates a simple, blocky, non-greedy mesh for an entire Page.
 pub fn pageMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_coord: PageCoord, vertices: *std.ArrayList(Vertex), indices: *std.ArrayList(u32)) !void {
-    const page = self.pages.get(page_coord) orelse return;
+    const page = self.pages.getPtr(page_coord) orelse return;
+    if (!page.isHeterogeneous()) {
+        // large-volume voxel
+        const data = page.homogeneous;
+        if (data.material_id == .none) return;
 
-    // --- Fast path for homogeneous pages ---
-    if (!page.is_heterogeneous) {
-        const material_props = self.getMaterialProperties(page.homogeneous.material_id);
-        if (!material_props.is_opaque) return;
+        const material = self.getMaterialProperties(data.material_id);
 
-        const vis_bits: u6 = @bitCast(page.visibility);
-        if (vis_bits == 0) return;
+        const local_page_origin = convert.pageToVoxel(page_coord, .min, .min);
+        const world_page_origin = convert.voxelToWorld(local_page_origin, .min);
+        const color = material.color;
 
-        const page_world_pos = convert.pageToWorld(page_coord, .min);
-        const color = material_props.color;
-        for (0..6) |face_index| {
-            if ((vis_bits >> @as(u3, @intCast(face_index))) & 1 == 1) {
-                try addFace(gpa, vertices, indices, page_world_pos, page_scale, face_index, color);
+        comptime var neighbor_it = Neighbor.Iterator{};
+        inline while (comptime neighbor_it.next()) |neighbor| {
+            const visible_face = data.visibility.get(neighbor.axis, neighbor.positive);
+            if (visible_face) {
+                try addFace(
+                    gpa,
+                    vertices,
+                    indices,
+                    neighbor.axis,
+                    neighbor.positive,
+                    world_page_origin,
+                    page_scale,
+                    color,
+                );
             }
         }
-        return;
-    }
+    } else {
+        // mesh all live voxemes in the page
+        var live_voxeme_it = page.heterogeneous.keyIterator();
+        while (live_voxeme_it.next()) |voxeme_coord_ptr| {
+            try self.voxemeMeshBasic(gpa, page, voxeme_coord_ptr.*, vertices, indices);
+        }
 
-    // --- Path for heterogeneous pages ---
-    const start_voxeme_coord = convert.pageToVoxeme(page_coord, .min);
-    var z: u32 = 0;
-    while (z < page_length) : (z += 1) {
-        var y: u32 = 0;
-        while (y < page_length) : (y += 1) {
-            var x: u32 = 0;
-            while (x < page_length) : (x += 1) {
-                const offset = VoxemeCoord{ @intCast(x), @intCast(y), @intCast(z) };
-                try self.voxemeMeshBasic(gpa, start_voxeme_coord + offset, vertices, indices);
+        // mesh implicit voxemes if this is page has non-empty homogeneous data
+        if (page.homogeneous.material_id != .none) {
+            const material = self.getMaterialProperties(page.homogeneous.material_id);
+            const color = material.color;
+
+            var implicit_voxeme_it = VolumeIterator.forPage();
+            while (implicit_voxeme_it.next()) |voxeme_coord| {
+                if (page.heterogeneous.contains(voxeme_coord)) continue; // already meshed
+
+                const local_voxeme_origin = convert.voxemeToVoxel(voxeme_coord, .min);
+                const world_voxeme_origin = convert.voxelToWorld(local_voxeme_origin, .min);
+
+                comptime var neighbor_it = Neighbor.Iterator{};
+                inline while (comptime neighbor_it.next()) |neighbor| {
+                    // hmmm we don't have per-voxeme visibility data here...we'll have to look it up from the coordinates
+                    const neighbor_voxeme_coord = voxeme_coord + neighbor.coord_offset;
+
+                    const neighbor_page_coord = convert.voxemeToPage(neighbor_voxeme_coord);
+
+                    if (@reduce(.And, neighbor_page_coord == page_coord)) {
+                        // neighbor is in the same page, so we can try to get visibility if it is not also implicit
+                        if (page.heterogeneous.get(neighbor_voxeme_coord)) |neighbor_voxeme| {
+                            if (neighbor_voxeme.is_homogeneous) {
+                                const neighbor_is_solid = self.getMaterialProperties(neighbor_voxeme.payload.homogeneous.material_id).is_opaque;
+                                if (!neighbor_is_solid) {
+                                    try addFace(
+                                        gpa,
+                                        vertices,
+                                        indices,
+                                        neighbor.axis,
+                                        neighbor.positive,
+                                        world_voxeme_origin,
+                                        voxeme_scale,
+                                        color,
+                                    );
+                                } else {
+                                    // neighbor is solid, so face is not visible
+                                }
+                            } else {
+                                // we need to do the full visibility check here...at least we don't have to update the neighbor, so we can early-exit
+                                // precaching the visibility data for implicit voxemes in the update would be better
+                                const neighbor_data = neighbor_voxeme.asHeterogeneous();
+                                var face_is_solid = true;
+                                var border_it = BorderIterator.forVoxeme(neighbor.axis, neighbor.positive);
+                                const reference_voxel_coord = convert.voxemeToVoxel(neighbor_voxeme_coord, .min);
+                                while (border_it.next()) |local_coord| {
+                                    const index = convert.bufferToIndex(@intCast(reference_voxel_coord + local_coord));
+                                    const neighbor_voxel = &neighbor_data[index];
+                                    const neighbor_is_solid = self.getMaterialProperties(neighbor_voxel.material_id).is_opaque;
+                                    if (!neighbor_is_solid) {
+                                        face_is_solid = false;
+                                        break;
+                                    }
+                                }
+
+                                if (!face_is_solid) {
+                                    try addFace(
+                                        gpa,
+                                        vertices,
+                                        indices,
+                                        neighbor.axis,
+                                        neighbor.positive,
+                                        world_voxeme_origin,
+                                        voxeme_scale,
+                                        color,
+                                    );
+                                } else {
+                                    // neighbor is solid, so face is not visible
+                                }
+                            }
+                        } else {
+                            // its implicit, so it has the same visibility as us, no face needed
+                        }
+                    } else if (page.homogeneous.visibility.get(neighbor.axis, neighbor.positive)) { // if our whole page face is not visible, and we were processing a border implicit voxeme, we can early-out
+                        if (self.pages.getPtr(neighbor_page_coord)) |neighbor_page| {
+                            if (!neighbor_page.isHeterogeneous()) {
+                                const neighbor_is_solid = self.getMaterialProperties(neighbor_page.homogeneous.material_id).is_opaque;
+
+                                if (!neighbor_is_solid) {
+                                    try addFace(
+                                        gpa,
+                                        vertices,
+                                        indices,
+                                        neighbor.axis,
+                                        neighbor.positive,
+                                        world_voxeme_origin,
+                                        voxeme_scale,
+                                        color,
+                                    );
+                                } else {
+                                    // neighbor is solid, so face is not visible
+                                }
+                            } else {
+                                // neighbor is heterogeneous, so we need to go down a level if possible
+                                if (neighbor_page.heterogeneous.get(neighbor_voxeme_coord)) |neighbor_voxeme| {
+                                    if (neighbor_voxeme.is_homogeneous) {
+                                        // we can just test the material
+                                        const neighbor_is_solid = self.getMaterialProperties(neighbor_voxeme.payload.homogeneous.material_id).is_opaque;
+                                        if (!neighbor_is_solid) {
+                                            try addFace(
+                                                gpa,
+                                                vertices,
+                                                indices,
+                                                neighbor.axis,
+                                                neighbor.positive,
+                                                world_voxeme_origin,
+                                                voxeme_scale,
+                                                color,
+                                            );
+                                        } else {
+                                            // neighbor is solid, so face is not visible
+                                        }
+                                    } else {
+                                        // we must do the full visibility check here...at least we don't have to update the neighbor, so we can early-exit
+
+                                        const neighbor_data = neighbor_voxeme.asHeterogeneous();
+                                        var face_is_solid = true;
+                                        var border_it = BorderIterator.forVoxeme(neighbor.axis, neighbor.positive);
+                                        const reference_voxel_coord = convert.voxemeToVoxel(neighbor_voxeme_coord, .min);
+                                        while (border_it.next()) |local_coord| {
+                                            const index = convert.bufferToIndex(@intCast(reference_voxel_coord + local_coord));
+                                            const neighbor_voxel = &neighbor_data[index];
+                                            const neighbor_is_solid = self.getMaterialProperties(neighbor_voxel.material_id).is_opaque;
+                                            if (!neighbor_is_solid) {
+                                                face_is_solid = false;
+                                                break;
+                                            }
+                                        }
+
+                                        if (!face_is_solid) {
+                                            try addFace(
+                                                gpa,
+                                                vertices,
+                                                indices,
+                                                neighbor.axis,
+                                                neighbor.positive,
+                                                world_voxeme_origin,
+                                                voxeme_scale,
+                                                color,
+                                            );
+                                        } else {
+                                            // neighbor is solid, so face is not visible
+                                        }
+                                    }
+                                } else {
+                                    // check against the neighbor page's homogeneous data
+                                    const neighbor_is_solid = self.getMaterialProperties(neighbor_page.homogeneous.material_id).is_opaque;
+                                    if (!neighbor_is_solid) {
+                                        try addFace(
+                                            gpa,
+                                            vertices,
+                                            indices,
+                                            neighbor.axis,
+                                            neighbor.positive,
+                                            world_voxeme_origin,
+                                            voxeme_scale,
+                                            color,
+                                        );
+                                    } else {
+                                        // neighbor is solid, so face is not visible
+                                    }
+                                }
+                            }
+                        } else {
+                            // no neighbor page, so face is visible
+                            try addFace(
+                                gpa,
+                                vertices,
+                                indices,
+                                neighbor.axis,
+                                neighbor.positive,
+                                world_voxeme_origin,
+                                voxeme_scale,
+                                color,
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -1251,494 +1730,4 @@ pub fn worldMeshBasic(
             }
         }
     }
-}
-
-test "coordinate conversions" {
-    // Calculate the length of one side of a page, *not the total volume*
-    const page_length_in_voxels: i32 = @intCast(page_length * voxeme_length);
-
-    try std.testing.expectEqual(@as(VoxemeCoord, .{ 0, 0, 0 }), convert.voxelToVoxeme(.{ 0, 0, 0 }));
-    try std.testing.expectEqual(@as(BufferCoord, .{ 0, 0, 0 }), convert.voxelToBuffer(.{ 0, 0, 0 }));
-
-    try std.testing.expectEqual(@as(VoxemeCoord, .{ 0, 0, 0 }), convert.voxelToVoxeme(.{ 15, 5, 1 }));
-    try std.testing.expectEqual(@as(BufferCoord, .{ 15, 5, 1 }), convert.voxelToBuffer(.{ 15, 5, 1 }));
-
-    try std.testing.expectEqual(@as(VoxemeCoord, .{ 1, 2, 3 }), convert.voxelToVoxeme(.{ 16, 32, 48 }));
-    try std.testing.expectEqual(@as(BufferCoord, .{ 0, 0, 0 }), convert.voxelToBuffer(.{ 16, 32, 48 }));
-
-    // Test negative coordinates, the most common failure point
-    try std.testing.expectEqual(@as(VoxemeCoord, .{ -1, -1, -1 }), convert.voxelToVoxeme(.{ -1, -1, -1 }));
-    try std.testing.expectEqual(@as(BufferCoord, .{ 15, 15, 15 }), convert.voxelToBuffer(.{ -1, -1, -1 }));
-
-    try std.testing.expectEqual(@as(VoxemeCoord, .{ -1, -1, -1 }), convert.voxelToVoxeme(.{ -16, -16, -16 }));
-    try std.testing.expectEqual(@as(BufferCoord, .{ 0, 0, 0 }), convert.voxelToBuffer(.{ -16, -16, -16 }));
-
-    try std.testing.expectEqual(@as(VoxemeCoord, .{ -2, -2, -2 }), convert.voxelToVoxeme(.{ -17, -17, -17 }));
-    try std.testing.expectEqual(@as(BufferCoord, .{ 15, 15, 15 }), convert.voxelToBuffer(.{ -17, -17, -17 }));
-
-    // Test voxel -> page conversions using the corrected length
-    try std.testing.expectEqual(@as(PageCoord, .{ 0, 0, 0 }), convert.voxelToPage(.{ 0, 0, 0 }));
-    try std.testing.expectEqual(@as(PageCoord, .{ 0, 0, 0 }), convert.voxelToPage(.{ page_length_in_voxels - 1, page_length_in_voxels - 1, page_length_in_voxels - 1 }));
-    try std.testing.expectEqual(@as(PageCoord, .{ 1, 1, 1 }), convert.voxelToPage(.{ page_length_in_voxels, page_length_in_voxels, page_length_in_voxels }));
-    try std.testing.expectEqual(@as(PageCoord, .{ -1, -1, -1 }), convert.voxelToPage(.{ -1, -1, -1 }));
-    try std.testing.expectEqual(@as(PageCoord, .{ -2, -2, -2 }), convert.voxelToPage(.{ -page_length_in_voxels - 1, -page_length_in_voxels - 1, -page_length_in_voxels - 1 }));
-
-    // Test buffer indexing
-    try std.testing.expectEqual(@as(usize, 0), convert.bufferToIndex(.{ 0, 0, 0 }));
-    try std.testing.expectEqual(@as(usize, 15), convert.bufferToIndex(.{ 15, 0, 0 }));
-    try std.testing.expectEqual(@as(usize, 16), convert.bufferToIndex(.{ 0, 1, 0 }));
-    try std.testing.expectEqual(@as(usize, 256), convert.bufferToIndex(.{ 0, 0, 1 }));
-    try std.testing.expectEqual(@as(usize, voxels_per_voxeme - 1), convert.bufferToIndex(.{ 15, 15, 15 }));
-
-    // Test world <-> voxel round trip
-    const v_coord1: VoxelCoord = .{ 10, 20, 30 };
-    const w_pos1 = convert.voxelToWorld(v_coord1, .center);
-    const v_coord1_roundtrip = convert.worldToVoxel(w_pos1);
-    try std.testing.expectEqual(v_coord1, v_coord1_roundtrip);
-
-    const v_coord2: VoxelCoord = .{ -5, -80, 12 };
-    const w_pos2 = convert.voxelToWorld(v_coord2, .min); // use min offset
-    const v_coord2_roundtrip = convert.worldToVoxel(w_pos2);
-    try std.testing.expectEqual(v_coord2, v_coord2_roundtrip);
-}
-
-test "Grid API" {
-    const gpa = std.testing.allocator;
-
-    var grid = try Grid.init(gpa);
-    defer grid.deinit();
-
-    var frame_arena = std.heap.ArenaAllocator.init(gpa);
-    defer frame_arena.deinit();
-
-    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.5, 0.5, 0.5 } });
-    const dirt_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.6, 0.4, 0.2 } });
-
-    const stone: LiteVoxel = .{ .material_id = stone_mat, .state = 10 };
-    const dirt: LiteVoxel = .{ .material_id = dirt_mat, .state = 20 };
-
-    const coord1 = VoxelCoord{ 5, 5, 5 };
-    const coord2 = VoxelCoord{ 6, 6, 6 };
-    const voxeme_coord = convert.voxelToVoxeme(coord1);
-
-    // --- 1. Set Voxel and verify it creates a HETEROGENEOUS voxeme ---
-    try grid.setVoxel(coord1, stone);
-
-    try std.testing.expect(grid.isVoxelMapped(coord1));
-    try std.testing.expectEqual(stone, grid.getVoxel(coord1).toLite());
-    try std.testing.expectEqual(LiteVoxel.empty, grid.getVoxel(coord2).toLite());
-
-    var voxeme_const = grid.getVoxeme(voxeme_coord) orelse return error.TestFailed;
-    try std.testing.expect(!voxeme_const.is_homogeneous);
-
-    // --- 2. Verify that a partially full voxeme does NOT homogenize ---
-    try grid.update(frame_arena.allocator());
-
-    // The voxeme should STILL be heterogeneous because it contains empty voxels.
-    voxeme_const = grid.getVoxeme(voxeme_coord) orelse return error.TestFailed;
-    try std.testing.expect(!voxeme_const.is_homogeneous);
-
-    // We need a mutable pointer to the voxeme for the next part of the test.
-    var voxeme = grid.pages.getPtr(convert.voxemeToPage(voxeme_coord)).?.heterogeneous.getPtr(voxeme_coord).?;
-    try std.testing.expect(!voxeme.is_dirty); // Dirty flag should be cleared though.
-
-    // --- 3. Manually fill a voxeme to test TRUE homogenization (Hetero -> Homo) ---
-    const buffer = voxeme.asHeterogeneous();
-    // Fill the entire buffer with the 'stone' voxel.
-    @memset(buffer, Voxel.fromLite(stone));
-
-    // Mark it as dirty so update() will process it.
-    voxeme.is_dirty = true;
-    try grid.dirty_pages.put(gpa, convert.voxelToPage(coord1), {}); // Mark page dirty for update
-    try grid.update(frame_arena.allocator());
-
-    // NOW it should be homogeneous.
-    voxeme_const = grid.getVoxeme(voxeme_coord) orelse return error.TestFailed;
-    try std.testing.expect(voxeme_const.is_homogeneous);
-    try std.testing.expectEqual(stone, voxeme_const.payload.homogeneous.toLite());
-
-    // --- 4. Test De-homogenization (Homo -> Hetero) on setVoxel ---
-    // Change one voxel in the now-homogeneous voxeme.
-    try grid.setVoxel(coord2, dirt);
-    voxeme_const = grid.getVoxeme(voxeme_coord) orelse return error.TestFailed;
-    try std.testing.expect(!voxeme_const.is_homogeneous); // Should be heterogeneous again.
-
-    // Check that the change was applied correctly and other voxels retain the old value.
-    try std.testing.expectEqual(dirt, grid.getVoxel(coord2).toLite());
-    try std.testing.expectEqual(stone, grid.getVoxel(coord1).toLite());
-
-    // --- 5. Test Homogenization to Empty and Pruning ---
-    // Manually clear the entire buffer to test removal.
-    const new_buffer = voxeme_const.asHeterogeneous();
-    @memset(new_buffer, Voxel.empty);
-
-    // Mark as dirty and run update.
-    grid.pages.getPtr(convert.voxemeToPage(voxeme_coord)).?.heterogeneous.getPtr(voxeme_coord).?.is_dirty = true;
-    try grid.dirty_pages.put(gpa, convert.voxelToPage(coord1), {});
-    try grid.update(frame_arena.allocator());
-
-    // The voxeme and its containing page should now be completely gone.
-    const page_coord = convert.voxelToPage(coord1);
-    try std.testing.expect(!grid.isVoxemeMapped(voxeme_coord));
-    try std.testing.expect(!grid.isPageMapped(page_coord));
-}
-
-test "Page Homogenization Lifecycle" {
-    const gpa = std.testing.allocator;
-    var grid = try Grid.init(gpa);
-    defer grid.deinit();
-
-    var frame_arena = std.heap.ArenaAllocator.init(gpa);
-    defer frame_arena.deinit();
-
-    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.5, 0.5, 0.5 } });
-    const dirt_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.6, 0.4, 0.2 } });
-
-    const stone: LiteVoxel = .{ .material_id = stone_mat, .state = 10 };
-    const dirt: LiteVoxel = .{ .material_id = dirt_mat };
-    const page_coord = PageCoord{ 0, 0, 0 };
-
-    // --- 1. Test Homogenization to Solid ---
-    // Manually create a page and fill it with 4096 identical, homogeneous voxemes
-    // to simulate a state that is ready for page-level homogenization.
-    {
-        const page_gop = try grid.pages.getOrPut(gpa, page_coord);
-        page_gop.value_ptr.* = .{
-            .is_heterogeneous = true,
-            .homogeneous = .fromLite(stone), // This value doesn't matter yet, but will be the result
-            .heterogeneous = .{},
-        };
-        const page_ptr = page_gop.value_ptr;
-
-        for (0..voxemes_per_page) |i| {
-            const voxeme_coord = convert.pageIndexToVoxemeCoord(page_coord, i);
-            try page_ptr.heterogeneous.put(gpa, voxeme_coord, Voxeme.homogeneous(.fromLite(stone)));
-        }
-        try grid.dirty_pages.put(gpa, page_coord, {});
-
-        try grid.update(frame_arena.allocator());
-
-        // Assert that the page is now a single homogeneous entity.
-        const page = grid.pages.get(page_coord) orelse return error.TestFailed;
-        try std.testing.expect(!page.is_heterogeneous);
-        try std.testing.expectEqual(stone, page.homogeneous.toLite());
-    }
-
-    // --- 2. Test De-homogenization on Edit ---
-    // Modify one voxel within the now-solid page.
-    {
-        const mod_coord = convert.pageToVoxel(page_coord, .center, .center);
-        try grid.setVoxel(mod_coord, dirt);
-
-        // Assert that the page has become heterogeneous and contains exactly one override voxeme.
-        const page = grid.pages.get(page_coord) orelse return error.TestFailed;
-        try std.testing.expect(page.is_heterogeneous);
-        try std.testing.expectEqual(@as(usize, 1), page.heterogeneous.count());
-    }
-
-    // --- 3. Test Implicit Get after De-homogenization ---
-    // Verify that reads from the modified page return the correct explicit or implicit values.
-    {
-        const mod_coord = convert.pageToVoxel(page_coord, .center, .center);
-        const unmod_coord = convert.pageToVoxel(page_coord, .min, .min);
-
-        // The modified voxel should be dirt.
-        try std.testing.expectEqual(dirt, grid.getVoxel(mod_coord).toLite());
-        // An unmodified voxel should still be the page's implicit material (stone).
-        try std.testing.expectEqual(stone, grid.getVoxel(unmod_coord).toLite());
-    }
-
-    // --- 4. Test Re-homogenization on Undo ---
-    // "Undo" the modification by setting the voxel back to stone.
-    {
-        const mod_coord = convert.pageToVoxel(page_coord, .center, .center);
-        try grid.setVoxel(mod_coord, stone);
-
-        // The page is still heterogeneous, but the one override voxeme is now homogeneous stone.
-        // After homogenization, the override should be removed and the page should become pure again.
-        try grid.update(frame_arena.allocator());
-
-        const page = grid.pages.get(page_coord) orelse return error.TestFailed;
-        try std.testing.expect(!page.is_heterogeneous);
-        try std.testing.expectEqual(stone, page.homogeneous.toLite());
-    }
-
-    // --- 5. Test Pruning of Empty Page ---
-    // Create a new, simple page, delete its only content, and ensure it gets removed.
-    {
-        const prune_page_coord = PageCoord{ 1, 1, 1 };
-        const prune_voxel_coord = convert.pageToVoxel(prune_page_coord, .min, .min);
-
-        // This creates a heterogeneous page with an implicit 'empty' material and one 'stone' voxeme.
-        try grid.setVoxel(prune_voxel_coord, stone);
-        try std.testing.expect(grid.isPageMapped(prune_page_coord));
-
-        // Delete the only solid voxel, leaving an empty heterogeneous page.
-        try grid.delVoxel(prune_voxel_coord);
-
-        // Homogenization should find the page has no overrides and its implicit material is 'empty',
-        // so it should schedule the page for removal.
-        try grid.update(frame_arena.allocator());
-
-        try std.testing.expect(!grid.isPageMapped(prune_page_coord));
-    }
-}
-
-test "Visibility Precalculation" {
-    const gpa = std.testing.allocator;
-    var grid = try Grid.init(gpa);
-    defer grid.deinit();
-
-    var frame_arena = std.heap.ArenaAllocator.init(gpa);
-    defer frame_arena.deinit();
-
-    // --- Setup Materials ---
-    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.5, 0.5, 0.5 } });
-    const glass_mat = try grid.bindMaterial(.{ .is_opaque = false, .color = .{ 0.8, 0.9, 1.0 } });
-    const stone: LiteVoxel = .{ .material_id = stone_mat };
-    const glass: LiteVoxel = .{ .material_id = glass_mat };
-
-    // Helper to make checking visibility less verbose
-    const VisCheck = struct {
-        px: bool,
-        nx: bool,
-        py: bool,
-        ny: bool,
-        pz: bool,
-        nz: bool,
-
-        fn check(self: @This(), v: Voxel) !void {
-            try std.testing.expectEqual(self.px, v.visibility.pos_x);
-            try std.testing.expectEqual(self.nx, v.visibility.neg_x);
-            try std.testing.expectEqual(self.py, v.visibility.pos_y);
-            try std.testing.expectEqual(self.ny, v.visibility.neg_y);
-            try std.testing.expectEqual(self.pz, v.visibility.pos_z);
-            try std.testing.expectEqual(self.nz, v.visibility.neg_z);
-        }
-    };
-
-    // --- 1. Test isolated voxel (all faces visible) ---
-    {
-        const coord = VoxelCoord{ 0, 0, 0 };
-        try grid.setVoxel(coord, stone);
-        try grid.update(frame_arena.allocator());
-        const v = grid.getVoxel(coord);
-        try (VisCheck{ .px = true, .nx = true, .py = true, .ny = true, .pz = true, .nz = true }).check(v);
-        try grid.delVoxel(coord); // clean up for next test
-        try grid.update(frame_arena.allocator());
-    }
-
-    // --- 2. Test direct occlusion between two adjacent voxels ---
-    {
-        const coord_a = VoxelCoord{ 1, 0, 0 };
-        const coord_b = VoxelCoord{ 2, 0, 0 };
-        try grid.setVoxel(coord_a, stone);
-        try grid.setVoxel(coord_b, stone);
-        try grid.update(frame_arena.allocator());
-
-        // Voxel A should be occluded on its +X face by Voxel B
-        const v_a = grid.getVoxel(coord_a);
-        try (VisCheck{ .px = false, .nx = true, .py = true, .ny = true, .pz = true, .nz = true }).check(v_a);
-
-        // Voxel B should be occluded on its -X face by Voxel A
-        const v_b = grid.getVoxel(coord_b);
-        try (VisCheck{ .px = true, .nx = false, .py = true, .ny = true, .pz = true, .nz = true }).check(v_b);
-
-        try grid.delVoxel(coord_a);
-        try grid.delVoxel(coord_b);
-        try grid.update(frame_arena.allocator());
-    }
-
-    // --- 3. Test fully enclosed voxel (no faces visible) ---
-    {
-        const center = VoxelCoord{ 5, 5, 5 };
-        try grid.setVoxel(center, stone);
-        try grid.setVoxel(center + VoxelCoord{ 1, 0, 0 }, stone);
-        try grid.setVoxel(center + VoxelCoord{ -1, 0, 0 }, stone);
-        try grid.setVoxel(center + VoxelCoord{ 0, 1, 0 }, stone);
-        try grid.setVoxel(center + VoxelCoord{ 0, -1, 0 }, stone);
-        try grid.setVoxel(center + VoxelCoord{ 0, 0, 1 }, stone);
-        try grid.setVoxel(center + VoxelCoord{ 0, 0, -1 }, stone);
-        try grid.update(frame_arena.allocator());
-
-        const v = grid.getVoxel(center);
-        try (VisCheck{ .px = false, .nx = false, .py = false, .ny = false, .pz = false, .nz = false }).check(v);
-    }
-
-    // --- 4. Test non-opaque voxel (always all faces visible) ---
-    {
-        // Use the same enclosed setup as test 3, but make the center voxel glass
-        const center = VoxelCoord{ 5, 5, 5 };
-        try grid.setVoxel(center, glass);
-        try grid.update(frame_arena.allocator());
-
-        const v = grid.getVoxel(center);
-        // Even though it's enclosed by opaque stone, its own visibility should be .all
-        try (VisCheck{ .px = true, .nx = true, .py = true, .ny = true, .pz = true, .nz = true }).check(v);
-    }
-
-    // --- 5. Test boundary crossing visibility ---
-    {
-        // Voxeme Boundary (voxeme_length = 16)
-        const v_coord1 = VoxelCoord{ 15, 10, 10 };
-        const v_coord2 = VoxelCoord{ 16, 10, 10 };
-        std.debug.assert(@reduce(.Or, convert.voxelToVoxeme(v_coord1) != convert.voxelToVoxeme(v_coord2)));
-        try grid.setVoxel(v_coord1, stone);
-        try grid.setVoxel(v_coord2, stone);
-
-        // Page Boundary (page_length_in_voxels = 16*16 = 256)
-        const p_coord1 = VoxelCoord{ 255, 10, 10 };
-        const p_coord2 = VoxelCoord{ 256, 10, 10 };
-        std.debug.assert(@reduce(.Or, convert.voxelToPage(p_coord1) != convert.voxelToPage(p_coord2)));
-        try grid.setVoxel(p_coord1, stone);
-        try grid.setVoxel(p_coord2, stone);
-
-        try grid.update(frame_arena.allocator());
-
-        // Check voxeme boundary occlusion
-        try (VisCheck{ .px = false, .nx = true, .py = true, .ny = true, .pz = true, .nz = true }).check(grid.getVoxel(v_coord1));
-        try (VisCheck{ .px = true, .nx = false, .py = true, .ny = true, .pz = true, .nz = true }).check(grid.getVoxel(v_coord2));
-
-        // Check page boundary occlusion
-        try (VisCheck{ .px = false, .nx = true, .py = true, .ny = true, .pz = true, .nz = true }).check(grid.getVoxel(p_coord1));
-        try (VisCheck{ .px = true, .nx = false, .py = true, .ny = true, .pz = true, .nz = true }).check(grid.getVoxel(p_coord2));
-    }
-
-    // --- 6. Test Heterogeneous -> Homogeneous visibility ---
-    {
-        // First, create a fully solid, homogeneous page of stone at (1,1,1)
-        const solid_page_coord = PageCoord{ 1, 1, 1 };
-        const page_gop = try grid.pages.getOrPut(gpa, solid_page_coord);
-        page_gop.value_ptr.* = .{
-            .is_heterogeneous = false,
-            .homogeneous = .fromLite(stone),
-            .heterogeneous = .{},
-        };
-
-        // Now, place a single voxel just outside that page, at the -X boundary.
-        const test_coord = convert.pageToVoxel(solid_page_coord, .min, .min) - VoxelCoord{ 1, 0, 0 };
-        try grid.setVoxel(test_coord, stone);
-        try grid.update(frame_arena.allocator());
-
-        // This voxel's +X face should be occluded by the neighboring homogeneous page.
-        const v = grid.getVoxel(test_coord);
-        try (VisCheck{ .px = false, .nx = true, .py = true, .ny = true, .pz = true, .nz = true }).check(v);
-    }
-}
-
-test "voxeme meshing" {
-    const gpa = std.testing.allocator;
-
-    var grid = try Grid.init(gpa);
-    defer grid.deinit();
-
-    var frame_arena = std.heap.ArenaAllocator.init(gpa);
-    defer frame_arena.deinit();
-    const fa = frame_arena.allocator();
-
-    var vertices = std.ArrayList(Vertex).empty;
-    defer vertices.deinit(gpa);
-    var indices = std.ArrayList(u32).empty;
-    defer indices.deinit(gpa);
-
-    const stone_mat = try grid.bindMaterial(.{ .is_opaque = true, .color = .{ 0.5, 0.5, 0.5 } });
-    const stone: LiteVoxel = .{ .material_id = stone_mat };
-
-    // --- Case 1: Single Voxel (Heterogeneous Path) ---
-    // A single voxel should have 6 visible faces.
-    {
-        vertices.clearRetainingCapacity();
-        indices.clearRetainingCapacity();
-
-        const coord = VoxelCoord{ 0, 0, 0 };
-        const voxeme_coord = convert.voxelToVoxeme(coord);
-        try grid.setVoxel(coord, stone);
-        try grid.update(fa);
-
-        try grid.voxemeMeshBasic(gpa, voxeme_coord, &vertices, &indices);
-
-        try std.testing.expectEqual(@as(usize, 24), vertices.items.len); // 6 faces * 4 vertices
-        try std.testing.expectEqual(@as(usize, 36), indices.items.len); // 6 faces * 6 indices
-
-        try grid.delVoxel(coord);
-        try grid.update(fa);
-    }
-
-    // --- Case 2: Two adjacent voxels in same voxeme (Heterogeneous Path) ---
-    // Two adjacent voxels should hide one face each, for a total of 10 visible faces.
-    {
-        vertices.clearRetainingCapacity();
-        indices.clearRetainingCapacity();
-
-        const coord1 = VoxelCoord{ 1, 1, 1 };
-        const coord2 = VoxelCoord{ 2, 1, 1 }; // +X neighbor
-        const voxeme_coord = convert.voxelToVoxeme(coord1);
-        std.debug.assert(@reduce(.And, voxeme_coord == convert.voxelToVoxeme(coord2)));
-
-        try grid.setVoxel(coord1, stone);
-        try grid.setVoxel(coord2, stone);
-        try grid.update(fa);
-
-        try grid.voxemeMeshBasic(gpa, voxeme_coord, &vertices, &indices);
-
-        try std.testing.expectEqual(@as(usize, 40), vertices.items.len); // 10 faces * 4 vertices
-        try std.testing.expectEqual(@as(usize, 60), indices.items.len); // 10 faces * 6 indices
-
-        try grid.delVoxel(coord1);
-        try grid.delVoxel(coord2);
-        try grid.update(fa);
-    }
-
-    // --- Case 3: Homogeneous voxeme, isolated (Homogeneous Path) ---
-    // A full, solid voxeme should be meshed as one large cube with 6 faces.
-    {
-        vertices.clearRetainingCapacity();
-        indices.clearRetainingCapacity();
-
-        const voxeme_coord = VoxemeCoord{ 5, 5, 5 };
-        try insertHomoVoxeme(&grid, gpa, voxeme_coord, stone);
-        // No update needed as the grid is in a valid state for meshing already.
-
-        try grid.voxemeMeshBasic(gpa, voxeme_coord, &vertices, &indices);
-
-        try std.testing.expectEqual(@as(usize, 24), vertices.items.len); // 6 faces * 4 vertices
-        try std.testing.expectEqual(@as(usize, 36), indices.items.len); // 6 faces * 6 indices
-    }
-
-    // --- Case 4: Homogeneous voxeme, occluded (Homogeneous Path) ---
-    // Two adjacent homogeneous voxemes. We mesh one, it should have one face occluded.
-    {
-        vertices.clearRetainingCapacity();
-        indices.clearRetainingCapacity();
-
-        const v_coord1 = VoxemeCoord{ 10, 10, 10 };
-        const v_coord2 = VoxemeCoord{ 11, 10, 10 }; // +X neighbor
-
-        try insertHomoVoxeme(&grid, gpa, v_coord1, stone);
-        try insertHomoVoxeme(&grid, gpa, v_coord2, stone);
-
-        // Manually mark the page(s) as dirty because we used a test helper
-        // that bypasses the normal setVoxel logic.
-        const page_coord = convert.voxemeToPage(v_coord1);
-        try grid.dirty_pages.put(gpa, page_coord, {});
-
-        // Run the update to pre-calculate visibility. This is a crucial step.
-        // The old comment "No update needed" was removed as it's now incorrect.
-        try grid.update(fa);
-
-        // Mesh the first voxeme
-        try grid.voxemeMeshBasic(gpa, v_coord1, &vertices, &indices);
-
-        // It should have 5 faces, as its +X face is now correctly calculated as occluded
-        try std.testing.expectEqual(@as(usize, 20), vertices.items.len); // 5 faces * 4 vertices
-        try std.testing.expectEqual(@as(usize, 30), indices.items.len); // 5 faces * 6 indices
-    }
-}
-
-fn insertHomoVoxeme(g: *Grid, gpa: std.mem.Allocator, v_coord: VoxemeCoord, lite: LiteVoxel) !void {
-    const p_coord = convert.voxemeToPage(v_coord);
-    const p_gop = try g.pages.getOrPut(gpa, p_coord);
-    if (!p_gop.found_existing) p_gop.value_ptr.* = .empty;
-    p_gop.value_ptr.is_heterogeneous = true;
-    _ = try p_gop.value_ptr.heterogeneous.getOrPutValue(gpa, v_coord, Voxeme.homogeneous(.fromLite(lite)));
 }

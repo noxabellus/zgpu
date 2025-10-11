@@ -50,7 +50,7 @@ fn addIncludePath(b: *std.Build, lib: *std.Build.Step.Compile, path: []const u8)
 }
 
 pub fn build(b: *std.Build) void {
-    std.debug.print("build.zig started\n", .{});
+    // std.debug.print("build.zig started\n", .{});
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 

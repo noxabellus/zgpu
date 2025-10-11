@@ -30,7 +30,72 @@ const Demo = struct {
     adapter: wgpu.Adapter = null,
     device: wgpu.Device = null,
     config: wgpu.SurfaceConfiguration = .{},
+
+    // --- Camera state for fly controls ---
+    camera_pos: vec3 = .{ 8.125, 8.125, 28.125 }, // Start outside the large sphere
+    camera_front: vec3 = .{ 0.0, 0.0, -1.0 },
+    camera_up: vec3 = .{ 0.0, 1.0, 0.0 },
+    camera_right: vec3 = .{ 0.0, 0.0, 0.0 }, // will be calculated
+
+    yaw: f32 = -90.0,
+    pitch: f32 = 0.0,
+
+    first_mouse: bool = true,
+    last_x: f64 = 400.0,
+    last_y: f64 = 300.0,
+
+    // Timing
+    delta_time: f32 = 0.0,
+    last_frame: f32 = 0.0,
 };
+
+// --- Mouse movement callback ---
+fn handle_mouse_move(w: *glfw.Window, xpos: f64, ypos: f64) callconv(.c) void {
+    const d: *Demo = @ptrCast(@alignCast(glfw.getWindowUserPointer(w) orelse return));
+
+    const btn_state = glfw.getMouseButton(w, .button_3);
+    if (btn_state != .repeat and btn_state != .press) {
+        d.first_mouse = true;
+        return;
+    }
+
+    if (d.first_mouse) {
+        d.last_x = xpos;
+        d.last_y = ypos;
+        d.first_mouse = false;
+    }
+
+    var x_offset = xpos - d.last_x;
+    var y_offset = d.last_y - ypos; // reversed since y-coordinates go from top to bottom
+    d.last_x = xpos;
+    d.last_y = ypos;
+
+    const sensitivity: f64 = 0.05;
+    x_offset *= sensitivity;
+    y_offset *= sensitivity;
+
+    d.yaw += @floatCast(x_offset);
+    d.pitch += @floatCast(y_offset);
+
+    // constrain pitch
+    if (d.pitch > 89.0) {
+        d.pitch = 89.0;
+    }
+    if (d.pitch < -89.0) {
+        d.pitch = -89.0;
+    }
+
+    var front: vec3 = undefined;
+    const yaw_rad = linalg.deg_to_rad * d.yaw;
+    const pitch_rad = linalg.deg_to_rad * d.pitch;
+    front[0] = std.math.cos(yaw_rad) * std.math.cos(pitch_rad);
+    front[1] = std.math.sin(pitch_rad);
+    front[2] = std.math.sin(yaw_rad) * std.math.cos(pitch_rad);
+    d.camera_front = linalg.normalize(front);
+    // Also re-calculate the Right and Up vector
+    d.camera_right = linalg.normalize(linalg.cross(d.camera_front, .{ 0.0, 1.0, 0.0 }));
+    d.camera_up = linalg.normalize(linalg.cross(d.camera_right, d.camera_front));
+}
 
 // Use the Vertex definition from the Grid module, as that's what the mesher produces.
 const Vertex = Grid.Vertex;
@@ -100,6 +165,10 @@ pub fn main() !void {
 
     var demo = Demo{};
 
+    // Initial camera vector calculations
+    demo.camera_right = linalg.normalize(linalg.cross(demo.camera_front, .{ 0.0, 1.0, 0.0 }));
+    demo.camera_up = linalg.normalize(linalg.cross(demo.camera_right, demo.camera_front));
+
     const instance_extras = wgpu.InstanceExtras{ .chain = .{ .s_type = .instance_extras }, .backends = switch (builtin.os.tag) {
         .windows => if (glfw.isRunningInWine()) wgpu.InstanceBackend.vulkanBackend else wgpu.InstanceBackend.dx12Backend,
         else => wgpu.InstanceBackend.vulkanBackend,
@@ -129,6 +198,10 @@ pub fn main() !void {
     const window = try glfw.createWindow(800, 600, "Voxel Grid", null, null);
     defer glfw.destroyWindow(window);
     glfw.setWindowUserPointer(window, &demo);
+
+    // --- Setup window for camera input ---
+    // glfw.setInputMode(window, .{ .cursor = .captured });
+    _ = glfw.setCursorPosCallback(window, handle_mouse_move);
 
     _ = glfw.setFramebufferSizeCallback(window, &struct {
         fn handle_glfw_framebuffer_size(w: *glfw.Window, width: i32, height: i32) callconv(.c) void {
@@ -340,8 +413,7 @@ pub fn main() !void {
     const dirt: Grid.LiteVoxel = .{ .material_id = dirt_mat };
 
     // --- GENERATE A SPHERE ---
-    // Create a sphere made of two materials
-    const radius: i32 = 7;
+    const radius: i32 = 32;
     const radius_sq = @as(f32, @floatFromInt(radius * radius));
     {
         var z: i32 = -radius;
@@ -368,16 +440,44 @@ pub fn main() !void {
         }
     }
 
+    log.info("generated sphere with radius {d} voxels", .{radius});
+
     // Update the grid to calculate visibility, etc.
     try grid.update(frame_arena);
 
-    // Generate the mesh for the voxeme containing our sphere
-    var vertices = std.ArrayList(Vertex).empty;
+    log.info("grid update complete", .{});
+
+    {
+        var page_it = grid.pages.iterator();
+        while (page_it.next()) |page_ptrs| {
+            const page_pos = page_ptrs.key_ptr.*;
+            const page = page_ptrs.value_ptr.*;
+
+            log.info("page at {d}: hetero: {any}, homo: {any}", .{ page_pos, page.isHeterogeneous(), page.homogeneous });
+
+            var voxeme_it = page.heterogeneous.iterator();
+            while (voxeme_it.next()) |voxeme_ptrs| {
+                const voxeme_pos = voxeme_ptrs.key_ptr.*;
+                const voxeme_level_1 = voxeme_ptrs.value_ptr.*;
+
+                log.info("  voxeme at {}: homo: {any}", .{ voxeme_pos, voxeme_level_1.is_homogeneous });
+
+                if (voxeme_level_1.is_homogeneous) {
+                    log.info("    {any} ", .{voxeme_level_1.payload.homogeneous});
+                } else {
+                    log.info("    skipping display of dense heterogeneous collection", .{});
+                }
+            }
+        }
+    }
+
+    // Generate the mesh for the world containing our sphere
+    var vertices = std.ArrayList(Grid.Vertex).empty;
     defer vertices.deinit(gpa);
     var indices = std.ArrayList(u32).empty;
     defer indices.deinit(gpa);
 
-    try grid.voxemeMeshBasic(gpa, .{ 0, 0, 0 }, &vertices, &indices);
+    try grid.worldMeshBasic(gpa, .{ 0, 0, 0 }, .{ 1, 1, 1 }, &vertices, &indices);
 
     log.info("generated mesh with {d} vertices and {d} indices", .{ vertices.items.len, indices.items.len });
 
@@ -404,14 +504,41 @@ pub fn main() !void {
 
     log.info("startup completed in {d} ms", .{startup_ms});
 
-    var time = try std.time.Timer.start();
+    var frame_timer = try std.time.Timer.start();
 
     // --- Main Loop ---
     main_loop: while (!glfw.windowShouldClose(window)) {
         glfw.pollEvents();
         _ = arena_state.reset(.free_all);
 
-        // Calculate the view-projection matrix each frame.
+        // --- Delta time calculation ---
+        const ns_since_start = frame_timer.read();
+        const current_frame = @as(f32, @floatFromInt(ns_since_start)) / std.time.ns_per_s;
+        demo.delta_time = current_frame - demo.last_frame;
+        demo.last_frame = current_frame;
+
+        // --- Process keyboard input ---
+        const camera_speed = 10.0 * demo.delta_time; // Adjust speed as needed
+        if (glfw.getKey(window, .w) == .press) {
+            demo.camera_pos = demo.camera_pos + demo.camera_front * @as(vec3, @splat(camera_speed));
+        }
+        if (glfw.getKey(window, .s) == .press) {
+            demo.camera_pos = demo.camera_pos - demo.camera_front * @as(vec3, @splat(camera_speed));
+        }
+        if (glfw.getKey(window, .a) == .press) {
+            demo.camera_pos = demo.camera_pos - demo.camera_right * @as(vec3, @splat(camera_speed));
+        }
+        if (glfw.getKey(window, .d) == .press) {
+            demo.camera_pos = demo.camera_pos + demo.camera_right * @as(vec3, @splat(camera_speed));
+        }
+        if (glfw.getKey(window, .e) == .press) {
+            demo.camera_pos = demo.camera_pos + demo.camera_up * @as(vec3, @splat(camera_speed));
+        }
+        if (glfw.getKey(window, .q) == .press) {
+            demo.camera_pos = demo.camera_pos - demo.camera_up * @as(vec3, @splat(camera_speed));
+        }
+
+        // --- Calculate the view-projection matrix from fly camera state ---
         var camera_uniform: CameraUniform = undefined;
         {
             var width: i32 = 0;
@@ -419,17 +546,12 @@ pub fn main() !void {
             glfw.getFramebufferSize(window, &width, &height);
             const aspect = if (height == 0) 1.0 else @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(height));
 
-            const proj = linalg.mat4_perspective(linalg.deg_to_rad * 60.0, aspect, 0.1, 100.0);
+            const proj = linalg.mat4_perspective(linalg.deg_to_rad * 60.0, aspect, 0.1, 1000.0);
 
-            const ns_since_start = time.read();
-            const time_since_start = @as(f32, @floatFromInt(ns_since_start)) / std.time.ns_per_s;
-            const x = std.math.sin(time_since_start) * 2.0;
-            const z = std.math.cos(time_since_start) * 2.0;
-            // Adjust camera position to view the larger sphere
             const view = linalg.mat4_look_at(
-                .{ x, 2.0, z }, // Eye position
-                .{ 0.0, 0.0, 0.0 }, // Target (center of the sphere)
-                .{ 0.0, 1.0, 0.0 }, // Up vector
+                demo.camera_pos,
+                demo.camera_pos + demo.camera_front,
+                demo.camera_up,
             );
 
             camera_uniform.view_proj = linalg.mat4_mul(proj, view);
