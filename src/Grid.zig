@@ -490,11 +490,7 @@ pub const Neighbor = struct {
     }
 
     pub fn get(axis: Axis, positive: bool) vec3i {
-        const index = switch (axis) {
-            .x => if (positive) 0 else 1,
-            .y => if (positive) 2 else 3,
-            .z => if (positive) 4 else 5,
-        };
+        const index = @intFromEnum(axis) + if (positive) @as(usize, 0) else 1;
         return coordinates[index];
     }
 
@@ -741,14 +737,8 @@ pub fn isVoxelMapped(self: *const Grid, coord: VoxelCoord) bool {
 
 /// Loop all dirty Pages, precalculate Voxel visibility, homogenize, and prune extraneous data structures.
 pub fn update(self: *Grid, frame_arena: std.mem.Allocator) !void {
-    var pages_pruned: std.AutoHashMapUnmanaged(PageCoord, void) = .empty;
-    defer pages_pruned.deinit(frame_arena);
-
-    var voxemes_pruned: std.AutoHashMapUnmanaged(VoxemeCoord, void) = .empty;
-    defer voxemes_pruned.deinit(frame_arena);
-
-    try self.homogenizeAndPrune(frame_arena, &pages_pruned, &voxemes_pruned);
-    try self.recalculateVisibility(frame_arena, &pages_pruned, &voxemes_pruned);
+    try self.homogenizeAndPrune(frame_arena);
+    try self.recalculateVisibility();
 
     var dirty_it = self.dirty_pages.keyIterator();
     while (dirty_it.next()) |page_coord_ptr| {
@@ -764,74 +754,16 @@ pub fn update(self: *Grid, frame_arena: std.mem.Allocator) !void {
 }
 
 /// Loop all dirty Pages and their neighbors to recalculate Voxel visibility.
-pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_pruned: *const std.AutoHashMapUnmanaged(PageCoord, void), voxemes_pruned: *const std.AutoHashMapUnmanaged(VoxemeCoord, void)) !void {
-    // we need to traverse all dirty pages and process them and potentially their neighbors
-    // to ensure that visibility is correct across page boundaries
-
-    // we need to track which voxemes or homogeneous pages bordering the dirty pages need to be updated
-    var border_pages: std.AutoHashMapUnmanaged(PageCoord, Visibility) = .empty;
-    defer border_pages.deinit(frame_arena);
-
-    var border_voxemes: std.AutoHashMapUnmanaged(VoxemeCoord, Visibility) = .empty;
-    defer border_voxemes.deinit(frame_arena);
-
-    // first we can queue the neighbors of all deleted pages
-    var page_pruned_it = pages_pruned.keyIterator();
-    while (page_pruned_it.next()) |page_entry| {
-        const page_coord = page_entry.*;
-
-        // queue all 6 neighbors of this page, if they exist
-        comptime var neighbor_it = Neighbor.Iterator{};
-        inline while (comptime neighbor_it.next()) |neighbor| {
-            const neighbor_page_coord = page_coord + neighbor.coord_offset;
-            if (!self.dirty_pages.contains(neighbor_page_coord) and self.pages.contains(neighbor_page_coord)) {
-                const border_page_gop = try border_pages.getOrPut(frame_arena, neighbor_page_coord);
-                if (!border_page_gop.found_existing) border_page_gop.value_ptr.* = .none;
-                border_page_gop.value_ptr.set(neighbor.axis, neighbor.positive, true);
-            }
-        }
-    }
-
-    // and queue the neighbors of all deleted voxemes
-    var voxeme_pruned_it = voxemes_pruned.keyIterator();
-    while (voxeme_pruned_it.next()) |voxeme_entry| {
-        const voxeme_coord = voxeme_entry.*;
-
-        // queue all 6 neighbors of this voxeme, and any neighboring pages, if they exist
-        comptime var neighbor_it = Neighbor.Iterator{};
-        inline while (comptime neighbor_it.next()) |neighbor| {
-            const neighbor_voxeme_coord = voxeme_coord + neighbor.coord_offset;
-            const neighbor_page_coord = convert.voxemeToPage(neighbor_voxeme_coord);
-            if (!self.dirty_pages.contains(neighbor_page_coord)) {
-                if (self.pages.getPtr(neighbor_page_coord)) |neighbor_page| {
-                    const border_page_gop = try border_pages.getOrPut(frame_arena, neighbor_page_coord);
-                    if (!border_page_gop.found_existing) border_page_gop.value_ptr.* = .none;
-                    border_page_gop.value_ptr.set(neighbor.axis, neighbor.positive, true);
-
-                    if (neighbor_page.heterogeneous.contains(neighbor_voxeme_coord)) {
-                        const border_voxeme_gop = try border_voxemes.getOrPut(frame_arena, neighbor_voxeme_coord);
-                        if (!border_voxeme_gop.found_existing) border_voxeme_gop.value_ptr.* = .none;
-                        border_voxeme_gop.value_ptr.set(neighbor.axis, neighbor.positive, true);
-                    }
-                }
-            }
-        }
-    }
-
-    // next we must process all dirty pages
+pub fn recalculateVisibility(self: *Grid) !void {
     var page_it = self.dirty_pages.keyIterator();
     while (page_it.next()) |page_entry| {
         const page_coord = page_entry.*;
-
         if (self.pages.getPtr(page_coord)) |page| {
             // start with no visibility; if any interior borders have visibility, change this for the respective edge
             var new_page_vis: Visibility = .none;
 
             if (!page.isHeterogeneous()) {
                 // the entire page is a single homogeneous large-volume voxel
-                const data = page.homogeneous;
-
-                const local_is_solid = self.getMaterialProperties(data.material_id).is_opaque;
 
                 // recalculate visibility for the single large-volume voxel in this page and within its neighbors
                 comptime var neighbor_it = Neighbor.Iterator{};
@@ -839,37 +771,21 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
                     const neighbor_page_coord = page_coord + neighbor.coord_offset;
 
                     if (self.pages.getPtr(neighbor_page_coord)) |neighbor_page| {
-                        // queue neighbor page update if it hasn't been already
-                        if (!self.dirty_pages.contains(neighbor_page_coord)) {
-                            const neighbor_page_gop = try border_pages.getOrPut(frame_arena, neighbor_page_coord);
-                            if (!neighbor_page_gop.found_existing) neighbor_page_gop.value_ptr.* = .none;
-                            // if we are not solid, mark the opposing face visible in the queued neighbor
-                            if (!local_is_solid) neighbor_page_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
-                        }
-
                         if (neighbor_page.isHeterogeneous()) {
                             // we need to traverse the bordering face voxemes of the neighbor, checking that they are completely solid across their volume face
                             const reference_voxeme_coord = convert.pageToVoxeme(neighbor_page_coord, .min);
                             var voxeme_border_it = BorderIterator.forPage(neighbor.axis, !neighbor.positive);
                             var face_is_solid = true;
-                            while (voxeme_border_it.next()) |local_coord| {
+                            solidity: while (voxeme_border_it.next()) |local_coord| {
                                 const neighbor_voxeme_coord = reference_voxeme_coord + local_coord;
 
                                 if (neighbor_page.heterogeneous.getPtr(neighbor_voxeme_coord)) |neighbor_voxeme| {
-                                    // queue the neighbor voxeme for update if it hasn't been already
-                                    if (!self.dirty_pages.contains(neighbor_page_coord)) {
-                                        const neighbor_voxeme_gop = try border_voxemes.getOrPut(frame_arena, neighbor_voxeme_coord);
-                                        if (!neighbor_voxeme_gop.found_existing) neighbor_voxeme_gop.value_ptr.* = .none;
-
-                                        // if we are not solid, mark the opposing face visible in the queued neighbor
-                                        if (!local_is_solid) neighbor_voxeme_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
-                                    }
-
                                     if (neighbor_voxeme.is_homogeneous) {
                                         const neighbor_data = neighbor_voxeme.payload.homogeneous;
                                         const neighbor_is_solid = self.getMaterialProperties(neighbor_data.material_id).is_opaque;
                                         if (!neighbor_is_solid) {
                                             face_is_solid = false;
+                                            break :solidity;
                                         }
                                     } else {
                                         const neighbor_data = neighbor_voxeme.asHeterogeneous();
@@ -883,10 +799,8 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
                                             const neighbor_is_solid = self.getMaterialProperties(neighbor_voxel.material_id).is_opaque;
                                             if (!neighbor_is_solid) {
                                                 face_is_solid = false;
+                                                break :solidity;
                                             }
-
-                                            // update the neighbor voxel's visibility directly, if it isn't dirty itself
-                                            if (!neighbor_voxeme.is_dirty) neighbor_voxel.visibility.set(neighbor.axis, !neighbor.positive, !local_is_solid);
                                         }
                                     }
                                 } else {
@@ -895,6 +809,7 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
                                     const neighbor_is_solid = self.getMaterialProperties(neighbor_page.homogeneous.material_id).is_opaque;
                                     if (!neighbor_is_solid) {
                                         face_is_solid = false;
+                                        break :solidity;
                                     }
                                 }
                             }
@@ -908,15 +823,6 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
                             const neighbor_is_solid = self.getMaterialProperties(neighbor_data.material_id).is_opaque;
                             if (!neighbor_is_solid) {
                                 new_page_vis.set(neighbor.axis, neighbor.positive, true);
-                            }
-
-                            if (!self.dirty_pages.contains(neighbor_page_coord)) {
-                                // queue neighbor page update if it hasn't been already
-                                const neighbor_page_gop = try border_pages.getOrPut(frame_arena, neighbor_page_coord);
-                                if (!neighbor_page_gop.found_existing) neighbor_page_gop.value_ptr.* = .none;
-
-                                // if we are not solid, mark the opposing face visible in the queued neighbor
-                                if (!local_is_solid) neighbor_page_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
                             }
                         }
                     } else {
@@ -933,9 +839,6 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
 
                     var new_voxeme_vis: Visibility = .none;
                     if (voxeme.is_homogeneous) {
-                        const data = voxeme.payload.homogeneous;
-                        const local_is_solid = self.getMaterialProperties(data.material_id).is_opaque;
-
                         // recalculate visibility for the single large-volume voxel in this voxeme
                         comptime var neighbor_it = Neighbor.Iterator{};
                         inline while (comptime neighbor_it.next()) |neighbor| {
@@ -973,10 +876,8 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
                                                 const neighbor_is_solid = self.getMaterialProperties(neighbor_voxel.material_id).is_opaque;
                                                 if (!neighbor_is_solid) {
                                                     face_is_solid = false;
+                                                    break;
                                                 }
-
-                                                // update the neighbor voxel's visibility directly, if it isn't dirty itself
-                                                if (!neighbor_voxeme.is_dirty) neighbor_voxel.visibility.set(neighbor.axis, !neighbor.positive, !local_is_solid);
                                             }
 
                                             if (!face_is_solid) {
@@ -996,41 +897,6 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
                                 new_voxeme_vis.set(neighbor.axis, neighbor.positive, true);
                                 new_page_vis.set(neighbor.axis, neighbor.positive, true);
                             }
-
-                            // if the neighbor isn't dirty itself, but does exist, we need to update its visibilities too
-                            if (!self.dirty_pages.contains(neighbor_page_coord)) {
-                                if (self.pages.getPtr(neighbor_page_coord)) |neighbor_page| {
-                                    // queue neighbor page update if it hasn't been already
-                                    const neighbor_page_gop = try border_pages.getOrPut(frame_arena, neighbor_page_coord);
-                                    if (!neighbor_page_gop.found_existing) neighbor_page_gop.value_ptr.* = .none;
-
-                                    // if we are not solid, mark the opposing face visible in the queued neighbor
-                                    if (!local_is_solid) neighbor_page_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
-
-                                    // if there is also a neighboring voxeme, we need to ensure it is updated as well
-                                    if (neighbor_page.heterogeneous.getPtr(neighbor_voxeme_coord)) |neighbor_voxeme| {
-                                        // queue neighbor voxeme update it if hasn't been already
-                                        const neighbor_voxeme_gop = try border_voxemes.getOrPut(frame_arena, neighbor_voxeme_coord);
-                                        if (!neighbor_voxeme_gop.found_existing) neighbor_voxeme_gop.value_ptr.* = .none;
-
-                                        // if we are not solid, mark the opposing face visible in the queued neighbor
-                                        if (!local_is_solid) neighbor_voxeme_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
-
-                                        if (!neighbor_voxeme.is_homogeneous) {
-                                            // if the neighbor is dense voxel data, we can update the adjacent border voxels directly
-                                            const neighbor_data = neighbor_voxeme.asHeterogeneous();
-
-                                            // update the specific voxel in the buffer, marking the opposing face as visible if we are not solid
-                                            var border_it = BorderIterator.forVoxeme(neighbor.axis, !neighbor.positive);
-                                            const reference_voxel_coord = convert.voxemeToVoxel(neighbor_voxeme_coord, .min);
-                                            while (border_it.next()) |local_coord| {
-                                                const index = convert.bufferToIndex(@intCast(reference_voxel_coord + local_coord));
-                                                neighbor_data[index].visibility.set(neighbor.axis, !neighbor.positive, !local_is_solid);
-                                            }
-                                        }
-                                    }
-                                }
-                            }
                         }
                     } else {
                         // Most performance critical case: dense voxel data
@@ -1041,15 +907,12 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
                         // recalculate visibility for all voxels in this voxeme
                         for (data, 0..) |*voxel, i| {
                             const local_coord = convert.indexToVoxel(voxeme_coord, i);
-                            const local_is_solid = self.getMaterialProperties(voxel.material_id).is_opaque;
 
                             var new_voxel_vis: Visibility = .none;
 
                             comptime var neighbor_it = Neighbor.Iterator{};
                             inline while (comptime neighbor_it.next()) |neighbor| {
                                 const neighbor_voxel_coord = local_coord + neighbor.coord_offset;
-                                const neighbor_page_coord = convert.voxelToPage(neighbor_voxel_coord);
-                                const neighbor_voxeme_coord = convert.voxelToVoxeme(neighbor_voxel_coord);
 
                                 // we can update our local visibility directly
                                 const neighbor_is_solid = neighborhood.isOpaque(self, neighbor_voxel_coord);
@@ -1057,37 +920,6 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
                                     new_voxel_vis.set(neighbor.axis, neighbor.positive, true);
                                     new_voxeme_vis.set(neighbor.axis, neighbor.positive, true);
                                     new_page_vis.set(neighbor.axis, neighbor.positive, true);
-                                }
-
-                                // if the neighbor isn't dirty itself, but does exist, we need to update its visibilities too
-                                if (!self.dirty_pages.contains(neighbor_page_coord)) {
-                                    if (self.pages.getPtr(neighbor_page_coord)) |neighbor_page| {
-                                        // queue neighbor page update if it hasn't been already
-                                        const neighbor_page_gop = try border_pages.getOrPut(frame_arena, neighbor_page_coord);
-                                        if (!neighbor_page_gop.found_existing) neighbor_page_gop.value_ptr.* = .none;
-
-                                        // if we are not solid, mark the opposing face visible in the queued neighbor
-                                        if (!local_is_solid) neighbor_page_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
-
-                                        // if there is also a neighboring voxeme, we need to ensure it is updated as well
-                                        if (neighbor_page.heterogeneous.getPtr(neighbor_voxeme_coord)) |neighbor_voxeme| {
-                                            // queue neighbor voxeme update it if hasn't been already
-                                            const neighbor_voxeme_gop = try border_voxemes.getOrPut(frame_arena, neighbor_voxeme_coord);
-                                            if (!neighbor_voxeme_gop.found_existing) neighbor_voxeme_gop.value_ptr.* = .none;
-
-                                            // if we are not solid, mark the opposing face visible in the queued neighbor
-                                            if (!local_is_solid) neighbor_voxeme_gop.value_ptr.set(neighbor.axis, !neighbor.positive, true);
-
-                                            if (!neighbor_voxeme.is_homogeneous) {
-                                                // if the neighbor is dense voxel data, we can update the adjacent voxel directly
-                                                const neighbor_data = neighbor_voxeme.asHeterogeneous();
-
-                                                // update the specific voxel in the buffer, marking the opposing face as visible if we are not solid
-                                                const index = convert.bufferToIndex(convert.voxelToBuffer(neighbor_voxel_coord));
-                                                neighbor_data[index].visibility.set(neighbor.axis, !neighbor.positive, !local_is_solid);
-                                            }
-                                        }
-                                    }
                                 }
                             }
 
@@ -1104,31 +936,141 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
             // update this page's visibility directly
             page.visibility = new_page_vis;
         }
-    }
 
-    var border_voxeme_it = border_voxemes.iterator();
-    while (border_voxeme_it.next()) |entry| {
-        const voxeme_coord = entry.key_ptr.*;
-        const new_vis = entry.value_ptr.*;
+        // now we process all border pages
 
-        const page = self.pages.getPtr(convert.voxemeToPage(voxeme_coord)) orelse unreachable; // shouldnt have been put in the map if it didnt exist
-        const voxeme = page.heterogeneous.getPtr(voxeme_coord) orelse unreachable; // same as above
+        const maybe_local_page = self.pages.getPtr(page_coord);
+        const page_homo =
+            if (maybe_local_page) |p|
+                if (p.isHeterogeneous()) false else true
+            else
+                true;
 
-        voxeme.visibility = new_vis;
-    }
+        const page_solid =
+            if (maybe_local_page) |p|
+                self.getMaterialProperties(p.homogeneous.material_id).is_opaque
+            else
+                false;
 
-    var border_page_it = border_pages.iterator();
-    while (border_page_it.next()) |entry| {
-        const page_coord = entry.key_ptr.*;
-        const new_vis = entry.value_ptr.*;
+        comptime var page_neighbor_it = Neighbor.Iterator{};
+        inline while (comptime page_neighbor_it.next()) |neighbor| comptime_body: {
+            const neighbor_page_coord = page_coord + neighbor.coord_offset;
+            if (self.dirty_pages.contains(neighbor_page_coord)) break :comptime_body; // no work left; have to break block to prevent comptime control flow with runtime value error
 
-        const page = self.pages.getPtr(page_coord) orelse unreachable; // shouldnt have been put in the map if it didnt exist
-        page.visibility = new_vis;
+            const neighbor_page = self.pages.getPtr(neighbor_page_coord) orelse break :comptime_body; // no work left; have to break block to prevent comptime control flow with runtime value error
+
+            if (page_homo) neighbor_page.visibility.set(neighbor.axis, !neighbor.positive, !page_solid);
+
+            if (neighbor_page.isHeterogeneous()) {
+                // we need to process the neighbor's 256 voxemes that border our page, if they exist
+                var voxeme_border_it = BorderIterator.forPage(neighbor.axis, !neighbor.positive);
+                while (voxeme_border_it.next()) |neighbor_voxeme_coord| {
+                    const neighbor_voxeme = neighbor_page.heterogeneous.getPtr(neighbor_voxeme_coord) orelse continue; // doesn't exist, no work to do
+
+                    if (page_homo) {
+                        // we can update the voxeme directly
+                        neighbor_voxeme.visibility.set(neighbor.axis, !neighbor.positive, !page_solid);
+
+                        if (!neighbor_voxeme.is_homogeneous) {
+                            // process the neighbor_voxeme against page_solid
+
+                            const neighbor_data = neighbor_voxeme.asHeterogeneous();
+
+                            var neighbor_voxel_border_it = BorderIterator.forVoxeme(neighbor.axis, !neighbor.positive);
+                            const neighbor_reference_voxel = convert.voxemeToVoxel(neighbor_voxeme_coord, .min);
+                            while (neighbor_voxel_border_it.next()) |voxel_offset| {
+                                const neighbor_voxel_coord = neighbor_reference_voxel + voxel_offset;
+                                const index = convert.voxelToIndex(neighbor_voxel_coord);
+
+                                neighbor_data[index].visibility.set(neighbor.axis, !neighbor.positive, !page_solid);
+                            }
+                        }
+                    } else {
+                        // we need to look at this voxeme's neighbor in our own page and determine its local solidity
+                        const local_page = maybe_local_page orelse unreachable; // homo check prevents this
+                        const local_voxeme_coord = neighbor_voxeme_coord + Neighbor.get(neighbor.axis, !neighbor.positive);
+
+                        if (local_page.heterogeneous.get(local_voxeme_coord)) |local_voxeme| {
+                            // process the neighbor_voxeme against local_voxeme
+                            if (local_voxeme.is_homogeneous) {
+                                const local_voxeme_solid = self.getMaterialProperties(local_voxeme.payload.homogeneous.material_id).is_opaque;
+                                neighbor_voxeme.visibility.set(neighbor.axis, !neighbor.positive, !local_voxeme_solid);
+
+                                if (!neighbor_voxeme.is_homogeneous) {
+                                    const neighbor_data = neighbor_voxeme.asHeterogeneous();
+
+                                    var neighbor_voxel_border_it = BorderIterator.forVoxeme(neighbor.axis, !neighbor.positive);
+                                    const neighbor_reference_voxel = convert.voxemeToVoxel(neighbor_voxeme_coord, .min);
+                                    while (neighbor_voxel_border_it.next()) |voxel_offset| {
+                                        const neighbor_voxel_coord = neighbor_reference_voxel + voxel_offset;
+                                        const index = convert.voxelToIndex(neighbor_voxel_coord);
+
+                                        neighbor_data[index].visibility.set(neighbor.axis, !neighbor.positive, !local_voxeme_solid);
+                                    }
+                                }
+                            } else {
+                                const local_data = local_voxeme.asHeterogeneous();
+
+                                var local_voxel_border_it = BorderIterator.forVoxeme(neighbor.axis, neighbor.positive);
+                                const local_reference_voxel = convert.voxemeToVoxel(local_voxeme_coord, .min);
+
+                                if (neighbor_voxeme.is_homogeneous) {
+                                    // just check our local voxeme's border voxel solidity
+
+                                    var face_is_solid = true;
+                                    vis: while (local_voxel_border_it.next()) |voxel_offset| {
+                                        const local_voxel_coord = local_reference_voxel + voxel_offset;
+                                        const index = convert.voxelToIndex(local_voxel_coord);
+                                        const local_is_solid = self.getMaterialProperties(local_data[index].material_id).is_opaque;
+                                        if (!local_is_solid) {
+                                            face_is_solid = false;
+                                            break :vis;
+                                        }
+                                    }
+
+                                    neighbor_voxeme.visibility.set(neighbor.axis, !neighbor.positive, !face_is_solid);
+                                } else {
+                                    // border vs border
+                                    const neighbor_data = neighbor_voxeme.asHeterogeneous();
+
+                                    while (local_voxel_border_it.next()) |voxel_offset| {
+                                        const local_voxel_coord = local_reference_voxel + voxel_offset;
+                                        const index = convert.voxelToIndex(local_voxel_coord);
+                                        const local_is_solid = self.getMaterialProperties(local_data[index].material_id).is_opaque;
+
+                                        const neighbor_voxel_coord = local_voxel_coord + Neighbor.get(neighbor.axis, !neighbor.positive);
+                                        const neighbor_index = convert.voxelToIndex(neighbor_voxel_coord);
+
+                                        neighbor_data[neighbor_index].visibility.set(neighbor.axis, !neighbor.positive, !local_is_solid);
+                                    }
+                                }
+                            }
+                        } else {
+                            // process the neighbor_voxeme against page_solid
+                            if (neighbor_voxeme.is_homogeneous) {
+                                neighbor_voxeme.visibility.set(neighbor.axis, !neighbor.positive, !page_solid);
+                            } else {
+                                const neighbor_data = neighbor_voxeme.asHeterogeneous();
+
+                                var neighbor_voxel_border_it = BorderIterator.forVoxeme(neighbor.axis, !neighbor.positive);
+                                const neighbor_reference_voxel = convert.voxemeToVoxel(neighbor_voxeme_coord, .min);
+                                while (neighbor_voxel_border_it.next()) |voxel_offset| {
+                                    const neighbor_voxel_coord = neighbor_reference_voxel + voxel_offset;
+                                    const index = convert.voxelToIndex(neighbor_voxel_coord);
+
+                                    neighbor_data[index].visibility.set(neighbor.axis, !neighbor.positive, !page_solid);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
 /// Loop all dirty Pages and homogenize and prune any that can be.
-pub fn homogenizeAndPrune(self: *Grid, frame_arena: std.mem.Allocator, pages_pruned: *std.AutoHashMapUnmanaged(PageCoord, void), voxemes_pruned: *std.AutoHashMapUnmanaged(VoxemeCoord, void)) !void {
+pub fn homogenizeAndPrune(self: *Grid, frame_arena: std.mem.Allocator) !void {
     var pages_to_prune = try std.ArrayList(PageCoord).initCapacity(frame_arena, self.dirty_pages.count());
     defer pages_to_prune.deinit(frame_arena);
 
@@ -1206,9 +1148,6 @@ pub fn homogenizeAndPrune(self: *Grid, frame_arena: std.mem.Allocator, pages_pru
 
             // Remove the voxeme from the page
             _ = page.heterogeneous.remove(voxeme_coord);
-
-            // report the pruning
-            try voxemes_pruned.put(frame_arena, voxeme_coord, {});
         }
 
         // If the page is now empty, cleanup
@@ -1232,12 +1171,6 @@ pub fn homogenizeAndPrune(self: *Grid, frame_arena: std.mem.Allocator, pages_pru
 
         // Remove the page from the grid
         _ = self.pages.remove(page_coord);
-
-        // Also remove from dirty pages
-        _ = self.dirty_pages.remove(page_coord);
-
-        // report the pruning
-        try pages_pruned.put(frame_arena, page_coord, {});
     }
 }
 
