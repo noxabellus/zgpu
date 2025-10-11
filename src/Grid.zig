@@ -186,6 +186,11 @@ pub const convert = struct {
         return v[0] + (v[1] * voxeme_length) + (v[2] * voxeme_length * voxeme_length);
     }
 
+    /// voxel-space coordinate to local buffer index
+    pub inline fn voxelToIndex(v: VoxelCoord) usize {
+        return bufferToIndex(voxelToBuffer(v));
+    }
+
     /// index to buffer-space coordinate
     pub inline fn indexToBuffer(index: usize) BufferCoord {
         const L = voxeme_length;
@@ -458,6 +463,32 @@ pub const Neighbor = struct {
         .{ 0, 0, -1 }, // neg_z
     };
 
+    pub fn coordToAxisPositive(ref_coord: vec3i, neighbor_coord: vec3i) ?struct { Axis, bool } {
+        const delta = neighbor_coord - ref_coord;
+
+        return if (delta[0] != 0)
+            .{ .x, delta[0] > 0 }
+        else if (delta[1] != 0)
+            .{ .y, delta[1] > 0 }
+        else if (delta[2] != 0)
+            .{ .z, delta[2] > 0 }
+        else
+            null;
+    }
+
+    pub fn coordToNeighborIndex(ref_coord: vec3i, neighbor_coord: vec3i) ?usize {
+        const delta = neighbor_coord - ref_coord;
+
+        return if (delta[0] != 0)
+            if (delta[0] > 0) 0 else 1
+        else if (delta[1] != 0)
+            if (delta[1] > 0) 2 else 3
+        else if (delta[2] != 0)
+            if (delta[2] > 0) 4 else 5
+        else
+            null;
+    }
+
     pub fn get(axis: Axis, positive: bool) vec3i {
         const index = switch (axis) {
             .x => if (positive) 0 else 1,
@@ -484,6 +515,70 @@ pub const Neighbor = struct {
             return Neighbor{ .axis = axis, .positive = positive, .coord_offset = coord_offset };
         }
     };
+};
+
+pub const Neighborhood = struct {
+    reference_coord: VoxelCoord,
+    local_buffer: Buffer,
+    neighborings: [6]?Neighboring = [1]?Neighboring{null} ** 6,
+
+    pub const Neighboring = union(enum) {
+        homo: bool,
+        buffer: Buffer,
+
+        pub fn isOpaque(self: Neighboring, grid: *const Grid, coord: VoxelCoord) bool {
+            return switch (self) {
+                .homo => |h| return h,
+                .buffer => |b| {
+                    const index = convert.voxelToIndex(coord);
+                    return grid.getMaterialProperties(b[index].material_id).is_opaque;
+                },
+            };
+        }
+    };
+
+    pub fn isOpaque(self: *const Neighborhood, grid: *const Grid, coord: VoxelCoord) bool {
+        if (Neighbor.coordToNeighborIndex(self.reference_coord, convert.voxelToVoxeme(coord))) |neighboring_index| {
+            return if (self.neighborings[neighboring_index]) |neighboring| neighboring.isOpaque(grid, coord) else false;
+        } else {
+            const index = convert.voxelToIndex(coord);
+            return grid.getMaterialProperties(self.local_buffer[index].material_id).is_opaque;
+        }
+    }
+
+    pub fn init(grid: *const Grid, reference_voxeme: VoxemeCoord, local_buffer: Buffer) Neighborhood {
+        var out = Neighborhood{ .reference_coord = reference_voxeme, .local_buffer = local_buffer };
+
+        comptime var neighbor_it = Neighbor.Iterator{};
+        inline while (comptime neighbor_it.next()) |neighbor| {
+            const neighbor_voxeme_coord = reference_voxeme + neighbor.coord_offset;
+            const neighbor_page_coord = convert.voxemeToPage(neighbor_voxeme_coord);
+            const neighboring_index = @intFromEnum(neighbor.axis) + if (neighbor.positive) 0 else 1;
+
+            if (grid.pages.getPtr(neighbor_page_coord)) |neighbor_page| {
+                if (!neighbor_page.isHeterogeneous()) {
+                    // homogeneous neighboring page
+                    out.neighborings[neighboring_index] = .{ .homo = grid.getMaterialProperties(neighbor_page.homogeneous.material_id).is_opaque };
+                } else if (neighbor_page.heterogeneous.get(neighbor_voxeme_coord)) |neighbor_voxeme| {
+                    if (neighbor_voxeme.is_homogeneous) {
+                        // homogeneous neighboring voxeme
+                        out.neighborings[neighboring_index] = .{ .homo = grid.getMaterialProperties(neighbor_voxeme.payload.homogeneous.material_id).is_opaque };
+                    } else {
+                        // heterogeneous neighboring voxeme
+                        out.neighborings[neighboring_index] = .{ .buffer = neighbor_voxeme.asHeterogeneous() };
+                    }
+                } else {
+                    // implicit neighboring voxeme
+                    out.neighborings[neighboring_index] = .{ .homo = grid.getMaterialProperties(neighbor_page.homogeneous.material_id).is_opaque };
+                }
+            } else {
+                // empty neighboring page
+                out.neighborings[neighboring_index] = .{ .homo = false };
+            }
+        }
+
+        return out;
+    }
 };
 
 /// Material properties associated with a MaterialId in a Grid.
@@ -938,7 +1033,10 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
                             }
                         }
                     } else {
+                        // Most performance critical case: dense voxel data
                         const data = voxeme.asHeterogeneous();
+
+                        const neighborhood = Neighborhood.init(self, voxeme_coord, data);
 
                         // recalculate visibility for all voxels in this voxeme
                         for (data, 0..) |*voxel, i| {
@@ -953,14 +1051,8 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
                                 const neighbor_page_coord = convert.voxelToPage(neighbor_voxel_coord);
                                 const neighbor_voxeme_coord = convert.voxelToVoxeme(neighbor_voxel_coord);
 
-                                // FIXME: this is a massive bottleneck
-                                // we are doing 4096 * 6 hashmap lookups per dirty voxeme
-                                // we can optimize this by creating a Neighborhood structure at the start of heterogeneous voxeme processing
-                                // this will contain the adjacent homogeneous data or the adjacent buffers, and handle the indirection internally
-                                const voxel_data = self.getVoxel(neighbor_voxel_coord);
-
                                 // we can update our local visibility directly
-                                const neighbor_is_solid = self.getMaterialProperties(voxel_data.material_id).is_opaque;
+                                const neighbor_is_solid = neighborhood.isOpaque(self, neighbor_voxel_coord);
                                 if (!neighbor_is_solid) {
                                     new_voxel_vis.set(neighbor.axis, neighbor.positive, true);
                                     new_voxeme_vis.set(neighbor.axis, neighbor.positive, true);
