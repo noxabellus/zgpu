@@ -953,8 +953,14 @@ pub fn recalculateVisibility(self: *Grid, frame_arena: std.mem.Allocator, pages_
                                 const neighbor_page_coord = convert.voxelToPage(neighbor_voxel_coord);
                                 const neighbor_voxeme_coord = convert.voxelToVoxeme(neighbor_voxel_coord);
 
+                                // FIXME: this is a massive bottleneck
+                                // we are doing 4096 * 6 hashmap lookups per dirty voxeme
+                                // we can optimize this by creating a Neighborhood structure at the start of heterogeneous voxeme processing
+                                // this will contain the adjacent homogeneous data or the adjacent buffers, and handle the indirection internally
+                                const voxel_data = self.getVoxel(neighbor_voxel_coord);
+
                                 // we can update our local visibility directly
-                                const neighbor_is_solid = self.getMaterialProperties(self.getVoxel(neighbor_voxel_coord).material_id).is_opaque;
+                                const neighbor_is_solid = self.getMaterialProperties(voxel_data.material_id).is_opaque;
                                 if (!neighbor_is_solid) {
                                     new_voxel_vis.set(neighbor.axis, neighbor.positive, true);
                                     new_voxeme_vis.set(neighbor.axis, neighbor.positive, true);
