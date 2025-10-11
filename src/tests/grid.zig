@@ -97,9 +97,9 @@ test "end to end" {
                     if (xf * xf + yf * yf + zf * zf <= radius_sq) {
                         // Use dirt for the top half, stone for the bottom half
                         if (y <= 0) {
-                            try grid.setVoxel(.{ x + radius, y + radius, z + radius }, stone);
+                            try grid.setVoxel(.{ x, y, z }, stone);
                         } else {
-                            try grid.setVoxel(.{ x + radius, y + radius, z + radius }, dirt);
+                            try grid.setVoxel(.{ x, y, z }, dirt);
                         }
                     }
                 }
@@ -144,7 +144,7 @@ test "end to end" {
     var indices = std.ArrayList(u32).empty;
     defer indices.deinit(gpa);
 
-    try grid.worldMeshBasic(gpa, .{ 0, 0, 0 }, .{ 1, 1, 1 }, &vertices, &indices);
+    try grid.worldMeshBasic(gpa, .{ -1, -1, -1 }, .{ 1, 1, 1 }, &vertices, &indices);
 
     log.info("generated mesh with {d} vertices and {d} indices", .{ vertices.items.len, indices.items.len });
 
