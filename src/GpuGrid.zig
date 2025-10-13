@@ -816,8 +816,25 @@ pub fn setVoxel(self: *Grid, global_voxel: vec3i, new_voxel: Voxel) !void {
     const local_voxeme_idx = convert.localVoxemeCoordToIndex(local_voxeme_coord);
     const dirty_index = @as(usize, page_index) * voxemes_per_page + local_voxeme_idx;
     self.dirty_voxeme_set.set(dirty_index);
-
     self.dirty_page_set.set(page_index);
+
+    for (offsets) |offset| {
+        const neighbor_global_voxel = global_voxel + offset;
+        const neighbor_page_coord = convert.globalVoxelToPageCoord(neighbor_global_voxel);
+        const neighbor_page_index = self.page_indirection.lookup(neighbor_page_coord);
+        if (neighbor_page_index != PageTable.sentinel) {
+            self.dirty_page_set.set(@as(usize, neighbor_page_index));
+            // Mark the neighbor voxeme dirty too, if it exists.
+            const neighbor_local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(neighbor_global_voxel);
+            const neighbor_voxeme_table: *VoxemeTable = &self.pages.items(.voxeme_indirection)[neighbor_page_index];
+            const neighbor_voxeme_index = neighbor_voxeme_table.lookup(neighbor_local_voxeme_coord);
+            if (neighbor_voxeme_index != VoxemeTable.sentinel) {
+                const neighbor_local_voxeme_idx = convert.localVoxemeCoordToIndex(neighbor_local_voxeme_coord);
+                const neighbor_dirty_index = @as(usize, neighbor_page_index) * voxemes_per_page + neighbor_local_voxeme_idx;
+                self.dirty_voxeme_set.set(neighbor_dirty_index);
+            }
+        }
+    }
 }
 
 /// namespace for voxel coordinate conversions

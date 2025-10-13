@@ -369,3 +369,86 @@ test "setVoxel no-op does not allocate or dirty" {
     // Assert the voxeme was not marked dirty
     try std.testing.expect(!grid.dirty_voxeme_set.isSet(dirty_voxeme_index));
 }
+
+test "setVoxel dirties neighbors across page boundary" {
+    const gpa = std.testing.allocator;
+
+    var grid = try Grid.init(gpa);
+    defer grid.deinit();
+
+    const stone_mat = try grid.registerMaterial(.{
+        .color = .grey,
+        .flags = .{ .is_opaque = true },
+    });
+    const stone_voxel = Voxel{ .material_id = stone_mat };
+
+    const dirt_mat = try grid.registerMaterial(.{
+        .color = .yellow,
+        .flags = .{ .is_opaque = true },
+    });
+    const dirt_voxel = Voxel{ .material_id = dirt_mat };
+
+    // ARRANGE: Create two adjacent pages by setting a voxel in each,
+    // right on the boundary we want to test.
+    // A page is 256x256x256 voxels.
+    // Voxel at {255, 0, 0} is the last voxel in Page {0,0,0} along the +X axis.
+    const primary_coord = vec3i{ 255, 0, 0 };
+    // Voxel at {256, 0, 0} is the first voxel in Page {1,0,0} along the +X axis.
+    const neighbor_coord = vec3i{ 256, 0, 0 };
+
+    // Create the initial structures.
+    try grid.setVoxel(primary_coord, stone_voxel);
+    try grid.setVoxel(neighbor_coord, stone_voxel);
+
+    // --- Get indices for the primary voxel's containers ---
+    const primary_page_coord = convert.globalVoxelToPageCoord(primary_coord);
+    const primary_page_index = grid.page_indirection.lookup(primary_page_coord);
+    try std.testing.expect(primary_page_index != PageTable.sentinel);
+
+    const primary_local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(primary_coord);
+    const primary_dirty_voxeme_idx = @as(usize, primary_page_index) * Grid.voxemes_per_page +
+        convert.localVoxemeCoordToIndex(primary_local_voxeme_coord);
+
+    // --- Get indices for the neighbor voxel's containers ---
+    const neighbor_page_coord = convert.globalVoxelToPageCoord(neighbor_coord);
+    const neighbor_page_index = grid.page_indirection.lookup(neighbor_page_coord);
+    try std.testing.expect(neighbor_page_index != PageTable.sentinel);
+    try std.testing.expect(primary_page_index != neighbor_page_index); // Ensure they are in different pages
+
+    const neighbor_local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(neighbor_coord);
+    const neighbor_dirty_voxeme_idx = @as(usize, neighbor_page_index) * Grid.voxemes_per_page +
+        convert.localVoxemeCoordToIndex(neighbor_local_voxeme_coord);
+
+    // --- Clear dirty flags to ensure a clean test state ---
+    grid.dirty_page_set.unsetAll();
+    grid.dirty_voxeme_set.unsetAll();
+
+    // Verify clean state
+    try std.testing.expect(!grid.dirty_page_set.isSet(primary_page_index));
+    try std.testing.expect(!grid.dirty_page_set.isSet(neighbor_page_index));
+    try std.testing.expect(!grid.dirty_voxeme_set.isSet(primary_dirty_voxeme_idx));
+    try std.testing.expect(!grid.dirty_voxeme_set.isSet(neighbor_dirty_voxeme_idx));
+
+    // ACT: Set the primary voxel, which should trigger dirtying its neighbors.
+    try grid.setVoxel(primary_coord, dirt_voxel);
+
+    // ASSERT:
+    // 1. The primary page and voxeme should be dirty.
+    try std.testing.expect(grid.dirty_page_set.isSet(primary_page_index));
+    try std.testing.expect(grid.dirty_voxeme_set.isSet(primary_dirty_voxeme_idx));
+
+    // 2. The neighbor page and voxeme across the boundary should also be dirty.
+    try std.testing.expect(grid.dirty_page_set.isSet(neighbor_page_index));
+    try std.testing.expect(grid.dirty_voxeme_set.isSet(neighbor_dirty_voxeme_idx));
+
+    // 3. A neighbor in a direction that doesn't cross a page boundary (-X) should
+    // still dirty its containing page (which is the primary page).
+    const neg_x_neighbor_coord = primary_coord - vec3i{ 1, 0, 0 }; // {254,0,0}
+    const neg_x_page_coord = convert.globalVoxelToPageCoord(neg_x_neighbor_coord);
+    try std.testing.expectEqual(primary_page_coord, neg_x_page_coord); // Same page
+
+    // 4. A neighbor in a direction where the page doesn't exist (+Y) should
+    // not cause a crash or dirty anything extra. The total number of dirty pages
+    // should be 2: the primary page and the existing neighbor page.
+    try std.testing.expectEqual(@as(usize, 2), grid.dirty_page_set.count());
+}
