@@ -119,6 +119,48 @@ test "coordinate conversions round-trip" {
     }
 }
 
+test "Axis and offsets correctness" {
+    // 1. Verify the static offsets array is correct.
+    try std.testing.expectEqual(vec3i{ 1, 0, 0 }, Grid.offsets[0]); // +X
+    try std.testing.expectEqual(vec3i{ -1, 0, 0 }, Grid.offsets[1]); // -X
+    try std.testing.expectEqual(vec3i{ 0, 1, 0 }, Grid.offsets[2]); // +Y
+    try std.testing.expectEqual(vec3i{ 0, -1, 0 }, Grid.offsets[3]); // -Y
+    try std.testing.expectEqual(vec3i{ 0, 0, 1 }, Grid.offsets[4]); // +Z
+    try std.testing.expectEqual(vec3i{ 0, 0, -1 }, Grid.offsets[5]); // -Z
+
+    // 2. Test Axis enum conversions
+    try std.testing.expectEqual(@as(u3, 0), Grid.Axis.x.toIndex());
+    try std.testing.expectEqual(@as(u3, 2), Grid.Axis.y.toIndex());
+    try std.testing.expectEqual(@as(u3, 4), Grid.Axis.z.toIndex());
+
+    try std.testing.expectEqual(Grid.Axis.x, Grid.Axis.fromIndex(0));
+    try std.testing.expectEqual(Grid.Axis.x, Grid.Axis.fromIndex(1)); // LSB is ignored for direction
+    try std.testing.expectEqual(Grid.Axis.y, Grid.Axis.fromIndex(2));
+    try std.testing.expectEqual(Grid.Axis.y, Grid.Axis.fromIndex(3));
+    try std.testing.expectEqual(Grid.Axis.z, Grid.Axis.fromIndex(4));
+    try std.testing.expectEqual(Grid.Axis.z, Grid.Axis.fromIndex(5));
+
+    // 3. Test AxisDir struct conversions and helpers
+    const dirs = [_]Grid.AxisDir{
+        .{ .axis = .x, .positive = true }, // 0
+        .{ .axis = .x, .positive = false }, // 1
+        .{ .axis = .y, .positive = true }, // 2
+        .{ .axis = .y, .positive = false }, // 3
+        .{ .axis = .z, .positive = true }, // 4
+        .{ .axis = .z, .positive = false }, // 5
+    };
+
+    inline for (dirs, 0..) |dir, i| {
+        const index: u3 = @intCast(i);
+        // Test toIndex()
+        try std.testing.expectEqual(index, dir.toIndex());
+        // Test fromIndex() round-trip
+        try std.testing.expectEqual(dir, Grid.AxisDir.fromIndex(index));
+        // Test getOffset()
+        try std.testing.expectEqual(Grid.offsets[index], dir.getOffset());
+    }
+}
+
 test "setVoxel in empty world creates all structures" {
     const gpa = std.testing.allocator;
 
