@@ -11,6 +11,9 @@ test {
 pub const mat4 = [4]vec4;
 pub const mat3 = [3]vec3;
 
+pub const aabb2 = [2]vec2;
+pub const aabb3 = [2]vec3;
+
 pub const vec2 = @Vector(2, f32);
 pub const vec3 = @Vector(3, f32);
 pub const vec4 = @Vector(4, f32);
@@ -26,6 +29,50 @@ pub const vec4b = @Vector(4, bool);
 
 pub const deg_to_rad = std.math.rad_per_deg;
 pub const rad_to_deg = std.math.deg_per_rad;
+
+/// check if a point is inside the AABB
+pub fn aabb_contains_point(aabb: anytype, point: @typeInfo(@TypeOf(aabb)).array.child) bool {
+    const less = point < aabb[0];
+    const greater = point > aabb[1];
+
+    return !(@reduce(.Or, less) or @reduce(.Or, greater));
+}
+
+/// get the smallest AABB that contains both a and b
+pub fn aabb_union(a: anytype, b: @TypeOf(a)) @TypeOf(a) {
+    return .{
+        @min(a[0], b[0]),
+        @max(a[1], b[1]),
+    };
+}
+
+/// get the overlapping region of a and b, or null if they don't overlap.
+pub fn aabb_intersect(a: anytype, b: @TypeOf(a)) ?@TypeOf(a) {
+    const intersect_min = @max(a[0], b[0]);
+    const intersect_max = @min(a[1], b[1]);
+
+    // An invalid AABB means there was no overlap.
+    if (@reduce(.And, intersect_min <= intersect_max)) {
+        return .{ intersect_min, intersect_max };
+    } else {
+        return null;
+    }
+}
+
+/// check if a and b have any overlap
+pub fn aabb_overlapping(a: anytype, b: @TypeOf(a)) bool {
+    const less_than = a[1] < b[0];
+    const greater_than = a[0] > b[1];
+
+    return !(@reduce(.Or, less_than) or @reduce(.Or, greater_than));
+}
+
+/// check if b is completely inside a
+pub fn aabb_contains(a: anytype, b: @TypeOf(a)) bool {
+    const less_than = a[0] <= b[0];
+    const greater_than = a[1] >= b[1];
+    return @reduce(.And, less_than) and @reduce(.And, greater_than);
+}
 
 pub fn numComponents(comptime T: type) usize {
     return @typeInfo(T).vector.len;
