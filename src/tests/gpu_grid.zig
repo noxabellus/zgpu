@@ -115,7 +115,7 @@ test "coordinate conversions round-trip" {
     {
         const index_coord = LocalCoord{ .x = 1, .y = 2, .z = 3 };
         // Expected: 1 + (2 * 16) + (3 * 256) = 1 + 32 + 768 = 801
-        try std.testing.expectEqual(@as(u16, 801), convert.localCoordToIndex(index_coord));
+        try std.testing.expectEqual(@as(u16, 801), convert.localVoxelCoordToIndex(index_coord));
     }
 }
 
@@ -127,7 +127,7 @@ test "setVoxel in empty world creates all structures" {
 
     const stone_mat = try grid.registerMaterial(.{
         .color = .{ 0.5, 0.5, 0.5 },
-        .is_opaque = true,
+        .flags = .{ .is_opaque = true },
     });
 
     // ARRANGE: The grid is empty.
@@ -137,7 +137,7 @@ test "setVoxel in empty world creates all structures" {
 
     // ACT: Set a single voxel at the origin.
     const global_voxel = vec3i{ 0, 0, 0 };
-    try grid.setVoxel(global_voxel, stone_mat, 0);
+    try grid.setVoxel(global_voxel, .{ .material_id = stone_mat });
 
     // ASSERT: Check that all structures were created correctly.
     try std.testing.expectEqual(@as(usize, 1), grid.pageCount());
@@ -154,20 +154,19 @@ test "setVoxel in empty world creates all structures" {
     // Assert Voxeme was created and linked
     const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(global_voxel);
     const voxeme_table = &grid.pages.items(.voxeme_indirection)[page_index];
-    const voxeme_hash_index = voxeme_table.lookup(local_voxeme_coord);
-    try std.testing.expect(voxeme_hash_index != VoxemeTable.sentinel);
-    const voxeme_index = voxeme_table.values[voxeme_hash_index].index;
+    const voxeme_index = voxeme_table.lookup(local_voxeme_coord);
+    try std.testing.expect(voxeme_index != VoxemeTable.sentinel);
     try std.testing.expectEqual(@as(u16, 0), voxeme_index);
 
     // Assert Buffer was created and linked
     const buffer_handle = grid.voxemes.items(.buffer_indirection)[voxeme_index];
-    try std.testing.expect(buffer_handle != Grid.buffer_sentinel);
+    try std.testing.expect(buffer_handle != Grid.BufferData.sentinel);
     try std.testing.expectEqual(@as(u32, 0), buffer_handle);
 
     // Assert the Voxel data is correct
-    const buffer = &grid.voxels.items[buffer_handle];
+    const buffer = &grid.voxels.items(.voxel)[buffer_handle];
     const local_voxel_coord = convert.globalVoxelToLocalVoxelCoord(global_voxel);
-    const index_in_buffer = convert.localCoordToIndex(local_voxel_coord);
+    const index_in_buffer = convert.localVoxelCoordToIndex(local_voxel_coord);
 
     // The set voxel should be stone
     try std.testing.expectEqual(stone_mat, buffer[index_in_buffer].material_id);
@@ -176,6 +175,11 @@ test "setVoxel in empty world creates all structures" {
 
     // Assert the page was marked dirty
     try std.testing.expect(grid.dirty_page_set.isSet(page_index));
+
+    // Assert the voxeme was marked dirty
+    const local_voxeme_idx = Grid.convert.localVoxemeCoordToIndex(local_voxeme_coord);
+    const dirty_voxeme_index = @as(u64, page_index) * Grid.voxemes_per_page + local_voxeme_idx;
+    try std.testing.expect(grid.dirty_voxeme_set.isSet(dirty_voxeme_index));
 }
 
 test "setVoxel breaks homogeneous voxeme" {
@@ -186,21 +190,21 @@ test "setVoxel breaks homogeneous voxeme" {
 
     const stone_mat = try grid.registerMaterial(.{
         .color = .{ 0.5, 0.5, 0.5 },
-        .is_opaque = true,
+        .flags = .{ .is_opaque = true },
     });
 
     const dirt_mat = try grid.registerMaterial(.{
         .color = .{ 0.6, 0.4, 0.2 },
-        .is_opaque = true,
+        .flags = .{ .is_opaque = true },
     });
 
     // ARRANGE: Create a state with a solid, homogeneous voxeme.
     // Easiest way is to set one voxel, then manually edit the grid state.
-    try grid.setVoxel(vec3i{ 0, 0, 0 }, stone_mat, 0);
+    try grid.setVoxel(vec3i{ 0, 0, 0 }, .{ .material_id = stone_mat });
 
     // Manually "homogenize" the voxeme to be solid stone.
-    grid.voxemes.items(.voxel)[0] = Voxel{ .material_id = stone_mat, .visibility = .none, .state = 0 };
-    grid.voxemes.items(.buffer_indirection)[0] = Grid.buffer_sentinel;
+    grid.voxemes.items(.voxel)[0] = Voxel{ .material_id = stone_mat, .state = 0 };
+    grid.voxemes.items(.buffer_indirection)[0] = Grid.BufferData.sentinel;
     grid.voxels.clearRetainingCapacity(); // Clear the old buffer
     grid.dirty_page_set.unset(0); // Clear dirty flag
 
@@ -209,19 +213,19 @@ test "setVoxel breaks homogeneous voxeme" {
 
     // ACT: Set a different voxel within the same voxeme to a new material.
     const breaking_voxel = vec3i{ 1, 1, 1 };
-    try grid.setVoxel(breaking_voxel, dirt_mat, 0);
+    try grid.setVoxel(breaking_voxel, .{ .material_id = dirt_mat });
 
     // ASSERT: Check that the break was handled correctly.
     try std.testing.expectEqual(initial_voxeme_count, grid.voxemeCount()); // No new voxeme created
     try std.testing.expectEqual(@as(usize, 1), grid.bufferCount()); // A new buffer was created
 
     const buffer_handle = grid.voxemes.items(.buffer_indirection)[0];
-    try std.testing.expect(buffer_handle != Grid.buffer_sentinel);
+    try std.testing.expect(buffer_handle != Grid.BufferData.sentinel);
 
-    const buffer = &grid.voxels.items[buffer_handle];
+    const buffer = &grid.voxels.items(.voxel)[buffer_handle];
 
     // The new voxel should be dirt.
-    const index_in_buffer = convert.localCoordToIndex(convert.globalVoxelToLocalVoxelCoord(breaking_voxel));
+    const index_in_buffer = convert.localVoxelCoordToIndex(convert.globalVoxelToLocalVoxelCoord(breaking_voxel));
     try std.testing.expectEqual(dirt_mat, buffer[index_in_buffer].material_id);
 
     // A different voxel should still be the old homogeneous material (stone).
@@ -229,6 +233,12 @@ test "setVoxel breaks homogeneous voxeme" {
 
     // Assert the page was marked dirty
     try std.testing.expect(grid.dirty_page_set.isSet(0));
+
+    // Assert the voxeme was marked dirty
+    const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(breaking_voxel);
+    const local_voxeme_idx = Grid.convert.localVoxemeCoordToIndex(local_voxeme_coord);
+    const dirty_voxeme_index = local_voxeme_idx;
+    try std.testing.expect(grid.dirty_voxeme_set.isSet(dirty_voxeme_index));
 }
 
 test "setVoxel modifies existing heterogeneous voxeme" {
@@ -239,16 +249,16 @@ test "setVoxel modifies existing heterogeneous voxeme" {
 
     const stone_mat = try grid.registerMaterial(.{
         .color = .{ 0.5, 0.5, 0.5 },
-        .is_opaque = true,
+        .flags = .{ .is_opaque = true },
     });
 
     const dirt_mat = try grid.registerMaterial(.{
         .color = .{ 0.6, 0.4, 0.2 },
-        .is_opaque = true,
+        .flags = .{ .is_opaque = true },
     });
 
     // ARRANGE: Create a heterogeneous state by setting one voxel.
-    try grid.setVoxel(vec3i{ 5, 5, 5 }, stone_mat, 0);
+    try grid.setVoxel(vec3i{ 5, 5, 5 }, .{ .material_id = stone_mat });
     grid.dirty_page_set.unset(0); // Clear dirty flag for a clean test
 
     const initial_page_count = grid.pageCount();
@@ -256,7 +266,7 @@ test "setVoxel modifies existing heterogeneous voxeme" {
     const initial_buffer_count = grid.bufferCount();
 
     // ACT: Set the same voxel to a different material.
-    try grid.setVoxel(vec3i{ 5, 5, 5 }, dirt_mat, 0);
+    try grid.setVoxel(vec3i{ 5, 5, 5 }, .{ .material_id = dirt_mat });
 
     // ASSERT: No new allocations should have occurred.
     try std.testing.expectEqual(initial_page_count, grid.pageCount());
@@ -269,6 +279,12 @@ test "setVoxel modifies existing heterogeneous voxeme" {
 
     // Assert the page was marked dirty
     try std.testing.expect(grid.dirty_page_set.isSet(0));
+
+    // Assert the voxeme was marked dirty
+    const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(vec3i{ 5, 5, 5 });
+    const local_voxeme_idx = Grid.convert.localVoxemeCoordToIndex(local_voxeme_coord);
+    const dirty_voxeme_index = local_voxeme_idx;
+    try std.testing.expect(grid.dirty_voxeme_set.isSet(dirty_voxeme_index));
 }
 
 test "setVoxel no-op does not allocate or dirty" {
@@ -279,20 +295,26 @@ test "setVoxel no-op does not allocate or dirty" {
 
     const stone_mat = try grid.registerMaterial(.{
         .color = .{ 0.5, 0.5, 0.5 },
-        .is_opaque = true,
+        .flags = .{ .is_opaque = true },
     });
 
     // ARRANGE: Create a state.
-    try grid.setVoxel(vec3i{ 10, 10, 10 }, stone_mat, 0);
+    try grid.setVoxel(vec3i{ 10, 10, 10 }, .{ .material_id = stone_mat });
 
     // Record initial state and clear dirty flags.
     const initial_page_count = grid.pageCount();
     const initial_voxeme_count = grid.voxemeCount();
     const initial_buffer_count = grid.bufferCount();
+
+    const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(vec3i{ 10, 10, 10 });
+    const local_voxeme_idx = Grid.convert.localVoxemeCoordToIndex(local_voxeme_coord);
+    const dirty_voxeme_index = local_voxeme_idx;
+
     grid.dirty_page_set.unset(0);
+    grid.dirty_voxeme_set.unset(dirty_voxeme_index);
 
     // ACT: Set the voxel to the exact same material and state.
-    try grid.setVoxel(vec3i{ 10, 10, 10 }, stone_mat, 0);
+    try grid.setVoxel(vec3i{ 10, 10, 10 }, .{ .material_id = stone_mat });
 
     // ASSERT: Nothing should have changed.
     try std.testing.expectEqual(initial_page_count, grid.pageCount());
@@ -301,4 +323,7 @@ test "setVoxel no-op does not allocate or dirty" {
 
     // Most importantly, the page should NOT be marked dirty.
     try std.testing.expect(!grid.dirty_page_set.isSet(0));
+
+    // Assert the voxeme was not marked dirty
+    try std.testing.expect(!grid.dirty_voxeme_set.isSet(dirty_voxeme_index));
 }
