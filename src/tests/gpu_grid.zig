@@ -126,7 +126,7 @@ test "setVoxel in empty world creates all structures" {
     defer grid.deinit();
 
     const stone_mat = try grid.registerMaterial(.{
-        .color = .{ 0.5, 0.5, 0.5 },
+        .color = .grey,
         .flags = .{ .is_opaque = true },
     });
 
@@ -189,12 +189,12 @@ test "setVoxel breaks homogeneous voxeme" {
     defer grid.deinit();
 
     const stone_mat = try grid.registerMaterial(.{
-        .color = .{ 0.5, 0.5, 0.5 },
+        .color = .grey,
         .flags = .{ .is_opaque = true },
     });
 
     const dirt_mat = try grid.registerMaterial(.{
-        .color = .{ 0.6, 0.4, 0.2 },
+        .color = .{ .r = 0.6 * 255, .g = 0.4 * 255, .b = 0.2 * 255 },
         .flags = .{ .is_opaque = true },
     });
 
@@ -248,12 +248,12 @@ test "setVoxel modifies existing heterogeneous voxeme" {
     defer grid.deinit();
 
     const stone_mat = try grid.registerMaterial(.{
-        .color = .{ 0.5, 0.5, 0.5 },
+        .color = .grey,
         .flags = .{ .is_opaque = true },
     });
 
     const dirt_mat = try grid.registerMaterial(.{
-        .color = .{ 0.6, 0.4, 0.2 },
+        .color = .{ .r = 0.6 * 255, .g = 0.4 * 255, .b = 0.2 * 255 },
         .flags = .{ .is_opaque = true },
     });
 
@@ -294,7 +294,7 @@ test "setVoxel no-op does not allocate or dirty" {
     defer grid.deinit();
 
     const stone_mat = try grid.registerMaterial(.{
-        .color = .{ 0.5, 0.5, 0.5 },
+        .color = .grey,
         .flags = .{ .is_opaque = true },
     });
 

@@ -112,15 +112,39 @@ pub const max_materials = std.math.maxInt(std.meta.Tag(MaterialId));
 /// Surface properties for a voxel material type. See `MaterialId`, `registerMaterial`.
 pub const MaterialProperties = extern struct {
     /// The base color of this material type before lighting.
-    color: vec3,
+    color: Color,
     /// State flags for this material type, such as whether it is opaque (occludes other voxels, light, etc).
     flags: MaterialFlags,
-    // Hard to imagine needing more than 32 bits for flags,
-    // and the extern + vec3 combination makes 32 bytes the minimum size with any addition anyway.
-    // We will probably want additional properties later, so we can use all these bits then.
-    _unused_0: u32 = 0,
-    _unused_1: u32 = 0,
-    _unused_2: u32 = 0,
+
+    /// The properties for the "no material" material / default state.
+    pub const none = MaterialProperties{
+        .color = .none,
+        .flags = .none,
+    };
+}; // 8 bytes
+
+/// RGBA color with 8-bit channels.
+pub const Color = packed struct(u32) {
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8 = 255, // this can be thought of as the "emissive" channel, or as the overall additive brightness
+
+    pub const none = Color{ .r = 0, .g = 0, .b = 0, .a = 0 };
+    pub const white = Color{ .r = 255, .g = 255, .b = 255, .a = 255 };
+    pub const grey = Color{ .r = 128, .g = 128, .b = 128, .a = 255 };
+    pub const black = Color{ .r = 0, .g = 0, .b = 0, .a = 255 };
+    pub const red = Color{ .r = 255, .g = 0, .b = 0, .a = 255 };
+    pub const green = Color{ .r = 0, .g = 255, .b = 0, .a = 255 };
+    pub const blue = Color{ .r = 0, .g = 0, .b = 255, .a = 255 };
+    pub const cyan = Color{ .r = 0, .g = 255, .b = 255, .a = 255 };
+    pub const magenta = Color{ .r = 255, .g = 0, .b = 255, .a = 255 };
+    pub const yellow = Color{ .r = 255, .g = 255, .b = 0, .a = 255 };
+
+    /// Create a new color with the same RGB channels but a different alpha channel.
+    pub fn withAlpha(self: Color, new_alpha: u8) Color {
+        return Color{ .r = self.r, .g = self.g, .b = self.b, .a = new_alpha };
+    }
 };
 
 /// State flags for a voxel material type. See `MaterialProperties`.
@@ -548,7 +572,7 @@ pub fn init(allocator: std.mem.Allocator) !*Grid {
     try self.voxels.ensureTotalCapacity(allocator, 1024); // ~20mb
     errdefer self.voxels.deinit(allocator);
 
-    try self.material_properties.ensureTotalCapacity(allocator, max_materials); // ~128kb
+    try self.material_properties.ensureTotalCapacity(allocator, max_materials); // ~32kb
     errdefer self.material_properties.deinit(allocator);
 
     try self.page_free_list.ensureTotalCapacity(allocator, 1024); // ~4kb
@@ -567,10 +591,7 @@ pub fn init(allocator: std.mem.Allocator) !*Grid {
     errdefer self.dirty_voxeme_set.deinit(allocator);
 
     // initialize the empty material
-    self.material_properties.appendAssumeCapacity(.{
-        .color = .{ 0.0, 0.0, 0.0 },
-        .flags = .none,
-    });
+    self.material_properties.appendAssumeCapacity(.none);
 
     return self;
 }
