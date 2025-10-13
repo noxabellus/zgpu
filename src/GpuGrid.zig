@@ -18,8 +18,11 @@ const linalg = @import("linalg.zig");
 
 const vec2 = linalg.vec2;
 const vec3 = linalg.vec3;
+const vec4 = linalg.vec4;
+const mat4 = linalg.mat4;
 const vec3i = linalg.vec3i;
 const vec3u = linalg.vec3u;
+const aabb3 = linalg.aabb3;
 
 test {
     log.debug("semantic analysis for GpuGrid.zig", .{});
@@ -297,6 +300,12 @@ pub fn SpacialHashTable(comptime Coord: type, comptime BitCoord: type, comptime 
         pub fn init(self: *Self) void {
             @memset(&self.indices, Self.sentinel);
             @memset(&self.coordinates, 0);
+        }
+
+        /// Copy the table state from another table into this one
+        pub fn copy(self: *Self, other: *const Self) void {
+            @memcpy(&self.indices, &other.indices);
+            @memcpy(&self.coordinates, &other.coordinates);
         }
 
         /// Hash function for `PageCoord`.
@@ -625,6 +634,45 @@ pub fn clear(self: *Grid, clear_materials: bool) void {
     self.dirty_voxeme_set.unsetAll();
 }
 
+/// Copy the grid state, allocating a new Grid.
+pub fn clone(self: *Grid) !*Grid {
+    const new_self = try self.allocator.create(Grid);
+    errdefer self.allocator.destroy(new_self);
+
+    new_self.allocator = self.allocator;
+
+    new_self.page_indirection.copy(&self.page_indirection);
+
+    new_self.voxemes = try self.voxemes.clone(self.allocator);
+    errdefer new_self.voxemes.deinit(self.allocator);
+
+    new_self.pages = try self.pages.clone(self.allocator);
+    errdefer new_self.pages.deinit(self.allocator);
+
+    new_self.voxels = try self.voxels.clone(self.allocator);
+    errdefer new_self.voxels.deinit(self.allocator);
+
+    new_self.material_properties = try self.material_properties.clone(self.allocator);
+    errdefer new_self.material_properties.deinit(self.allocator);
+
+    new_self.page_free_list = try self.page_free_list.clone(self.allocator);
+    errdefer new_self.page_free_list.deinit(self.allocator);
+
+    new_self.voxeme_free_list = try self.voxeme_free_list.clone(self.allocator);
+    errdefer new_self.voxeme_free_list.deinit(self.allocator);
+
+    new_self.buffer_free_list = try self.buffer_free_list.clone(self.allocator);
+    errdefer new_self.buffer_free_list.deinit(self.allocator);
+
+    new_self.dirty_page_set = try self.dirty_page_set.clone(self.allocator);
+    errdefer new_self.dirty_page_set.deinit(self.allocator);
+
+    new_self.dirty_voxeme_set = try self.dirty_voxeme_set.clone(self.allocator);
+    errdefer new_self.dirty_voxeme_set.deinit(self.allocator);
+
+    return new_self;
+}
+
 /// The number of live pages in the grid.
 pub fn pageCount(self: *const Grid) usize {
     return self.pages.len - self.page_free_list.items.len;
@@ -941,5 +989,439 @@ pub const convert = struct {
     /// This gives the coordinate of the minimum corner of the voxel.
     pub inline fn globalVoxelToWorld(v: vec3i) vec3 {
         return @as(vec3, @floatFromInt(v)) * comptime @as(vec3, @splat(voxel_scale));
+    }
+};
+
+/// Descriptor holding raw pointers to mesh data for integration into the cache.
+pub const MeshDescriptor = extern struct {
+    coord: PageCoord,
+    bounds: aabb3,
+    vertex_count: u32,
+    index_count: u32,
+
+    position: [*]const vec3,
+    normal: [*]const vec3,
+    uv: [*]const vec2,
+    material_id: [*]const MaterialId,
+    indices: [*]const u32,
+};
+
+/// A simplified MeshDescriptor for possible rendering.
+pub const MeshView = extern struct {
+    coord: PageCoord,
+    bounds: aabb3,
+    index_offset: u32,
+    index_count: u32,
+};
+
+/// A cache for mesh data generated from the voxel grid.
+/// This is used to store the mesh data generated during the update phase.
+pub const MeshCache = struct {
+    /// The indirection table mapping from `PageCoord` to page index in the `instances` ArrayList.
+    page_indirection: PageTable,
+    /// The mesh data which is currently ready for render.
+    vertices: std.MultiArrayList(VertexData),
+    /// The index buffer which is currently ready for render.
+    indices: std.ArrayList(u32),
+    /// The mesh instances which are currently ready for render.
+    meshes: std.MultiArrayList(MeshData),
+    /// The list of free mesh instance indices for reuse.
+    mesh_free_list: std.ArrayList(u32),
+
+    /// The vertex data which is currently ready for render.
+    /// This data structure is never really constructed, it is just a table layout for MultiArrayList
+    pub const VertexData = struct {
+        position: vec3,
+        normal: vec3,
+        uv: vec2,
+        material_id: MaterialId, // while material id is itself 12 bits, the multiarraylist will pad this to the nearest byte-aligned size, u16; which is gpu friendly
+    };
+
+    /// A mesh instance which is currently ready for render.
+    pub const MeshData = struct {
+        /// Memory management metadata for this mesh instance.
+        info: packed struct {
+            /// flag indicating that this instance is not in use and can be reused
+            free: bool,
+
+            /// The number of triangles in the allocated space for this mesh instance.
+            allocated_index_count: u31, // u31 is still much larger than the theoretical maximum indices per page, so borrowing a bit for the free flag is fine
+            /// The number of vertices in the allocated space for this mesh instance.
+            allocated_vertex_count: u32,
+        },
+
+        /// The page coordinate for this mesh instance.
+        coord: PageCoord,
+
+        /// The world-space axis-aligned bounding box for this mesh instance.
+        bounds: aabb3,
+
+        /// The offset into the global vertex buffer for this mesh instance.
+        vertex_offset: u32,
+        /// The number of vertices in this mesh instance.
+        vertex_count: u32,
+
+        /// The offset into the global index buffer for this mesh instance.
+        index_offset: u32,
+        /// The number of triangles in this mesh instance.
+        index_count: u32,
+    };
+
+    /// An iterator over all active mesh instances indices in the cache.
+    pub const Iterator = struct {
+        mesh_cache: *const MeshCache,
+        index: u32,
+
+        pub fn next(self: *Iterator) ?MeshView {
+            var current_index: u32 = self.index;
+            while (current_index < self.mesh_cache.meshes.len) : (current_index += 1) {
+                if (!self.mesh_cache.meshes.items(.info)[current_index].free) break;
+            } else { // while else branch is taken if we do not break out of the loop
+                self.index = current_index;
+                return null;
+            }
+
+            defer self.index = current_index + 1;
+
+            return MeshView{
+                .coord = self.mesh_cache.meshes.items(.coord)[current_index],
+                .bounds = self.mesh_cache.meshes.items(.bounds)[current_index],
+                .index_offset = self.mesh_cache.meshes.items(.index_offset)[current_index],
+                .index_count = self.mesh_cache.meshes.items(.index_count)[current_index],
+            };
+        }
+    };
+
+    /// Create a new, empty mesh cache.
+    /// This incurs several large allocations.
+    pub fn init(allocator: std.mem.Allocator) !*MeshCache {
+        const self = try allocator.create(MeshCache); // allocate self because the structure is large
+        errdefer allocator.destroy(self);
+
+        self.page_indirection.init();
+
+        self.vertices = .empty;
+        try self.vertices.ensureTotalCapacity(allocator, std.math.maxInt(u16));
+        errdefer self.vertices.deinit(allocator);
+
+        self.indices = .empty;
+        try self.indices.ensureTotalCapacity(allocator, std.math.maxInt(u16) * 3);
+        errdefer self.indices.deinit(allocator);
+
+        self.meshes = .empty;
+        try self.meshes.ensureTotalCapacity(allocator, 1024);
+        errdefer self.meshes.deinit(allocator);
+
+        self.mesh_free_list = .empty;
+        try self.mesh_free_list.ensureTotalCapacity(allocator, 1024);
+        errdefer self.mesh_free_list.deinit(allocator);
+
+        return self;
+    }
+
+    /// Deinitialize the cache, freeing all memory it owns.
+    pub fn deinit(self: *MeshCache, allocator: std.mem.Allocator) void {
+        self.vertices.deinit(allocator);
+        self.indices.deinit(allocator);
+        self.meshes.deinit(allocator);
+        self.mesh_free_list.deinit(allocator);
+        allocator.destroy(self);
+    }
+
+    /// Clear the cache state but retain all allocated memory.
+    pub fn clear(self: *MeshCache) void {
+        self.page_indirection.init();
+        self.vertices.clearRetainingCapacity();
+        self.indices.clearRetainingCapacity();
+        self.meshes.clearRetainingCapacity();
+        self.mesh_free_list.clearRetainingCapacity();
+    }
+
+    /// Get an iterator over all active mesh instances in the cache.
+    pub fn iterator(self: *const MeshCache) Iterator {
+        return Iterator{ .mesh_cache = self, .index = 0 };
+    }
+
+    /// Add a new mesh instance for the given page coordinate.
+    /// This will first attempt to fit the instance into a free slot;
+    /// if no free slots are available, a new instance is appended to the list.
+    /// Returns the index of the new instance in the `instances` ArrayList.
+    pub fn addInstance(self: *MeshCache, allocator: std.mem.Allocator, mesh_descriptor: MeshDescriptor) !u32 { // TODO: thread safety
+        // remove any existing instance first
+        self.removeInstance(mesh_descriptor.coord);
+
+        var best_fit: ?struct { indirection: u32, vertices: u32, indices: u32 } = null;
+        for (self.mesh_free_list.items, 0..) |free_index, instance_indirection| {
+            const info = self.meshes.items(.info)[free_index];
+
+            if (info.allocated_vertex_count >= mesh_descriptor.vertex_count and info.allocated_index_count >= mesh_descriptor.index_count) {
+                if (best_fit) |bf| {
+                    if (info.allocated_vertex_count < bf.vertices or info.allocated_index_count < bf.indices) {
+                        best_fit = .{ .indirection = instance_indirection, .vertices = info.allocated_vertex_count, .indices = info.allocated_index_count };
+                    }
+                } else {
+                    best_fit = .{ .indirection = instance_indirection, .vertices = info.allocated_vertex_count, .indices = info.allocated_index_count };
+                }
+            }
+        }
+
+        var resized_vertices: ?u32 = null;
+        var resized_indices: ?u32 = null;
+        var resized_instances = false;
+        errdefer {
+            if (resized_vertices) |old_len| self.vertices.shrinkRetainingCapacity(old_len);
+            if (resized_indices) |old_len| self.indices.shrinkRetainingCapacity(old_len);
+            if (resized_indices) self.meshes.orderedRemove(self.meshes.len - 1);
+        }
+
+        const index = if (best_fit) |bf| reuse: {
+            const index = self.mesh_free_list.swapRemove(bf.indirection);
+
+            self.meshes.items(.info)[index].free = false;
+
+            self.meshes.items(.vertex_count)[index] = mesh_descriptor.vertex_count;
+            self.meshes.items(.index_count)[index] = mesh_descriptor.index_count;
+            break :reuse index;
+        } else create: {
+            const new_index: u32 = @intCast(try self.meshes.addOne(self.meshes.allocator));
+            resized_instances = true;
+
+            const vertex_offset: u32 = @intCast(self.vertices.len);
+            const index_offset: u32 = @intCast(self.indices.len);
+
+            self.meshes.items(.info)[new_index] = .{
+                .free = false,
+                .allocated_vertex_count = mesh_descriptor.vertex_count,
+                .allocated_index_count = @intCast(mesh_descriptor.index_count),
+            };
+
+            self.meshes.items(.vertex_offset)[new_index] = vertex_offset;
+            self.meshes.items(.vertex_count)[new_index] = mesh_descriptor.vertex_count;
+            self.meshes.items(.index_offset)[new_index] = index_offset;
+            self.meshes.items(.index_count)[new_index] = mesh_descriptor.index_count;
+
+            try self.vertices.resize(allocator, vertex_offset + mesh_descriptor.vertex_count);
+            resized_vertices = vertex_offset;
+
+            try self.indices.resize(allocator, index_offset + mesh_descriptor.index_count);
+            resized_indices = index_offset;
+
+            break :create new_index;
+        };
+
+        self.meshes.items(.coord)[index] = mesh_descriptor.coord;
+        self.meshes.items(.bounds)[index] = mesh_descriptor.bounds;
+
+        const vertex_offset = self.meshes.items(.vertex_offset)[index];
+        @memcpy(&self.vertices.items(.position)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.position);
+        @memcpy(&self.vertices.items(.normal)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.normal);
+        @memcpy(&self.vertices.items(.uv)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.uv);
+        @memcpy(&self.vertices.items(.material_id)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.material_id);
+
+        const index_offset = self.meshes.items(.index_offset)[index];
+        @memcpy(&self.indices.items[index_offset .. index_offset + mesh_descriptor.index_count], mesh_descriptor.indices);
+
+        // replace or append the indirection
+        const success = self.page_indirection.insert(mesh_descriptor.coord, index);
+        if (!success) return error.OutOfPages;
+    }
+
+    /// Get a mesh instance descriptor by its page coordinate.
+    pub fn getDescriptor(self: *const MeshCache, coord: PageCoord) ?MeshDescriptor { // TODO: thread safety
+        const instance_index = self.page_indirection.lookup(coord);
+
+        if (instance_index == PageTable.sentinel) return null; // not found
+
+        std.debug.assert(!self.meshes.items(.info)[instance_index].free); // should never happen
+
+        return .{
+            .coord = coord,
+            .bounds = self.meshes.items(.bounds)[instance_index],
+            .vertex_count = self.meshes.items(.vertex_count)[instance_index],
+            .index_count = self.meshes.items(.index_count)[instance_index],
+            .position = self.vertices.items(.position)[self.meshes.items(.vertex_offset)[instance_index]..].ptr,
+            .normal = self.vertices.items(.normal)[self.meshes.items(.vertex_offset)[instance_index]..].ptr,
+            .uv = self.vertices.items(.uv)[self.meshes.items(.vertex_offset)[instance_index]..].ptr,
+            .material_id = self.vertices.items(.material_id)[self.meshes.items(.vertex_offset)[instance_index]..].ptr,
+            .indices = self.indices.items[self.meshes.items(.index_offset)[instance_index]..].ptr,
+        };
+    }
+
+    /// Remove a mesh instance by its page coordinate.
+    /// This is a trivial operation, as the actual mesh data is not freed;
+    /// only the instance is removed from the indirection table and its index added to the free list.
+    pub fn removeInstance(self: *MeshCache, coord: PageCoord) void { // TODO: thread safety
+        const instance_index = self.page_indirection.lookup(coord);
+        if (instance_index == PageTable.sentinel) return; // not found
+
+        self.page_indirection.remove(coord);
+        try self.mesh_free_list.append(instance_index);
+    }
+
+    /// Defragment if necessary
+    pub fn maybeDefrag(self: *MeshCache, allocator: std.mem.Allocator) !void { // TODO: thread safety
+        const free_count = self.mesh_free_list.items.len;
+        const total_count = self.meshes.len;
+
+        // if more than 25% of instances are free, defrag
+        if (free_count * 4 > total_count) {
+            return self.defragment(allocator);
+        }
+
+        // sum the number of allocated and used vertices and indices
+        var allocated_vertices: usize = 0;
+        var allocated_indices: usize = 0;
+        var used_vertices: usize = 0;
+        var used_indices: usize = 0;
+        for (self.mesh_free_list.items) |free_index| {
+            const info = self.meshes.items(.info)[free_index];
+            allocated_vertices += info.allocated_vertex_count;
+            allocated_indices += info.allocated_index_count;
+            used_vertices += self.meshes.items(.vertex_count)[free_index];
+            used_indices += self.meshes.items(.index_count)[free_index];
+        }
+
+        // if more than 50% of allocated vertices or indices are unused, defrag
+        if (allocated_vertices > used_vertices * 2 or allocated_indices > used_indices * 2) {
+            return self.defragment(allocator);
+        }
+    }
+
+    /// Defragment the mesh instance list, removing all free instances and compacting the list.
+    /// This also rebuilds the indirection table and compacts the vertex and index buffers.
+    pub fn defragment(self: *MeshCache, allocator: std.mem.Allocator) !void { // TODO: thread safety
+        var new_instances = std.MultiArrayList(MeshData).empty;
+        try new_instances.ensureTotalCapacity(allocator, self.meshes.len - self.mesh_free_list.items.len);
+        errdefer new_instances.deinit(allocator);
+
+        var new_vertices = std.MultiArrayList(VertexData).empty;
+        try new_vertices.ensureTotalCapacity(allocator, self.vertices.len);
+        errdefer new_vertices.deinit(allocator);
+
+        var new_indices = std.ArrayList(u32).empty;
+        try new_indices.ensureTotalCapacity(allocator, self.indices.len);
+        errdefer new_indices.deinit(allocator);
+
+        const static = struct {
+            threadlocal var temp_table: PageTable = undefined;
+        };
+        const new_indirection = &static.temp_table;
+        new_indirection.init();
+
+        for (0..self.meshes.len) |old_index| {
+            const old_info = self.meshes.items(.info)[old_index];
+
+            if (old_info.free) continue; // skip free instances
+
+            const instance_coord = self.meshes.items(.coord)[old_index];
+
+            const new_index: u32 = @intCast(try new_instances.addOne(allocator));
+            const success = new_indirection.insert(instance_coord, new_index);
+            std.debug.assert(success); // this should never fail, it was already in a table
+
+            const vertex_count = self.meshes.items(.vertex_count)[old_index];
+            const old_vertex_offset = self.meshes.items(.vertex_offset)[old_index];
+            const new_vertex_offset: u32 = @intCast(new_vertices.len);
+
+            const index_count = self.meshes.items(.index_count)[old_index];
+            const old_index_offset = self.meshes.items(.index_offset)[old_index];
+            const new_index_offset: u32 = @intCast(new_indices.len);
+
+            try new_vertices.resize(allocator, new_vertex_offset + vertex_count);
+            try new_indices.resize(allocator, new_index_offset + index_count);
+
+            @memcpy(&new_vertices.items(.position)[new_vertex_offset .. new_vertex_offset + vertex_count], &self.vertices.items(.position)[old_vertex_offset..].ptr);
+            @memcpy(&new_vertices.items(.normal)[new_vertex_offset .. new_vertex_offset + vertex_count], &self.vertices.items(.normal)[old_vertex_offset..].ptr);
+            @memcpy(&new_vertices.items(.uv)[new_vertex_offset .. new_vertex_offset + vertex_count], &self.vertices.items(.uv)[old_vertex_offset..].ptr);
+            @memcpy(&new_vertices.items(.material_id)[new_vertex_offset .. new_vertex_offset + vertex_count], &self.vertices.items(.material_id)[old_vertex_offset..].ptr);
+            @memcpy(&new_indices.items[new_index_offset .. new_index_offset + index_count], &self.indices.items[old_index_offset..].ptr);
+            new_instances.items(.info)[new_index] = .{
+                .free = false,
+                .allocated_vertex_count = vertex_count,
+                .allocated_index_count = @intCast(index_count),
+            };
+            new_instances.items(.coord)[new_index] = instance_coord;
+            new_instances.items(.bounds)[new_index] = self.meshes.items(.bounds)[old_index];
+            new_instances.items(.vertex_offset)[new_index] = new_vertex_offset;
+            new_instances.items(.vertex_count)[new_index] = vertex_count;
+            new_instances.items(.index_offset)[new_index] = new_index_offset;
+            new_instances.items(.index_count)[new_index] = index_count;
+        }
+
+        self.meshes.deinit(allocator);
+        self.meshes = new_instances;
+
+        self.vertices.deinit(allocator);
+        self.vertices = new_vertices;
+
+        self.indices.deinit(allocator);
+        self.indices = new_indices;
+
+        self.page_indirection.copy(new_indirection);
+
+        self.mesh_free_list.clearRetainingCapacity();
+    }
+};
+
+/// The update manager holds two Grids; a front buffer and a back buffer:
+/// * The front buffer is the one currently being used for read and write operations.
+/// * The back buffer is used for updates in parallel worker threads. These updates perform multiple operations:
+///   - Attempts homogenization dirty voxemes and pages.
+///   - Prunes empty voxemes and pages.
+///   - Recalculates visibility for dirty voxemes and pages.
+///   - Generates mesh instances for voxemes and pages.
+///
+/// This allows for safe, lock-free updates to the grid state while still allowing the main thread
+/// to read and write voxel data without blocking.
+///
+/// To facilitate these processes, the UpdateManager also holds a thread pool for parallel updates,
+/// and a mesh cache for storing generated mesh data.
+pub const UpdateManager = struct {
+    /// The grid being managed.
+    front: *Grid,
+    /// The back buffer grid used for updates.
+    back: *Grid,
+    /// The thread pool used for parallel updates.
+    thread_pool: std.Thread.Pool,
+    /// The mesh cache used for storing generated mesh data.
+    mesh_cache: *MeshCache,
+
+    /// Create a new update manager for the given grid.
+    /// This allocates a second grid as the back buffer.
+    /// The thread pool is also initialized here.
+    /// This does not take fully ownership of the given grid;
+    /// the caller is still responsible for deinitializing it. See `deinit`.
+    pub fn init(grid: *Grid) !UpdateManager {
+        var self: UpdateManager = undefined;
+
+        self.front = grid;
+
+        self.back = try grid.clone();
+        errdefer self.back.deinit();
+
+        self.thread_pool = try std.Thread.Pool.init(.{
+            .allocator = grid.allocator,
+            .n_jobs = null, // use the cpu core count
+            .track_ids = true, // we need thread ids to distinguish work items
+            // use default stack size (16mb)
+        });
+        errdefer self.thread_pool.deinit();
+
+        self.mesh_cache = try MeshCache.init(grid.allocator);
+        errdefer self.mesh_cache.deinit();
+
+        return self;
+    }
+
+    // Deinitialize the update manager, joining all managed threads and freeing the back buffer grid.
+    // * Returns the front buffer grid, transferring full ownership back to the caller.
+    pub fn deinit(self: *UpdateManager) *Grid {
+        const allocator = self.grids[0].allocator;
+        const out = self.front;
+        self.thread_pool.deinit(); // join all threads
+        self.back.deinit();
+        self.mesh_cache.deinit(allocator);
+        self.* = undefined; // debug safety
+        return out;
     }
 };
