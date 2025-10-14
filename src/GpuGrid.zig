@@ -1622,7 +1622,7 @@ pub const UpdateManager = struct {
                     @as(u32, @intCast(index)),
                 });
             }
-            voxeme_wait_group.wait();
+            self.thread_pool.waitAndWork(&voxeme_wait_group);
 
             var page_wait_group = std.Thread.WaitGroup{};
             var page_it = buffers.grid.dirty_page_set.iterator(.{});
@@ -1634,10 +1634,10 @@ pub const UpdateManager = struct {
                     @as(u32, @intCast(index)),
                 });
             }
-            page_wait_group.wait();
+            self.thread_pool.waitAndWork(&page_wait_group);
 
             for (self.prune_command_queue.buffer) |cmd| {
-                switch (cmd) { // TODO: implement pruning
+                switch (cmd) { // TODO: implement pruning; we will need to append mesh commands here as well
                     .prune_page => {},
                     .prune_voxeme => {},
                 }
@@ -1659,7 +1659,7 @@ pub const UpdateManager = struct {
                     page_index,
                 });
             }
-            mesh_wait_group.wait();
+            self.thread_pool.waitAndWork(&mesh_wait_group);
 
             buffers.grid.dirty_page_set.unsetAll();
             buffers.grid.dirty_voxeme_set.unsetAll();
