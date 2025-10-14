@@ -1016,6 +1016,14 @@ pub const MeshView = extern struct {
 
 /// A cache for mesh data generated from the voxel grid.
 /// This is used to store the mesh data generated during the update phase.
+///
+/// This is not an inherently thread-safe structure;
+/// `Command` and `applyCommands` are provided to allow deferred modification of the cache.
+///
+/// Descriptors may be retrieved and read from multiple threads safely, so long as
+/// descriptors are not held past a command application step.
+///
+/// In other words, their lifetime is the current frame lifetime.
 pub const MeshCache = struct {
     /// The indirection table mapping from `PageCoord` to page index in the `instances` ArrayList.
     page_indirection: PageTable,
@@ -1092,6 +1100,14 @@ pub const MeshCache = struct {
         }
     };
 
+    /// Commands for modifying the mesh cache asynchronously.
+    pub const Command = union(enum) {
+        /// Insert a new mesh instance.
+        insert: MeshDescriptor,
+        /// Remove an existing mesh instance by its page coordinate.
+        remove: PageCoord,
+    };
+
     /// Create a new, empty mesh cache.
     /// This incurs several large allocations.
     pub fn init(allocator: std.mem.Allocator) !*MeshCache {
@@ -1129,6 +1145,7 @@ pub const MeshCache = struct {
     }
 
     /// Clear the cache state but retain all allocated memory.
+    /// Caller should hold mutex lock when calling this.
     pub fn clear(self: *MeshCache) void {
         self.page_indirection.init();
         self.vertices.clearRetainingCapacity();
@@ -1142,11 +1159,21 @@ pub const MeshCache = struct {
         return Iterator{ .mesh_cache = self, .index = 0 };
     }
 
+    /// Apply a set of commands to the cache.
+    pub fn applyCommands(self: *MeshCache, allocator: std.mem.Allocator, commands: []const Command) !void {
+        for (commands) |cmd| {
+            switch (cmd) {
+                .insert => |desc| _ = try self.addInstance(allocator, desc),
+                .remove => |coord| self.removeInstance(coord),
+            }
+        }
+    }
+
     /// Add a new mesh instance for the given page coordinate.
     /// This will first attempt to fit the instance into a free slot;
     /// if no free slots are available, a new instance is appended to the list.
     /// Returns the index of the new instance in the `instances` ArrayList.
-    pub fn addInstance(self: *MeshCache, allocator: std.mem.Allocator, mesh_descriptor: MeshDescriptor) !u32 { // TODO: thread safety
+    pub fn addInstance(self: *MeshCache, allocator: std.mem.Allocator, mesh_descriptor: MeshDescriptor) !u32 {
         // remove any existing instance first
         self.removeInstance(mesh_descriptor.coord);
 
@@ -1171,7 +1198,7 @@ pub const MeshCache = struct {
         errdefer {
             if (resized_vertices) |old_len| self.vertices.shrinkRetainingCapacity(old_len);
             if (resized_indices) |old_len| self.indices.shrinkRetainingCapacity(old_len);
-            if (resized_indices) self.meshes.orderedRemove(self.meshes.len - 1);
+            if (resized_instances) self.meshes.orderedRemove(self.meshes.len - 1);
         }
 
         const index = if (best_fit) |bf| reuse: {
@@ -1183,7 +1210,7 @@ pub const MeshCache = struct {
             self.meshes.items(.index_count)[index] = mesh_descriptor.index_count;
             break :reuse index;
         } else create: {
-            const new_index: u32 = @intCast(try self.meshes.addOne(self.meshes.allocator));
+            const new_index: u32 = @intCast(try self.meshes.addOne(allocator));
             resized_instances = true;
 
             const vertex_offset: u32 = @intCast(self.vertices.len);
@@ -1226,8 +1253,25 @@ pub const MeshCache = struct {
         if (!success) return error.OutOfPages;
     }
 
+    /// Get a mesh render descriptor by its page coordinate.
+    /// The descriptor must not be held beyond a frame boundary.
+    pub fn getView(self: *const MeshCache, coord: PageCoord) ?MeshView {
+        const instance_index = self.page_indirection.lookup(coord);
+        if (instance_index == PageTable.sentinel) return null; // not found
+
+        std.debug.assert(!self.meshes.items(.info)[instance_index].free); // should never happen
+
+        return .{
+            .coord = coord,
+            .bounds = self.meshes.items(.bounds)[instance_index],
+            .index_offset = self.meshes.items(.index_offset)[instance_index],
+            .index_count = self.meshes.items(.index_count)[instance_index],
+        };
+    }
+
     /// Get a mesh instance descriptor by its page coordinate.
-    pub fn getDescriptor(self: *const MeshCache, coord: PageCoord) ?MeshDescriptor { // TODO: thread safety
+    /// The descriptor must not be held beyond a frame boundary.
+    pub fn getDescriptor(self: *const MeshCache, coord: PageCoord) ?MeshDescriptor {
         const instance_index = self.page_indirection.lookup(coord);
 
         if (instance_index == PageTable.sentinel) return null; // not found
@@ -1250,7 +1294,7 @@ pub const MeshCache = struct {
     /// Remove a mesh instance by its page coordinate.
     /// This is a trivial operation, as the actual mesh data is not freed;
     /// only the instance is removed from the indirection table and its index added to the free list.
-    pub fn removeInstance(self: *MeshCache, coord: PageCoord) void { // TODO: thread safety
+    pub fn removeInstance(self: *MeshCache, coord: PageCoord) void {
         const instance_index = self.page_indirection.lookup(coord);
         if (instance_index == PageTable.sentinel) return; // not found
 
@@ -1259,13 +1303,13 @@ pub const MeshCache = struct {
     }
 
     /// Defragment if necessary
-    pub fn maybeDefrag(self: *MeshCache, allocator: std.mem.Allocator) !void { // TODO: thread safety
+    pub fn maybeDefrag(self: *MeshCache, allocator: std.mem.Allocator, secondary_destination: ?*MeshCache) !void {
         const free_count = self.mesh_free_list.items.len;
         const total_count = self.meshes.len;
 
         // if more than 25% of instances are free, defrag
         if (free_count * 4 > total_count) {
-            return self.defragment(allocator);
+            return self.defragment(allocator, secondary_destination);
         }
 
         // sum the number of allocated and used vertices and indices
@@ -1283,13 +1327,23 @@ pub const MeshCache = struct {
 
         // if more than 50% of allocated vertices or indices are unused, defrag
         if (allocated_vertices > used_vertices * 2 or allocated_indices > used_indices * 2) {
-            return self.defragment(allocator);
+            return self.defragment(allocator, secondary_destination);
         }
+    }
+
+    /// Defragment a mesh cache and copy it into a new one.
+    pub fn clone(self: *const MeshCache, allocator: std.mem.Allocator) !*MeshCache {
+        const new_cache = try MeshCache.init(allocator);
+        errdefer new_cache.deinit(allocator);
+
+        try self.defragment(allocator, new_cache);
+
+        return new_cache;
     }
 
     /// Defragment the mesh instance list, removing all free instances and compacting the list.
     /// This also rebuilds the indirection table and compacts the vertex and index buffers.
-    pub fn defragment(self: *MeshCache, allocator: std.mem.Allocator) !void { // TODO: thread safety
+    pub fn defragment(self: *MeshCache, allocator: std.mem.Allocator, secondary_destination: ?*MeshCache) !void {
         var new_instances = std.MultiArrayList(MeshData).empty;
         try new_instances.ensureTotalCapacity(allocator, self.meshes.len - self.mesh_free_list.items.len);
         errdefer new_instances.deinit(allocator);
@@ -1348,20 +1402,49 @@ pub const MeshCache = struct {
             new_instances.items(.index_count)[new_index] = index_count;
         }
 
-        self.meshes.deinit(allocator);
-        self.meshes = new_instances;
+        for (if (secondary_destination) |dest| .{ self, dest } else .{self}, 0..) |dest, i| {
+            dest.meshes.deinit(allocator);
+            dest.meshes = if (i > 0) try new_instances.clone(allocator) else new_instances;
 
-        self.vertices.deinit(allocator);
-        self.vertices = new_vertices;
+            dest.vertices.deinit(allocator);
+            dest.vertices = if (i > 0) try new_vertices.clone(allocator) else new_vertices;
 
-        self.indices.deinit(allocator);
-        self.indices = new_indices;
+            dest.indices.deinit(allocator);
+            dest.indices = if (i > 0) try new_indices.clone(allocator) else new_indices;
 
-        self.page_indirection.copy(new_indirection);
+            dest.page_indirection.copy(new_indirection);
 
-        self.mesh_free_list.clearRetainingCapacity();
+            dest.mesh_free_list.clearRetainingCapacity();
+        }
     }
 };
+
+pub fn AsyncQueue(comptime T: type) type {
+    return struct {
+        const Self = @This();
+
+        buffer: []T,
+        top: u32,
+
+        pub fn init(allocator: std.mem.Allocator, capacity: u32) !Self {
+            return Self{
+                .buffer = try allocator.alloc(T, capacity),
+                .top = .init(0),
+            };
+        }
+
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
+            allocator.free(self.buffer);
+            self.* = undefined; // debug safety
+        }
+
+        pub fn enqueue(self: *Self, item: T) !void {
+            const current_top = @atomicRmw(u32, &self.top, .Add, 1, .monotonic);
+            if (current_top >= self.buffer.len) return error.AsyncQueueFull;
+            self.buffer[current_top] = item;
+        }
+    };
+}
 
 /// The update manager holds two Grids; a front buffer and a back buffer:
 /// * The front buffer is the one currently being used for read and write operations.
@@ -1377,51 +1460,239 @@ pub const MeshCache = struct {
 /// To facilitate these processes, the UpdateManager also holds a thread pool for parallel updates,
 /// and a mesh cache for storing generated mesh data.
 pub const UpdateManager = struct {
-    /// The grid being managed.
-    front: *Grid,
-    /// The back buffer grid used for updates.
-    back: *Grid,
+    pub const SwapBuffers = struct {
+        grid: *Grid,
+        mesh_cache: *MeshCache,
+        pub fn deinit(self: *SwapBuffers) void {
+            self.grid.deinit();
+            self.mesh_cache.deinit(self.grid.allocator);
+        }
+    };
+
+    pub const PruneCommand = union(enum) {
+        prune_page: PageCoord,
+        prune_voxeme: struct { PageCoord, LocalCoord },
+    };
+
+    /// The allocator used for all allocations, taken from the input Grid for consistent, concurrent-safe access.
+    allocator: std.mem.Allocator,
+
+    /// Both grids and mesh caches used by the double buffering system.
+    state: [2]SwapBuffers,
+    /// index of the front buffers in `state`
+    front_index: u1,
+
+    /// Mesh cache command queue used by the manager thread
+    mesh_command_queue: AsyncQueue(MeshCache.Command),
+
+    /// Grid pruning command queue used by the manager thread
+    prune_command_queue: AsyncQueue(PruneCommand),
+
+    /// Arena allocator for temporary allocations during updates.
+    update_arena: std.heap.ArenaAllocator,
+
+    /// Synchronization mutex for the front buffer.
+    sync_mutex: std.Thread.Mutex,
+    /// Signals the manager thread that there is update work to do in the front buffer.
+    signal: std.Thread.Condition,
+    /// The shutdown signal for the manager thread.
+    running: std.atomic.Value(bool),
     /// The thread pool used for parallel updates.
-    thread_pool: std.Thread.Pool,
-    /// The mesh cache used for storing generated mesh data.
-    mesh_cache: *MeshCache,
+    thread_pool: *std.Thread.Pool,
+    /// The thread running the update manager loop.
+    manager_thread: std.Thread,
 
     /// Create a new update manager for the given grid.
     /// This allocates a second grid as the back buffer.
     /// The thread pool is also initialized here.
     /// This does not take fully ownership of the given grid;
     /// the caller is still responsible for deinitializing it. See `deinit`.
-    pub fn init(grid: *Grid) !UpdateManager {
+    pub fn init(grid: *Grid, pool: *std.Thread.Pool) !UpdateManager {
         var self: UpdateManager = undefined;
 
-        self.front = grid;
+        self.allocator = grid.allocator;
 
-        self.back = try grid.clone();
-        errdefer self.back.deinit();
+        const mesh_cache = try MeshCache.init(self.allocator);
+        errdefer mesh_cache.deinit();
 
-        self.thread_pool = try std.Thread.Pool.init(.{
-            .allocator = grid.allocator,
-            .n_jobs = null, // use the cpu core count
-            .track_ids = true, // we need thread ids to distinguish work items
+        const back_grid = try grid.clone();
+        errdefer back_grid.deinit();
+
+        const back_cache = try MeshCache.init(self.allocator);
+        errdefer back_cache.deinit();
+
+        self.state = .{
+            .{ .grid = grid, .mesh_cache = mesh_cache },
+            .{ .grid = back_grid, .mesh_cache = back_cache },
+        };
+        self.front_index = 0;
+
+        self.sync_mutex = .{};
+        self.signal = .{};
+        self.running = .init(true);
+
+        self.mesh_command_queue = try AsyncQueue(MeshCache.Command).init(self.allocator, max_pages); // TODO: calculate memory usage
+        errdefer self.mesh_command_queue.deinit(self.allocator);
+
+        self.prune_command_queue = try AsyncQueue(PruneCommand).init(self.allocator, max_pages * voxemes_per_page); // TODO: calculate memory usage
+        errdefer self.prune_command_queue.deinit(self.allocator);
+
+        self.update_arena = std.heap.ArenaAllocator.init(self.allocator);
+        errdefer self.update_arena.deinit();
+
+        self.thread_pool = pool;
+
+        self.manager_thread = try std.Thread.spawn(.{
+            .allocator = self.allocator,
             // use default stack size (16mb)
-        });
-        errdefer self.thread_pool.deinit();
-
-        self.mesh_cache = try MeshCache.init(grid.allocator);
-        errdefer self.mesh_cache.deinit();
+        }, manager, &self);
 
         return self;
     }
 
+    pub fn front(self: *UpdateManager) SwapBuffers {
+        return self.state[self.front_index];
+    }
+
+    pub fn back(self: *UpdateManager) SwapBuffers {
+        return self.state[~self.front_index];
+    }
+
     // Deinitialize the update manager, joining all managed threads and freeing the back buffer grid.
-    // * Returns the front buffer grid, transferring full ownership back to the caller.
-    pub fn deinit(self: *UpdateManager) *Grid {
-        const allocator = self.grids[0].allocator;
-        const out = self.front;
-        self.thread_pool.deinit(); // join all threads
-        self.back.deinit();
-        self.mesh_cache.deinit(allocator);
+    // * Returns the front buffers, transferring full ownership back to the caller.
+    pub fn deinit(self: *UpdateManager) SwapBuffers {
+        const out = self.front();
+
+        {
+            self.sync_mutex.lock();
+            defer self.sync_mutex.unlock();
+
+            self.running.store(false, .monotonic);
+            self.signal.broadcast(); // wake the manager thread if it is waiting
+        }
+
+        self.manager_thread.join(); // manager will wait for jobs to finish
+
+        self.back().deinit();
+
+        self.mesh_command_queue.deinit(self.allocator);
+        self.prune_command_queue.deinit(self.allocator);
+        self.update_arena.deinit();
+
         self.* = undefined; // debug safety
+
         return out;
+    }
+
+    pub fn endFrame(self: *UpdateManager) void {
+        self.sync_mutex.lock();
+        defer self.sync_mutex.unlock();
+        self.front_index = ~self.front_index; // swap front and back
+
+        // TODO: copy data from items in dirty sets from back to front to prevent lost updates
+
+        self.signal.signal(); // wake the manager thread if it is waiting
+    }
+
+    fn manager(self: *UpdateManager) void {
+        while (self.running.load(.monotonic)) {
+            const buffers = guard: {
+                self.sync_mutex.lock();
+                defer self.sync_mutex.unlock();
+
+                while (self.back().grid.dirty_page_set.count() == 0 and self.running.load(.monotonic)) {
+                    self.signal.wait(&self.sync_mutex);
+                }
+
+                if (!self.running.load(.monotonic)) return;
+
+                break :guard self.back();
+            };
+
+            const arena = self.update_arena.allocator();
+            defer _ = self.update_arena.reset(.retain_capacity);
+
+            var voxeme_wait_group = std.Thread.WaitGroup{};
+            var voxeme_it = buffers.grid.dirty_voxeme_set.iterator(.{});
+            while (voxeme_it.next()) |index| {
+                self.thread_pool.spawnWg(&voxeme_wait_group, voxeme_job, .{
+                    self,
+                    arena,
+                    buffers,
+                    @as(u32, @intCast(index)),
+                });
+            }
+            voxeme_wait_group.wait();
+
+            var page_wait_group = std.Thread.WaitGroup{};
+            var page_it = buffers.grid.dirty_page_set.iterator(.{});
+            while (page_it.next()) |index| {
+                self.thread_pool.spawnWg(&page_wait_group, page_job, .{
+                    self,
+                    arena,
+                    buffers,
+                    @as(u32, @intCast(index)),
+                });
+            }
+            page_wait_group.wait();
+
+            for (self.prune_command_queue.buffer) |cmd| {
+                switch (cmd) { // TODO: implement pruning
+                    .prune_page => {},
+                    .prune_voxeme => {},
+                }
+            }
+            self.prune_command_queue.top = 0;
+
+            var mesh_wait_group = std.Thread.WaitGroup{};
+            const page_indices = &buffers.grid.page_indirection.indices;
+            for (page_indices) |page_index| {
+                if (page_index == PageTable.sentinel or page_index == PageTable.tombstone) continue;
+                const page_coord = buffers.grid.pages.items(.coord)[page_index];
+
+                if (buffers.grid.dirty_page_set.get(@as(usize, page_index)) == 0 and buffers.mesh_cache.page_indirection.lookup(page_coord) != PageTable.sentinel) continue;
+
+                self.thread_pool.spawnWg(&mesh_wait_group, mesh_job, .{
+                    self,
+                    arena,
+                    buffers,
+                    page_index,
+                });
+            }
+            mesh_wait_group.wait();
+
+            buffers.grid.dirty_page_set.unsetAll();
+            buffers.grid.dirty_voxeme_set.unsetAll();
+
+            buffers.mesh_cache.applyCommands(self.allocator, self.mesh_command_queue.buffer[0..self.mesh_command_queue.top]) catch |err| {
+                log.err("Failed to apply mesh cache commands: {s}\n", .{@errorName(err)});
+            };
+        }
+    }
+
+    fn voxeme_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, voxeme_index: u32) void {
+        // TODO: determine if dirty voxeme can be pruned, enqueue prune command if so
+        // TODO: recalculate visibility in unpruned case
+        _ = self;
+        _ = arena;
+        _ = buffers;
+        _ = voxeme_index;
+    }
+
+    fn page_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32) void {
+        // TODO: determine if dirty page can be pruned, enqueue prune command if so
+        // TODO: recalculate visibility in unpruned case
+        _ = self;
+        _ = arena;
+        _ = buffers;
+        _ = page_index;
+    }
+
+    fn mesh_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32) void {
+        // TODO: generate mesh for page, enqueue mesh command
+        _ = self;
+        _ = arena;
+        _ = buffers;
+        _ = page_index;
     }
 };
