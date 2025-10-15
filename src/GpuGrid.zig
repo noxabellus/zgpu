@@ -268,6 +268,7 @@ pub const Voxel = packed struct(u32) {
 };
 
 /// A spacial hash table mapping from `Coord` to index in a MultiArrayList.
+/// This structure is not thread-safe and relies on the command queue architecture implemented in the update manager.
 pub fn SpacialHashTable(comptime Coord: type, comptime BitCoord: type, comptime max_indirections: comptime_int) type {
     return extern struct {
         const Self = @This();
@@ -295,6 +296,8 @@ pub fn SpacialHashTable(comptime Coord: type, comptime BitCoord: type, comptime 
         indices: [max_indirections]u32,
         /// The coordinates for the slots in the table.
         coordinates: [max_indirections]u32,
+        /// The number of valid entries in the table.
+        len: u32,
 
         /// Initialize the table to empty state.
         pub fn init(self: *Self) void {
@@ -342,6 +345,7 @@ pub fn SpacialHashTable(comptime Coord: type, comptime BitCoord: type, comptime 
                     // Empty or deleted slot; claim it.
                     self.indices[h] = new_index;
                     self.coordinates[h] = intFromCoord(coord);
+                    self.len += 1;
                     return true;
                 }
                 if (index != tombstone and coordFromInt(self.coordinates[h]) == coord) {
@@ -363,111 +367,8 @@ pub fn SpacialHashTable(comptime Coord: type, comptime BitCoord: type, comptime 
                 if (index == sentinel) return;
                 if (index != tombstone and self.coordinates[h] == coord) {
                     self.indices[h] = tombstone;
+                    self.len -= 1;
                     return;
-                }
-                h = (h + 1) & indirection_mask;
-            }
-        }
-
-        /// Look up the index bound to `coord` in the table, or `sentinel` if not found.
-        /// This is a thread safe, lock-free operation. It does have some overhead, however;
-        /// so use the non-atomic version from the main thread.
-        /// This is only needed for worker threads operation on the back buffer.
-        pub fn lookup_atomic(self: *const Self, coord: Coord) u32 {
-            var h = hash(coord);
-            for (0..max_indirections) |_| {
-                // Step 1: Read the index FIRST.
-                const index1 = @atomicLoad(u32, &self.indices[h], .acquire);
-
-                if (index1 == sentinel) {
-                    return sentinel; // Chain ends here.
-                }
-
-                if (index1 != tombstone) {
-                    // Step 2: Read the payload (the coordinate).
-                    const coord_at_h = self.coordinates[h];
-
-                    // Step 3: Read the index AGAIN to verify.
-                    const index2 = @atomicLoad(u32, &self.indices[h], .acquire);
-
-                    // Step 4: Check for consistency.
-                    if (index1 == index2) {
-                        // The index didn't change while we read the coordinate.
-                        // The data is consistent. Now we can safely use it.
-                        if (coordFromInt(coord_at_h) == coord) {
-                            return index1; // Found it!
-                        }
-                    }
-                    // If index1 != index2, a race happened. We just continue probing,
-                    // effectively treating it as a failed match, which is safe.
-                }
-
-                h = (h + 1) & indirection_mask;
-            }
-
-            return sentinel;
-        }
-
-        /// Insert a new index binding for `coord` into the table, or update an existing binding.
-        /// This is a thread safe, lock-free operation. It does have some overhead, however;
-        /// so use the non-atomic version from the main thread.
-        /// This is only needed for worker threads operating on the back buffer.
-        pub fn insert_atomic(self: *Self, coord: Coord, new_index: u32) bool {
-            var h = hash(coord);
-            for (0..max_indirections) |_| {
-                // --- Read Phase (Same logic as lookup) ---
-                const index1 = @atomicLoad(u32, &self.indices[h], .acquire);
-
-                // --- Write Phase ---
-                if (index1 == sentinel or index1 == tombstone) {
-                    const result = @cmpxchgStrong(u32, &self.indices[h], index1, new_index, .acq_rel, .acquire);
-                    if (result == null) {
-                        // We won the race to claim the index. Now we can safely write the coordinate.
-                        // No other thread can be writing to `coordinates[h]` now.
-                        self.coordinates[h] = coord;
-                        return true;
-                    }
-                    continue; // CAS failed, retry.
-                }
-
-                // The slot is occupied. We need to verify the coordinate before attempting an update.
-                const coord_at_h = self.coordinates[h];
-                const index2 = @atomicLoad(u32, &self.indices[h], .acquire);
-
-                if (index1 == index2) {
-                    // Consistent read. Now we can check if it's our key.
-                    if (coordFromInt(coord_at_h) == coord) {
-                        const result = @cmpxchgStrong(u32, &self.indices[h], index1, new_index, .acq_rel, .acquire);
-                        if (result == null) return true; // Update succeeded
-                        continue; // Update failed, retry.
-                    }
-                }
-
-                // If inconsistent read or not our key, continue probing.
-                h = (h + 1) & indirection_mask;
-            }
-
-            return false; // Table full
-        }
-
-        /// Remove the index binding for `coord` from the table, if it exists.
-        /// This is a thread safe, lock-free operation. It does have some overhead, however;
-        /// so use the non-atomic version from the main thread.
-        /// This is only needed for worker threads operating on the back buffer.
-        pub fn remove_atomic(self: *Self, coord: Coord) void {
-            var h = hash(coord);
-            for (0..max_indirections) |_| {
-                const index1 = @atomicLoad(u32, &self.indices[h], .acquire);
-                if (index1 == sentinel) return;
-
-                if (index1 != tombstone) {
-                    const coord_at_h = self.coordinates[h];
-                    const index2 = @atomicLoad(u32, &self.indices[h], .acquire);
-                    if (index1 == index2 and coord_at_h == coord) {
-                        const result = @cmpxchgStrong(u32, &self.indices[h], index1, tombstone, .acq_rel, .acquire);
-                        if (result == null) return; // Success!
-                        continue; // CAS failed, retry.
-                    }
                 }
                 h = (h + 1) & indirection_mask;
             }
@@ -1426,6 +1327,8 @@ pub fn AsyncQueue(comptime T: type) type {
         buffer: []T,
         top: u32,
 
+        /// Initialize a new async queue with the given capacity.
+        /// * Initialize before spawning threads using the queue.
         pub fn init(allocator: std.mem.Allocator, capacity: u32) !Self {
             return Self{
                 .buffer = try allocator.alloc(T, capacity),
@@ -1433,15 +1336,32 @@ pub fn AsyncQueue(comptime T: type) type {
             };
         }
 
+        /// Deinitialize the queue, freeing its buffer.
+        /// * All threads must be joined and no longer using the queue before calling this.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             allocator.free(self.buffer);
             self.* = undefined; // debug safety
         }
 
+        /// * Thread-safe
         pub fn enqueue(self: *Self, item: T) !void {
-            const current_top = @atomicRmw(u32, &self.top, .Add, 1, .monotonic);
+            const current_top: usize = @atomicRmw(u32, &self.top, .Add, 1, .monotonic);
             if (current_top >= self.buffer.len) return error.AsyncQueueFull;
             self.buffer[current_top] = item;
+        }
+
+        /// * Not thread-safe
+        pub fn enqueue_sync(self: *Self, item: T) !void {
+            if (self.top >= self.buffer.len) return error.AsyncQueueFull;
+            self.buffer[self.top] = item;
+            self.top += 1;
+        }
+
+        // * Not thread-safe
+        pub fn dequeue_sync(self: *Self) ?T {
+            if (self.top == 0) return null;
+            self.top -= 1;
+            return self.buffer[self.top];
         }
     };
 }
@@ -1636,13 +1556,59 @@ pub const UpdateManager = struct {
             }
             self.thread_pool.waitAndWork(&page_wait_group);
 
-            for (self.prune_command_queue.buffer) |cmd| {
-                switch (cmd) { // TODO: implement pruning; we will need to append mesh commands here as well
-                    .prune_page => {},
-                    .prune_voxeme => {},
+            while (self.prune_command_queue.dequeue_sync()) |cmd| {
+                switch (cmd) {
+                    .prune_page => |page_coord| {
+                        const page_index = buffers.grid.pages.lookup(page_coord);
+                        std.debug.assert(page_index != PageTable.sentinel);
+
+                        buffers.grid.pages.remove(page_coord);
+                        buffers.grid.page_free_list.append(self.allocator, page_index) catch @panic("Page free list overflow");
+
+                        self.mesh_command_queue.enqueue_sync(.{ .remove = page_coord }) catch @panic("Mesh command queue overflow");
+                    },
+                    .prune_voxeme => |coords| {
+                        const page_coord, const local_voxeme_coord = coords;
+                        const page_index = buffers.grid.pages.lookup(page_coord);
+                        std.debug.assert(page_index != PageTable.sentinel);
+
+                        const voxeme_indirection: *VoxemeTable = &buffers.grid.pages.items(.voxeme_indirection)[page_index];
+
+                        const voxeme_index = voxeme_indirection.lookup(local_voxeme_coord);
+                        std.debug.assert(voxeme_index != PageTable.sentinel);
+
+                        voxeme_indirection.remove(local_voxeme_coord);
+                        buffers.grid.voxeme_free_list.append(self.allocator, voxeme_index) catch @panic("Voxeme free list overflow");
+                    },
                 }
             }
-            self.prune_command_queue.top = 0;
+
+            voxeme_wait_group = std.Thread.WaitGroup{};
+            voxeme_it = buffers.grid.dirty_voxeme_set.iterator(.{});
+            while (voxeme_it.next()) |index| {
+                const page_index = buffers.grid.voxemes.items(.page_index)[index];
+                const local_voxeme_coord = buffers.grid.voxemes.items(.local_coord)[index];
+                self.thread_pool.spawnWg(&voxeme_wait_group, voxeme_visibility_job, .{
+                    self,
+                    arena,
+                    buffers,
+                    page_index,
+                    local_voxeme_coord,
+                });
+            }
+            self.thread_pool.waitAndWork(&voxeme_wait_group);
+
+            page_wait_group = std.Thread.WaitGroup{};
+            page_it = buffers.grid.dirty_page_set.iterator(.{});
+            while (page_it.next()) |index| {
+                self.thread_pool.spawnWg(&page_wait_group, page_visibility_job, .{
+                    self,
+                    arena,
+                    buffers,
+                    @as(u32, @intCast(index)),
+                });
+            }
+            self.thread_pool.waitAndWork(&page_wait_group);
 
             var mesh_wait_group = std.Thread.WaitGroup{};
             const page_indices = &buffers.grid.page_indirection.indices;
@@ -1671,8 +1637,11 @@ pub const UpdateManager = struct {
     }
 
     fn voxeme_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, voxeme_index: u32) void {
-        // TODO: determine if dirty voxeme can be pruned, enqueue prune command if so
-        // TODO: recalculate visibility in unpruned case
+        // TODO: homogenize if possible. this involves checking all voxels in the voxeme;
+        //       if they are all of the same type, they can be homogenized
+        // TODO: determine if dirty voxeme can be pruned, enqueue prune command if so;
+        //       this is only possible if the voxeme is homogenized to the page material
+
         _ = self;
         _ = arena;
         _ = buffers;
@@ -1680,8 +1649,28 @@ pub const UpdateManager = struct {
     }
 
     fn page_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32) void {
-        // TODO: determine if dirty page can be pruned, enqueue prune command if so
-        // TODO: recalculate visibility in unpruned case
+        // TODO: homogenize if possible. this involves checking all voxemes in the page;
+        //       if they are all homogeneous and of the same type, they can be pruned and the page can take the homogeneous type
+        // TODO: determine if dirty page can be pruned, enqueue prune command if so;
+        //       this is only possible if the page is homogenized to empty
+
+        _ = self;
+        _ = arena;
+        _ = buffers;
+        _ = page_index;
+    }
+
+    fn voxeme_visibility_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32, local_voxeme_coord: LocalCoord) void {
+        // TODO: recalculate visibility for voxeme
+        _ = self;
+        _ = arena;
+        _ = buffers;
+        _ = page_index;
+        _ = local_voxeme_coord;
+    }
+
+    fn page_visibility_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32) void {
+        // TODO: recalculate visibility for page, enqueue mesh command if any visibility changed
         _ = self;
         _ = arena;
         _ = buffers;
