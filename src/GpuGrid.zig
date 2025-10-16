@@ -365,7 +365,7 @@ pub fn SpacialHashTable(comptime Coord: type, comptime BitCoord: type, comptime 
             for (0..max_indirections) |_| {
                 const index = self.indices[h];
                 if (index == sentinel) return;
-                if (index != tombstone and self.coordinates[h] == coord) {
+                if (index != tombstone and coordFromInt(self.coordinates[h]) == coord) {
                     self.indices[h] = tombstone;
                     self.len -= 1;
                     return;
@@ -768,9 +768,8 @@ pub fn setVoxel(self: *Grid, global_voxel: vec3i, new_voxel: Voxel) !void {
     voxel.* = new_voxel;
 
     // --- MARK DIRTY ---
-    // NOTE: the voxel-level flags are for efficient data transfer only, so we don't need to mark them dirty here
-
     const local_voxeme_idx = convert.localVoxemeCoordToIndex(local_voxeme_coord);
+    self.voxels.items(.dirty_voxel_set)[buffer_index].set(index_in_buffer);
     self.pages.items(.dirty_voxeme_set)[page_index].set(local_voxeme_idx);
     self.dirty_page_set.set(page_index);
 
@@ -789,6 +788,8 @@ pub fn setVoxel(self: *Grid, global_voxel: vec3i, new_voxel: Voxel) !void {
             if (neighbor_voxeme_index != VoxemeTable.sentinel) {
                 const neighbor_local_voxeme_idx = convert.localVoxemeCoordToIndex(neighbor_local_voxeme_coord);
                 self.pages.items(.dirty_voxeme_set)[neighbor_page_index].set(neighbor_local_voxeme_idx);
+
+                // NOTE: the voxel-level flags are for efficient data transfer only, so we don't need to mark neighbors dirty
             }
         }
     }
@@ -954,6 +955,24 @@ pub const convert = struct {
 
     // --- Low-Level to High-Level (Building Back Up) ---
 
+    /// 1D buffer index for a page's VoxemeTable to a 3D local voxeme coordinate (0-15).
+    pub inline fn indexToLocalVoxemeCoord(index: u32) LocalCoord {
+        return .{
+            .x = @intCast(index & page_axis_mask),
+            .y = @intCast((index >> page_axis_shift) & page_axis_mask),
+            .z = @intCast((index >> (page_axis_shift * 2)) & page_axis_mask),
+        };
+    }
+
+    /// 1D buffer index for a voxeme's VoxelBuffer to a 3D local voxel coordinate (0-15).
+    pub inline fn indexToLocalVoxelCoord(index: u32) LocalCoord {
+        return .{
+            .x = @intCast(index & voxeme_axis_mask),
+            .y = @intCast((index >> voxeme_axis_shift) & voxeme_axis_mask),
+            .z = @intCast((index >> (voxeme_axis_shift * 2)) & voxeme_axis_mask),
+        };
+    }
+
     /// Reconstructs a global voxel coordinate from its constituent parts.
     /// Useful for debugging or world generation algorithms.
     pub inline fn partsToGlobalVoxel(
@@ -1014,6 +1033,10 @@ pub const MeshView = extern struct {
 ///
 /// In other words, their lifetime is the current frame lifetime.
 pub const MeshCache = struct {
+    test {
+        std.testing.refAllDecls(@This());
+    }
+
     /// The indirection table mapping from `PageCoord` to page index in the `instances` ArrayList.
     page_indirection: PageTable,
     /// The mesh data which is currently ready for render.
@@ -1153,7 +1176,7 @@ pub const MeshCache = struct {
         for (commands) |cmd| {
             switch (cmd) {
                 .insert => |desc| _ = try self.addInstance(allocator, desc),
-                .remove => |coord| self.removeInstance(coord),
+                .remove => |coord| try self.removeInstance(allocator, coord),
             }
         }
     }
@@ -1164,7 +1187,7 @@ pub const MeshCache = struct {
     /// Returns the index of the new instance in the `instances` ArrayList.
     pub fn addInstance(self: *MeshCache, allocator: std.mem.Allocator, mesh_descriptor: MeshDescriptor) !u32 {
         // remove any existing instance first
-        self.removeInstance(mesh_descriptor.coord);
+        try self.removeInstance(allocator, mesh_descriptor.coord);
 
         var best_fit: ?struct { indirection: u32, vertices: u32, indices: u32 } = null;
         for (self.mesh_free_list.items, 0..) |free_index, instance_indirection| {
@@ -1173,10 +1196,10 @@ pub const MeshCache = struct {
             if (info.allocated_vertex_count >= mesh_descriptor.vertex_count and info.allocated_index_count >= mesh_descriptor.index_count) {
                 if (best_fit) |bf| {
                     if (info.allocated_vertex_count < bf.vertices or info.allocated_index_count < bf.indices) {
-                        best_fit = .{ .indirection = instance_indirection, .vertices = info.allocated_vertex_count, .indices = info.allocated_index_count };
+                        best_fit = .{ .indirection = @intCast(instance_indirection), .vertices = info.allocated_vertex_count, .indices = info.allocated_index_count };
                     }
                 } else {
-                    best_fit = .{ .indirection = instance_indirection, .vertices = info.allocated_vertex_count, .indices = info.allocated_index_count };
+                    best_fit = .{ .indirection = @intCast(instance_indirection), .vertices = info.allocated_vertex_count, .indices = info.allocated_index_count };
                 }
             }
         }
@@ -1203,7 +1226,7 @@ pub const MeshCache = struct {
             resized_instances = true;
 
             const vertex_offset: u32 = @intCast(self.vertices.len);
-            const index_offset: u32 = @intCast(self.indices.len);
+            const index_offset: u32 = @intCast(self.indices.items.len);
 
             self.meshes.items(.info)[new_index] = .{
                 .free = false,
@@ -1229,17 +1252,19 @@ pub const MeshCache = struct {
         self.meshes.items(.bounds)[index] = mesh_descriptor.bounds;
 
         const vertex_offset = self.meshes.items(.vertex_offset)[index];
-        @memcpy(&self.vertices.items(.position)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.position);
-        @memcpy(&self.vertices.items(.normal)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.normal);
-        @memcpy(&self.vertices.items(.uv)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.uv);
-        @memcpy(&self.vertices.items(.material_id)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.material_id);
+        @memcpy(self.vertices.items(.position)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.position);
+        @memcpy(self.vertices.items(.normal)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.normal);
+        @memcpy(self.vertices.items(.uv)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.uv);
+        @memcpy(self.vertices.items(.material_id)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.material_id);
 
         const index_offset = self.meshes.items(.index_offset)[index];
-        @memcpy(&self.indices.items[index_offset .. index_offset + mesh_descriptor.index_count], mesh_descriptor.indices);
+        @memcpy(self.indices.items[index_offset .. index_offset + mesh_descriptor.index_count], mesh_descriptor.indices);
 
         // replace or append the indirection
         const success = self.page_indirection.insert(mesh_descriptor.coord, index);
         if (!success) return error.OutOfPages;
+
+        return index;
     }
 
     /// Get a mesh render descriptor by its page coordinate.
@@ -1283,12 +1308,12 @@ pub const MeshCache = struct {
     /// Remove a mesh instance by its page coordinate.
     /// This is a trivial operation, as the actual mesh data is not freed;
     /// only the instance is removed from the indirection table and its index added to the free list.
-    pub fn removeInstance(self: *MeshCache, coord: PageCoord) void {
+    pub fn removeInstance(self: *MeshCache, allocator: std.mem.Allocator, coord: PageCoord) !void {
         const instance_index = self.page_indirection.lookup(coord);
         if (instance_index == PageTable.sentinel) return; // not found
 
         self.page_indirection.remove(coord);
-        try self.mesh_free_list.append(instance_index);
+        try self.mesh_free_list.append(allocator, instance_index);
     }
 
     /// Defragment if necessary
@@ -1321,7 +1346,7 @@ pub const MeshCache = struct {
     }
 
     /// Defragment a mesh cache and copy it into a new one.
-    pub fn clone(self: *const MeshCache, allocator: std.mem.Allocator) !*MeshCache {
+    pub fn clone(self: *MeshCache, allocator: std.mem.Allocator) !*MeshCache {
         const new_cache = try MeshCache.init(allocator);
         errdefer new_cache.deinit(allocator);
 
@@ -1342,7 +1367,7 @@ pub const MeshCache = struct {
         errdefer new_vertices.deinit(allocator);
 
         var new_indices = std.ArrayList(u32).empty;
-        try new_indices.ensureTotalCapacity(allocator, self.indices.len);
+        try new_indices.ensureTotalCapacity(allocator, self.indices.items.len);
         errdefer new_indices.deinit(allocator);
 
         const static = struct {
@@ -1368,16 +1393,16 @@ pub const MeshCache = struct {
 
             const index_count = self.meshes.items(.index_count)[old_index];
             const old_index_offset = self.meshes.items(.index_offset)[old_index];
-            const new_index_offset: u32 = @intCast(new_indices.len);
+            const new_index_offset: u32 = @intCast(new_indices.items.len);
 
             try new_vertices.resize(allocator, new_vertex_offset + vertex_count);
             try new_indices.resize(allocator, new_index_offset + index_count);
 
-            @memcpy(&new_vertices.items(.position)[new_vertex_offset .. new_vertex_offset + vertex_count], &self.vertices.items(.position)[old_vertex_offset..].ptr);
-            @memcpy(&new_vertices.items(.normal)[new_vertex_offset .. new_vertex_offset + vertex_count], &self.vertices.items(.normal)[old_vertex_offset..].ptr);
-            @memcpy(&new_vertices.items(.uv)[new_vertex_offset .. new_vertex_offset + vertex_count], &self.vertices.items(.uv)[old_vertex_offset..].ptr);
-            @memcpy(&new_vertices.items(.material_id)[new_vertex_offset .. new_vertex_offset + vertex_count], &self.vertices.items(.material_id)[old_vertex_offset..].ptr);
-            @memcpy(&new_indices.items[new_index_offset .. new_index_offset + index_count], &self.indices.items[old_index_offset..].ptr);
+            @memcpy(new_vertices.items(.position)[new_vertex_offset .. new_vertex_offset + vertex_count], self.vertices.items(.position)[old_vertex_offset..].ptr);
+            @memcpy(new_vertices.items(.normal)[new_vertex_offset .. new_vertex_offset + vertex_count], self.vertices.items(.normal)[old_vertex_offset..].ptr);
+            @memcpy(new_vertices.items(.uv)[new_vertex_offset .. new_vertex_offset + vertex_count], self.vertices.items(.uv)[old_vertex_offset..].ptr);
+            @memcpy(new_vertices.items(.material_id)[new_vertex_offset .. new_vertex_offset + vertex_count], self.vertices.items(.material_id)[old_vertex_offset..].ptr);
+            @memcpy(new_indices.items[new_index_offset .. new_index_offset + index_count], self.indices.items[old_index_offset..].ptr);
             new_instances.items(.info)[new_index] = .{
                 .free = false,
                 .allocated_vertex_count = vertex_count,
@@ -1391,15 +1416,17 @@ pub const MeshCache = struct {
             new_instances.items(.index_count)[new_index] = index_count;
         }
 
-        for (if (secondary_destination) |dest| .{ self, dest } else .{self}, 0..) |dest, i| {
+        inline for (0..2) |i| {
+            const dest = if (comptime i > 0) secondary_destination orelse return else self;
+
             dest.meshes.deinit(allocator);
-            dest.meshes = if (i > 0) try new_instances.clone(allocator) else new_instances;
+            dest.meshes = if (comptime i > 0) try new_instances.clone(allocator) else new_instances;
 
             dest.vertices.deinit(allocator);
-            dest.vertices = if (i > 0) try new_vertices.clone(allocator) else new_vertices;
+            dest.vertices = if (comptime i > 0) try new_vertices.clone(allocator) else new_vertices;
 
             dest.indices.deinit(allocator);
-            dest.indices = if (i > 0) try new_indices.clone(allocator) else new_indices;
+            dest.indices = if (comptime i > 0) try new_indices.clone(allocator) else new_indices;
 
             dest.page_indirection.copy(new_indirection);
 
@@ -1420,7 +1447,7 @@ pub fn AsyncQueue(comptime T: type) type {
         pub fn init(allocator: std.mem.Allocator, capacity: u32) !Self {
             return Self{
                 .buffer = try allocator.alloc(T, capacity),
-                .top = .init(0),
+                .top = 0,
             };
         }
 
@@ -1468,6 +1495,10 @@ pub fn AsyncQueue(comptime T: type) type {
 /// To facilitate these processes, the UpdateManager also holds a thread pool for parallel updates,
 /// and a mesh cache for storing generated mesh data.
 pub const UpdateManager = struct {
+    test {
+        std.testing.refAllDecls(@This());
+    }
+
     pub const SwapBuffers = struct {
         grid: *Grid,
         mesh_cache: *MeshCache,
@@ -1520,14 +1551,14 @@ pub const UpdateManager = struct {
 
         self.allocator = grid.allocator;
 
-        const mesh_cache = try MeshCache.init(self.allocator);
-        errdefer mesh_cache.deinit();
-
         const back_grid = try grid.clone();
         errdefer back_grid.deinit();
 
+        const mesh_cache = try MeshCache.init(self.allocator);
+        errdefer mesh_cache.deinit(self.allocator);
+
         const back_cache = try MeshCache.init(self.allocator);
-        errdefer back_cache.deinit();
+        errdefer back_cache.deinit(self.allocator);
 
         self.state = .{
             .{ .grid = grid, .mesh_cache = mesh_cache },
@@ -1553,7 +1584,7 @@ pub const UpdateManager = struct {
         self.manager_thread = try std.Thread.spawn(.{
             .allocator = self.allocator,
             // use default stack size (16mb)
-        }, manager, &self);
+        }, manager, .{&self});
 
         return self;
     }
@@ -1581,7 +1612,8 @@ pub const UpdateManager = struct {
 
         self.manager_thread.join(); // manager will wait for jobs to finish
 
-        self.back().deinit();
+        var back_mut = self.back();
+        back_mut.deinit();
 
         self.mesh_command_queue.deinit(self.allocator);
         self.prune_command_queue.deinit(self.allocator);
@@ -1607,7 +1639,8 @@ pub const UpdateManager = struct {
         // Instead, we only copy dirty data from the back grid to the front grid, and leave the front grid's dirty bits alone.
         // The data we are copying now will no longer be dirty in the next swap, which is what the dirty bits are supposed to indicate.
         // NOTE: it is also important to *not* copy visibility data
-        for (back_grid.dirty_page_set.iterator(.{})) |back_page_index| {
+        var back_page_it = back_grid.dirty_page_set.iterator();
+        while (back_page_it.next()) |back_page_index| {
             const page_coord = back_grid.pages.items(.coord)[back_page_index];
             const front_page_index = try front_grid.getOrCreatePage(page_coord, null) orelse unreachable;
 
@@ -1621,9 +1654,10 @@ pub const UpdateManager = struct {
 
                 const voxeme_coord = VoxemeTable.coordFromInt(back_grid_indirection.coordinates[table_index]);
                 const local_voxeme_idx = convert.localVoxemeCoordToIndex(voxeme_coord);
-                const dirty_index = back_page_index * voxemes_per_page + local_voxeme_idx;
 
-                if (!back_grid.dirty_voxeme_set.isSet(dirty_index)) continue;
+                const dirty_voxeme_set = &back_grid.pages.items(.dirty_voxeme_set)[back_page_index];
+
+                if (!dirty_voxeme_set.isSet(local_voxeme_idx)) continue;
 
                 const front_voxeme_index = try front_grid.getOrCreateVoxeme(front_page_index, voxeme_coord, null) orelse unreachable;
 
@@ -1631,15 +1665,15 @@ pub const UpdateManager = struct {
 
                 if (back_grid.voxemes.items(.buffer_indirection)[back_voxeme_index] != BufferData.sentinel) {
                     const back_buffer_index = back_grid.voxemes.items(.buffer_indirection)[back_voxeme_index];
-                    const front_buffer_index = front_grid.getOrCreateBuffer(front_voxeme_index, null) orelse unreachable;
+                    const front_buffer_index = try front_grid.getOrCreateBuffer(front_voxeme_index, null) orelse unreachable;
 
                     const back_dirty_voxel_set = &back_grid.voxels.items(.dirty_voxel_set)[back_buffer_index];
-                    const back_voxel_data = &back_grid.voxels.items(.voxel_data)[back_buffer_index];
-                    const front_voxel_data = &front_grid.voxels.items(.voxel_data)[front_buffer_index];
+                    const back_voxels = &back_grid.voxels.items(.voxel)[back_buffer_index];
+                    const front_voxels = &front_grid.voxels.items(.voxel)[front_buffer_index];
 
                     var back_dirty_voxel_it = back_dirty_voxel_set.iterator();
                     while (back_dirty_voxel_it.next()) |voxel_index| {
-                        front_voxel_data.items(.voxel)[voxel_index] = back_voxel_data.items(.voxel)[voxel_index];
+                        front_voxels[voxel_index] = back_voxels[voxel_index];
                     }
                 }
             }
@@ -1666,21 +1700,25 @@ pub const UpdateManager = struct {
             const arena = self.update_arena.allocator();
             defer _ = self.update_arena.reset(.retain_capacity);
 
-            // FIXME: this data no longer exists, it was moved into PageData
             var voxeme_wait_group = std.Thread.WaitGroup{};
-            var voxeme_it = buffers.grid.dirty_voxeme_set.iterator(.{});
-            while (voxeme_it.next()) |index| {
-                self.thread_pool.spawnWg(&voxeme_wait_group, voxeme_job, .{
-                    self,
-                    arena,
-                    buffers,
-                    @as(u32, @intCast(index)),
-                });
+            var page_wait_group = std.Thread.WaitGroup{};
+
+            var page_it = buffers.grid.dirty_page_set.iterator();
+
+            while (page_it.next()) |page_index| {
+                var voxeme_it = buffers.grid.pages.items(.dirty_voxeme_set)[page_index].iterator();
+                while (voxeme_it.next()) |voxeme_index| {
+                    self.thread_pool.spawnWg(&voxeme_wait_group, voxeme_job, .{
+                        self,
+                        arena,
+                        buffers,
+                        voxeme_index,
+                    });
+                }
             }
             self.thread_pool.waitAndWork(&voxeme_wait_group);
 
-            var page_wait_group = std.Thread.WaitGroup{};
-            var page_it = buffers.grid.dirty_page_set.iterator(.{});
+            page_it = buffers.grid.dirty_page_set.iterator();
             while (page_it.next()) |index| {
                 self.thread_pool.spawnWg(&page_wait_group, page_job, .{
                     self,
@@ -1694,17 +1732,17 @@ pub const UpdateManager = struct {
             while (self.prune_command_queue.dequeue_sync()) |cmd| {
                 switch (cmd) {
                     .prune_page => |page_coord| {
-                        const page_index = buffers.grid.pages.lookup(page_coord);
+                        const page_index = buffers.grid.page_indirection.lookup(page_coord);
                         std.debug.assert(page_index != PageTable.sentinel);
 
-                        buffers.grid.pages.remove(page_coord);
+                        buffers.grid.page_indirection.remove(page_coord);
                         buffers.grid.page_free_list.append(self.allocator, page_index) catch @panic("Page free list overflow");
 
                         self.mesh_command_queue.enqueue_sync(.{ .remove = page_coord }) catch @panic("Mesh command queue overflow");
                     },
                     .prune_voxeme => |coords| {
                         const page_coord, const local_voxeme_coord = coords;
-                        const page_index = buffers.grid.pages.lookup(page_coord);
+                        const page_index = buffers.grid.page_indirection.lookup(page_coord);
                         std.debug.assert(page_index != PageTable.sentinel);
 
                         const voxeme_indirection: *VoxemeTable = &buffers.grid.pages.items(.voxeme_indirection)[page_index];
@@ -1718,24 +1756,22 @@ pub const UpdateManager = struct {
                 }
             }
 
-            // FIXME: this data no longer exists, it was moved into PageData
-            voxeme_wait_group = std.Thread.WaitGroup{};
-            voxeme_it = buffers.grid.dirty_voxeme_set.iterator(.{});
-            while (voxeme_it.next()) |index| {
-                const page_index = buffers.grid.voxemes.items(.page_index)[index]; // TODO: this isn't a thing (rearch complete, just need to pivot iteration strategy)
-                const local_voxeme_coord = buffers.grid.voxemes.items(.local_coord)[index];
-                self.thread_pool.spawnWg(&voxeme_wait_group, voxeme_visibility_job, .{
-                    self,
-                    arena,
-                    buffers,
-                    page_index,
-                    local_voxeme_coord,
-                });
+            page_it = buffers.grid.dirty_page_set.iterator();
+            while (page_it.next()) |page_index| {
+                var voxeme_it = buffers.grid.pages.items(.dirty_voxeme_set)[page_index].iterator();
+                while (voxeme_it.next()) |voxeme_index| {
+                    self.thread_pool.spawnWg(&voxeme_wait_group, voxeme_visibility_job, .{
+                        self,
+                        arena,
+                        buffers,
+                        page_index,
+                        voxeme_index,
+                    });
+                }
             }
             self.thread_pool.waitAndWork(&voxeme_wait_group);
 
-            page_wait_group = std.Thread.WaitGroup{};
-            page_it = buffers.grid.dirty_page_set.iterator(.{});
+            page_it = buffers.grid.dirty_page_set.iterator();
             while (page_it.next()) |index| {
                 self.thread_pool.spawnWg(&page_wait_group, page_visibility_job, .{
                     self,
@@ -1746,26 +1782,25 @@ pub const UpdateManager = struct {
             }
             self.thread_pool.waitAndWork(&page_wait_group);
 
-            var mesh_wait_group = std.Thread.WaitGroup{};
-            const page_indices = &buffers.grid.page_indirection.indices;
-            for (page_indices) |page_index| {
+            for (buffers.grid.page_indirection.indices) |page_index| {
                 if (page_index == PageTable.sentinel or page_index == PageTable.tombstone) continue;
                 const page_coord = buffers.grid.pages.items(.coord)[page_index];
 
-                if (buffers.grid.dirty_page_set.get(@as(usize, page_index)) == 0 and buffers.mesh_cache.page_indirection.lookup(page_coord) != PageTable.sentinel) continue;
+                if (!buffers.grid.dirty_page_set.isSet(page_index) and buffers.mesh_cache.page_indirection.lookup(page_coord) != PageTable.sentinel) continue;
 
-                self.thread_pool.spawnWg(&mesh_wait_group, mesh_job, .{
+                self.thread_pool.spawnWg(&page_wait_group, mesh_job, .{
                     self,
                     arena,
                     buffers,
                     page_index,
                 });
             }
-            self.thread_pool.waitAndWork(&mesh_wait_group);
+            self.thread_pool.waitAndWork(&page_wait_group);
 
+            // TODO : this should be done as a traversal, very inefficient as is
             buffers.grid.dirty_page_set.unsetAll();
-            buffers.grid.dirty_voxeme_set.unsetAll();
-            for (buffers.grid.buffers.items(.dirty_voxel_set)) |*set| set.unsetAll();
+            for (buffers.grid.pages.items(.dirty_voxeme_set)) |*set| set.unsetAll();
+            for (buffers.grid.voxels.items(.dirty_voxel_set)) |*set| set.unsetAll();
 
             buffers.mesh_cache.applyCommands(self.allocator, self.mesh_command_queue.buffer[0..self.mesh_command_queue.top]) catch |err| {
                 log.err("Failed to apply mesh cache commands: {s}\n", .{@errorName(err)});
@@ -1773,7 +1808,7 @@ pub const UpdateManager = struct {
         }
     }
 
-    fn voxeme_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, voxeme_index: u32) void {
+    fn voxeme_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, local_voxeme_index: u32) void {
         // TODO: homogenize if possible. this involves checking all voxels in the voxeme;
         //       if they are all of the same type, they can be homogenized
         // TODO: determine if dirty voxeme can be pruned, enqueue prune command if so;
@@ -1782,7 +1817,7 @@ pub const UpdateManager = struct {
         _ = self;
         _ = arena;
         _ = buffers;
-        _ = voxeme_index;
+        _ = local_voxeme_index;
     }
 
     fn page_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32) void {
@@ -1797,13 +1832,13 @@ pub const UpdateManager = struct {
         _ = page_index;
     }
 
-    fn voxeme_visibility_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32, local_voxeme_coord: LocalCoord) void {
+    fn voxeme_visibility_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32, local_voxeme_index: u32) void {
         // TODO: recalculate visibility for voxeme
         _ = self;
         _ = arena;
         _ = buffers;
         _ = page_index;
-        _ = local_voxeme_coord;
+        _ = local_voxeme_index;
     }
 
     fn page_visibility_job(self: *UpdateManager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32) void {
