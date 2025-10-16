@@ -382,6 +382,97 @@ pub const PageTable = SpacialHashTable(PageCoord, PageCoord.Unsigned, max_pages)
 /// A spacial hash table for voxemes within a page.
 pub const VoxemeTable = SpacialHashTable(LocalCoord, LocalCoord, voxemes_per_page);
 
+/// A fixed-size bit set for tracking dirty state, etc.
+/// This works for all of our bitsets, where std.StaticBitSet causes segfaults on larger sizes.
+pub fn FixedBitSet(comptime N: comptime_int) type {
+    if (N == 0) @compileError("FixedBitSet size cannot be zero");
+
+    return extern struct {
+        const Self = @This();
+        const Word = u64;
+        const word_bits = @bitSizeOf(Word);
+        pub const num_words = (N + word_bits - 1) / word_bits;
+
+        words: [num_words]Word,
+
+        /// Sets the bit at the given index to 1.
+        pub fn set(self: *Self, index: u32) void {
+            std.debug.assert(index < N);
+            const word_index = index / word_bits;
+            const bit_index = index % word_bits;
+            self.words[word_index] |= (@as(Word, 1) << @intCast(bit_index));
+        }
+
+        /// Sets the bit at the given index to 0.
+        pub fn unset(self: *Self, index: u32) void {
+            std.debug.assert(index < N);
+            const word_index = index / word_bits;
+            const bit_index = index % word_bits;
+            self.words[word_index] &= ~(@as(Word, 1) << @intCast(bit_index));
+        }
+
+        /// Returns true if the bit at the given index is 1.
+        pub fn isSet(self: *const Self, index: u32) bool {
+            std.debug.assert(index < N);
+            const word_index = index / word_bits;
+            const bit_index = index % word_bits;
+            return (self.words[word_index] & (@as(Word, 1) << @intCast(bit_index))) != 0;
+        }
+
+        /// Sets all bits to 1.
+        pub fn setAll(self: *Self) void {
+            @memset(&self.words, std.math.maxInt(Word));
+        }
+
+        /// Sets all bits to 0.
+        pub fn unsetAll(self: *Self) void {
+            @memset(&self.words, 0);
+        }
+
+        /// Copy state from another bit set into this one.
+        pub fn copy(self: *Self, other: *const Self) void {
+            @memcpy(&self.words, &other.words);
+        }
+
+        /// Counts the number of set bits.
+        pub fn count(self: *const Self) u32 {
+            var total: u32 = 0;
+            for (self.words) |word| {
+                total += @popCount(word);
+            }
+            return total;
+        }
+
+        /// An iterator that yields the index of each set bit.
+        pub const Iterator = struct {
+            words: []const Word,
+            word_index: u32 = 0,
+            current_word: Word = 0,
+
+            pub fn next(self: *Iterator) ?u32 {
+                while (self.current_word == 0) {
+                    if (self.word_index >= num_words) return null;
+                    self.current_word = self.words[self.word_index];
+                    self.word_index += 1;
+                }
+
+                const bit_offset = @ctz(self.current_word);
+                const bit_index = (self.word_index - 1) * word_bits + bit_offset;
+
+                // Unset this bit in our temporary copy so we find the next one
+                self.current_word &= self.current_word - 1;
+
+                return bit_index;
+            }
+        };
+
+        /// Returns an iterator over the set bits.
+        pub fn iterator(self: *const Self) Iterator {
+            return .{ .words = &self.words };
+        }
+    };
+}
+
 /// A dense minimum-scale voxel state grid.
 pub const VoxelBuffer = [voxels_per_voxeme]Voxel; // 16*16*16 voxels in a voxeme; 16kb
 /// A dense minimum-scale voxel visibility grid.
@@ -420,6 +511,8 @@ pub const VoxemeData = struct {
 /// Dense storage for the detailed voxel data of a heterogeneous voxeme, supporting efficient GPU usage.
 /// This data structure is never really constructed, it is just a table layout for MultiArrayList
 pub const BufferData = struct {
+    /// The dirty bits for this buffer
+    dirty_voxel_set: FixedBitSet(voxels_per_voxeme),
     /// The voxel state data for this buffer.
     voxel: VoxelBuffer,
     /// The visibility data for this buffer.
@@ -443,10 +536,6 @@ voxemes: std.MultiArrayList(VoxemeData),
 voxels: std.MultiArrayList(BufferData),
 /// The list of registered material properties for this grid.
 material_properties: std.ArrayList(MaterialProperties),
-/// Tracks which pages need to be checked for homogenization, pruning, and visibility recalculation.
-dirty_page_set: std.DynamicBitSetUnmanaged,
-/// Tracks which voxemes need to be checked for homogenization, pruning, and visibility recalculation.
-dirty_voxeme_set: std.DynamicBitSetUnmanaged,
 /// The list of pages that are free to be reused.
 /// Necessary because we cannot move or truly delete pages in the MultiArrayList.
 page_free_list: std.ArrayList(u32),
@@ -456,6 +545,10 @@ voxeme_free_list: std.ArrayList(u32),
 /// The list of buffers that are free to be reused.
 /// Necessary because we cannot move or truly delete buffers in the MultiArrayList.
 buffer_free_list: std.ArrayList(u32),
+/// Tracks which pages need to be checked for homogenization, pruning, and visibility recalculation.
+dirty_page_set: FixedBitSet(max_pages),
+/// Tracks which voxemes need to be checked for homogenization, pruning, and visibility recalculation.
+dirty_voxeme_set: FixedBitSet(max_pages * voxemes_per_page),
 
 /// Create a new, empty grid.
 /// This incurs several large allocations totalling around 85 megabytes.
@@ -494,11 +587,9 @@ pub fn init(allocator: std.mem.Allocator) !*Grid {
     try self.buffer_free_list.ensureTotalCapacity(allocator, 1024); // ~4kb
     errdefer self.buffer_free_list.deinit(allocator);
 
-    self.dirty_page_set = try std.DynamicBitSetUnmanaged.initEmpty(allocator, max_pages); // ~8kb
-    errdefer self.dirty_page_set.deinit(allocator);
+    self.dirty_page_set.unsetAll();
 
-    self.dirty_voxeme_set = try std.DynamicBitSetUnmanaged.initEmpty(allocator, max_pages * voxemes_per_page); // ~32mb
-    errdefer self.dirty_voxeme_set.deinit(allocator);
+    self.dirty_voxeme_set.unsetAll();
 
     // initialize the empty material
     self.material_properties.appendAssumeCapacity(.none);
@@ -515,8 +606,6 @@ pub fn deinit(self: *Grid) void {
     self.page_free_list.deinit(self.allocator);
     self.buffer_free_list.deinit(self.allocator);
     self.voxeme_free_list.deinit(self.allocator);
-    self.dirty_page_set.deinit(self.allocator);
-    self.dirty_voxeme_set.deinit(self.allocator);
     self.allocator.destroy(self);
 }
 
@@ -565,11 +654,8 @@ pub fn clone(self: *Grid) !*Grid {
     new_self.buffer_free_list = try self.buffer_free_list.clone(self.allocator);
     errdefer new_self.buffer_free_list.deinit(self.allocator);
 
-    new_self.dirty_page_set = try self.dirty_page_set.clone(self.allocator);
-    errdefer new_self.dirty_page_set.deinit(self.allocator);
-
-    new_self.dirty_voxeme_set = try self.dirty_voxeme_set.clone(self.allocator);
-    errdefer new_self.dirty_voxeme_set.deinit(self.allocator);
+    new_self.dirty_page_set.copy(&self.dirty_page_set);
+    new_self.dirty_voxeme_set.copy(&self.dirty_voxeme_set);
 
     return new_self;
 }
@@ -669,17 +755,69 @@ pub fn getVoxel(world: *const Grid, global_voxel: vec3i) Voxel {
 /// or is currently homogeneous and needs to be broken into a heterogeneous voxeme.
 /// Marks the relevant voxeme and page as dirty for later processing.
 pub fn setVoxel(self: *Grid, global_voxel: vec3i, new_voxel: Voxel) !void {
-    // --- FIND OR CREATE PAGE ---
     const page_coord = convert.globalVoxelToPageCoord(global_voxel);
-    const page_indirect_index = self.page_indirection.lookup(page_coord);
-    var page_index: u32 = undefined;
+    const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(global_voxel);
 
-    if (page_indirect_index == PageTable.sentinel) { // page not bound
-        // === CREATING A NEW PAGE ===
-        page_index = if (self.page_free_list.pop()) |idx| idx else @intCast(try self.pages.addOne(self.allocator));
+    const page_index = try self.getOrCreatePage(page_coord, new_voxel) orelse return;
+    const voxeme_index = try self.getOrCreateVoxeme(page_index, local_voxeme_coord, new_voxel) orelse return;
+    const buffer_index = try self.getOrCreateBuffer(voxeme_index, new_voxel) orelse return;
+
+    const buffer = &self.voxels.items(.voxel)[buffer_index];
+    const local_voxel_coord = convert.globalVoxelToLocalVoxelCoord(global_voxel);
+    const index_in_buffer = convert.localVoxelCoordToIndex(local_voxel_coord);
+    const voxel = &buffer[index_in_buffer];
+
+    if (voxel.* == new_voxel) return;
+
+    voxel.* = new_voxel;
+
+    // --- MARK DIRTY ---
+    const local_voxeme_idx = convert.localVoxemeCoordToIndex(local_voxeme_coord);
+    const dirty_index = page_index * voxemes_per_page + local_voxeme_idx;
+    self.dirty_voxeme_set.set(dirty_index);
+    self.dirty_page_set.set(page_index);
+    self.voxels.items(.dirty_voxel_set)[buffer_index].set(index_in_buffer);
+
+    for (offsets) |offset| {
+        const neighbor_global_voxel = global_voxel + offset;
+        const neighbor_page_coord = convert.globalVoxelToPageCoord(neighbor_global_voxel);
+        const neighbor_page_index = self.page_indirection.lookup(neighbor_page_coord);
+
+        if (neighbor_page_index != PageTable.sentinel) {
+            self.dirty_page_set.set(neighbor_page_index);
+
+            const neighbor_local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(neighbor_global_voxel);
+            const neighbor_voxeme_table: *VoxemeTable = &self.pages.items(.voxeme_indirection)[neighbor_page_index];
+            const neighbor_voxeme_index = neighbor_voxeme_table.lookup(neighbor_local_voxeme_coord);
+
+            if (neighbor_voxeme_index != VoxemeTable.sentinel) {
+                const neighbor_local_voxeme_idx = convert.localVoxemeCoordToIndex(neighbor_local_voxeme_coord);
+                const neighbor_dirty_index = neighbor_page_index * voxemes_per_page + neighbor_local_voxeme_idx;
+
+                self.dirty_voxeme_set.set(neighbor_dirty_index);
+
+                const neighbor_buffer_index = self.voxemes.items(.buffer_indirection)[neighbor_voxeme_index];
+                if (neighbor_buffer_index != BufferData.sentinel) {
+                    const neighbor_local_voxel_coord = convert.globalVoxelToLocalVoxelCoord(neighbor_global_voxel);
+                    const neighbor_index_in_buffer = convert.localVoxelCoordToIndex(neighbor_local_voxel_coord);
+                    self.voxels.items(.dirty_voxel_set)[neighbor_buffer_index].set(neighbor_index_in_buffer);
+                }
+            }
+        }
+    }
+}
+
+fn getOrCreatePage(self: *Grid, page_coord: PageCoord, new_voxel: ?Voxel) !?u32 {
+    const page_indirect_index = self.page_indirection.lookup(page_coord);
+
+    if (page_indirect_index == PageTable.sentinel) {
+        if (new_voxel == Voxel.empty) {
+            return null;
+        }
+
+        const page_index: u32 = if (self.page_free_list.pop()) |idx| idx else @intCast(try self.pages.addOne(self.allocator));
         errdefer self.page_free_list.appendAssumeCapacity(page_index);
 
-        // Reserve the spot in the indirection table FIRST.
         const success = self.page_indirection.insert(page_coord, page_index);
         if (!success) return error.OutOfPages;
 
@@ -687,103 +825,63 @@ pub fn setVoxel(self: *Grid, global_voxel: vec3i, new_voxel: Voxel) !void {
         self.pages.items(.visibility)[page_index] = .none;
         self.pages.items(.voxel)[page_index] = .empty;
         self.pages.items(.voxeme_indirection)[page_index].init();
-    } else { // page bound
-        // === MODIFYING AN EXISTING PAGE ===
-        page_index = @intCast(page_indirect_index);
+
+        return page_index;
+    } else {
+        return @intCast(page_indirect_index);
     }
+}
 
-    // --- FIND OR CREATE VOXEME ---
-    const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(global_voxel);
+fn getOrCreateVoxeme(self: *Grid, page_index: u32, local_voxeme_coord: LocalCoord, new_voxel: ?Voxel) !?u32 {
     const voxeme_table: *VoxemeTable = &self.pages.items(.voxeme_indirection)[page_index];
-    const voxeme_indirect_index = voxeme_table.lookup(local_voxeme_coord);
+    const voxeme_index = voxeme_table.lookup(local_voxeme_coord);
 
-    if (voxeme_indirect_index == VoxemeTable.sentinel) { // voxeme not bound
-        // === BREAKING A HOMOGENEOUS PAGE ===
+    if (voxeme_index == VoxemeTable.sentinel) {
         const page_homogeneous_voxel = self.pages.items(.voxel)[page_index];
-        if (page_homogeneous_voxel == new_voxel) return;
+        if (page_homogeneous_voxel == new_voxel) return null;
 
-        // Reserve the spot in the page's voxeme table FIRST.
         const new_voxeme_index: u32 = if (self.voxeme_free_list.pop()) |idx| idx else @intCast(try self.voxemes.addOne(self.allocator));
         errdefer self.voxeme_free_list.appendAssumeCapacity(new_voxeme_index);
 
         const success = voxeme_table.insert(local_voxeme_coord, new_voxeme_index);
         if (!success) return error.OutOfVoxemes;
 
-        // Now we are committed. Allocate the buffer.
+        self.voxemes.items(.coord)[new_voxeme_index] = local_voxeme_coord;
+        self.voxemes.items(.visibility)[new_voxeme_index] = .none;
+        self.voxemes.items(.voxel)[new_voxeme_index] = page_homogeneous_voxel;
+        self.voxemes.items(.buffer_indirection)[new_voxeme_index] = BufferData.sentinel;
+
+        return new_voxeme_index;
+    } else {
+        if (new_voxel) |nv| {
+            const page_homogeneous_voxel = self.pages.items(.voxel)[page_index];
+            if (page_homogeneous_voxel == nv) return null;
+        }
+
+        return voxeme_index;
+    }
+}
+
+fn getOrCreateBuffer(self: *Grid, voxeme_index: u32, new_voxel: ?Voxel) !?u32 {
+    const voxeme_data = &self.voxemes.items(.voxel)[voxeme_index];
+    const buffer_handle = &self.voxemes.items(.buffer_indirection)[voxeme_index];
+
+    if (buffer_handle.* == BufferData.sentinel) { // buffer not bound
+        if (voxeme_data.* == new_voxel) return null;
+
         const new_buffer_index: u32 = if (self.buffer_free_list.pop()) |idx| idx else @intCast(try self.voxels.addOne(self.allocator));
         const new_voxels = &self.voxels.items(.voxel)[new_buffer_index];
         const new_visibility = &self.voxels.items(.visibility)[new_buffer_index];
-        @memset(new_voxels, page_homogeneous_voxel);
+        @memset(new_voxels, voxeme_data.*);
         @memset(new_visibility, Visibility.none); // ensure its at least not `undefined`; TODO: is this necessary?
 
-        const local_voxel_coord = convert.globalVoxelToLocalVoxelCoord(global_voxel);
-        const index_in_buffer = convert.localVoxelCoordToIndex(local_voxel_coord);
-        new_voxels[index_in_buffer] = new_voxel;
-
-        // Append the voxeme data.
-        self.voxemes.items(.coord)[new_voxeme_index] = local_voxeme_coord;
-        self.voxemes.items(.visibility)[new_voxeme_index] = .none;
-        self.voxemes.items(.voxel)[new_voxeme_index] = .empty; // not valid with buffer handle
-        self.voxemes.items(.buffer_indirection)[new_voxeme_index] = new_buffer_index;
-    } else { // voxeme bound
-        // === MODIFYING AN EXISTING VOXEME ===
-        const voxeme_data = &self.voxemes.items(.voxel)[voxeme_indirect_index];
-        const buffer_handle = &self.voxemes.items(.buffer_indirection)[voxeme_indirect_index];
-
-        if (buffer_handle.* == BufferData.sentinel) { // buffer not bound
-            // Break a homogeneous voxeme.
-            if (voxeme_data.* == new_voxel) return;
-
-            const new_buffer_index: u32 = if (self.buffer_free_list.pop()) |idx| idx else @intCast(try self.voxels.addOne(self.allocator));
-            const new_voxels = &self.voxels.items(.voxel)[new_buffer_index];
-            const new_visibility = &self.voxels.items(.visibility)[new_buffer_index];
-            @memset(new_voxels, voxeme_data.*);
-            @memset(new_visibility, Visibility.none); // ensure its at least not `undefined`; TODO: is this necessary?
-
-            const local_voxel_coord = convert.globalVoxelToLocalVoxelCoord(global_voxel);
-            const index_in_buffer = convert.localVoxelCoordToIndex(local_voxel_coord);
-            new_voxels[index_in_buffer] = new_voxel;
-
-            buffer_handle.* = new_buffer_index;
-            voxeme_data.* = Voxel.empty;
-        } else { // buffer bound
-            // Modify a heterogeneous voxeme.
-            const buffer = &self.voxels.items(.voxel)[buffer_handle.*];
-            const local_voxel_coord = convert.globalVoxelToLocalVoxelCoord(global_voxel);
-            const index_in_buffer = convert.localVoxelCoordToIndex(local_voxel_coord);
-            const voxel = &buffer[index_in_buffer];
-
-            // no need to remap visibility here, that is done in a separate pass
-
-            if (voxel.* == new_voxel) return;
-
-            voxel.* = new_voxel;
-        }
+        buffer_handle.* = new_buffer_index;
+        voxeme_data.* = Voxel.empty;
+    } else {
+        if (voxeme_data.* == new_voxel) return null;
     }
 
-    // --- MARK DIRTY ---
-    const local_voxeme_idx = convert.localVoxemeCoordToIndex(local_voxeme_coord);
-    const dirty_index = @as(usize, page_index) * voxemes_per_page + local_voxeme_idx;
-    self.dirty_voxeme_set.set(dirty_index);
-    self.dirty_page_set.set(page_index);
-
-    for (offsets) |offset| {
-        const neighbor_global_voxel = global_voxel + offset;
-        const neighbor_page_coord = convert.globalVoxelToPageCoord(neighbor_global_voxel);
-        const neighbor_page_index = self.page_indirection.lookup(neighbor_page_coord);
-        if (neighbor_page_index != PageTable.sentinel) {
-            self.dirty_page_set.set(@as(usize, neighbor_page_index));
-            // Mark the neighbor voxeme dirty too, if it exists.
-            const neighbor_local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(neighbor_global_voxel);
-            const neighbor_voxeme_table: *VoxemeTable = &self.pages.items(.voxeme_indirection)[neighbor_page_index];
-            const neighbor_voxeme_index = neighbor_voxeme_table.lookup(neighbor_local_voxeme_coord);
-            if (neighbor_voxeme_index != VoxemeTable.sentinel) {
-                const neighbor_local_voxeme_idx = convert.localVoxemeCoordToIndex(neighbor_local_voxeme_coord);
-                const neighbor_dirty_index = @as(usize, neighbor_page_index) * voxemes_per_page + neighbor_local_voxeme_idx;
-                self.dirty_voxeme_set.set(neighbor_dirty_index);
-            }
-        }
-    }
+    return buffer_handle.*;
 }
 
 /// namespace for voxel coordinate conversions
@@ -1504,12 +1602,58 @@ pub const UpdateManager = struct {
         return out;
     }
 
-    pub fn endFrame(self: *UpdateManager) void {
+    /// Swaps the front and back buffers, copying dirty data from the new back to the new front to prevent update loss.
+    pub fn endFrame(self: *UpdateManager) !void {
         self.sync_mutex.lock();
         defer self.sync_mutex.unlock();
+
         self.front_index = ~self.front_index; // swap front and back
 
-        // TODO: copy data from items in dirty sets from back to front to prevent lost updates
+        const back_grid = self.back().grid;
+        const front_grid = self.front().grid;
+
+        // NOTE: it is very important that we do not set dirty bits in the front grid here,
+        // this creates a feedback loop where the front grid is always dirty and never stabilizes.
+        // Instead, we only copy dirty data from the back grid to the front grid, and leave the front grid's dirty bits alone.
+        // The data we are copying now will no longer be dirty in the next swap, which is what the dirty bits are supposed to indicate.
+        // NOTE: it is also important to *not* copy visibility data
+        for (back_grid.dirty_page_set.iterator(.{})) |back_page_index| {
+            const page_coord = back_grid.pages.items(.coord)[back_page_index];
+            const front_page_index = try front_grid.getOrCreatePage(page_coord, null) orelse unreachable;
+
+            front_grid.pages.items(.coord)[front_page_index] = page_coord;
+            front_grid.pages.items(.voxel)[front_page_index] = back_grid.pages.items(.voxel)[back_page_index];
+
+            const back_grid_indirection = &back_grid.pages.items(.voxeme_indirection)[back_page_index];
+
+            for (back_grid_indirection.indices, 0..) |back_voxeme_index, table_index| {
+                if (back_voxeme_index == PageTable.sentinel or back_voxeme_index == PageTable.tombstone) continue;
+
+                const voxeme_coord = VoxemeTable.coordFromInt(back_grid_indirection.coordinates[table_index]);
+                const local_voxeme_idx = convert.localVoxemeCoordToIndex(voxeme_coord);
+                const dirty_index = back_page_index * voxemes_per_page + local_voxeme_idx;
+
+                if (!back_grid.dirty_voxeme_set.isSet(dirty_index)) continue;
+
+                const front_voxeme_index = try front_grid.getOrCreateVoxeme(front_page_index, voxeme_coord, null) orelse unreachable;
+
+                front_grid.voxemes.items(.voxel)[front_voxeme_index] = back_grid.voxemes.items(.voxel)[back_voxeme_index];
+
+                if (back_grid.voxemes.items(.buffer_indirection)[back_voxeme_index] != BufferData.sentinel) {
+                    const back_buffer_index = back_grid.voxemes.items(.buffer_indirection)[back_voxeme_index];
+                    const front_buffer_index = front_grid.getOrCreateBuffer(front_voxeme_index, null) orelse unreachable;
+
+                    const back_dirty_voxel_set = &back_grid.voxels.items(.dirty_voxel_set)[back_buffer_index];
+                    const back_voxel_data = &back_grid.voxels.items(.voxel_data)[back_buffer_index];
+                    const front_voxel_data = &front_grid.voxels.items(.voxel_data)[front_buffer_index];
+
+                    var back_dirty_voxel_it = back_dirty_voxel_set.iterator();
+                    while (back_dirty_voxel_it.next()) |voxel_index| {
+                        front_voxel_data.items(.voxel)[voxel_index] = back_voxel_data.items(.voxel)[voxel_index];
+                    }
+                }
+            }
+        }
 
         self.signal.signal(); // wake the manager thread if it is waiting
     }
@@ -1586,7 +1730,7 @@ pub const UpdateManager = struct {
             voxeme_wait_group = std.Thread.WaitGroup{};
             voxeme_it = buffers.grid.dirty_voxeme_set.iterator(.{});
             while (voxeme_it.next()) |index| {
-                const page_index = buffers.grid.voxemes.items(.page_index)[index];
+                const page_index = buffers.grid.voxemes.items(.page_index)[index]; // TODO: this isn't a thing, need to rearch a bit
                 const local_voxeme_coord = buffers.grid.voxemes.items(.local_coord)[index];
                 self.thread_pool.spawnWg(&voxeme_wait_group, voxeme_visibility_job, .{
                     self,
@@ -1629,6 +1773,7 @@ pub const UpdateManager = struct {
 
             buffers.grid.dirty_page_set.unsetAll();
             buffers.grid.dirty_voxeme_set.unsetAll();
+            for (buffers.grid.buffers.items(.dirty_voxel_set)) |*set| set.unsetAll();
 
             buffers.mesh_cache.applyCommands(self.allocator, self.mesh_command_queue.buffer[0..self.mesh_command_queue.top]) catch |err| {
                 log.err("Failed to apply mesh cache commands: {s}\n", .{@errorName(err)});

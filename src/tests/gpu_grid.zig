@@ -220,7 +220,7 @@ test "setVoxel in empty world creates all structures" {
 
     // Assert the voxeme was marked dirty
     const local_voxeme_idx = Grid.convert.localVoxemeCoordToIndex(local_voxeme_coord);
-    const dirty_voxeme_index = @as(u64, page_index) * Grid.voxemes_per_page + local_voxeme_idx;
+    const dirty_voxeme_index = page_index * Grid.voxemes_per_page + local_voxeme_idx;
     try std.testing.expect(grid.dirty_voxeme_set.isSet(dirty_voxeme_index));
 }
 
@@ -406,7 +406,7 @@ test "setVoxel dirties neighbors across page boundary" {
     try std.testing.expect(primary_page_index != PageTable.sentinel);
 
     const primary_local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(primary_coord);
-    const primary_dirty_voxeme_idx = @as(usize, primary_page_index) * Grid.voxemes_per_page +
+    const primary_dirty_voxeme_idx = primary_page_index * Grid.voxemes_per_page +
         convert.localVoxemeCoordToIndex(primary_local_voxeme_coord);
 
     // --- Get indices for the neighbor voxel's containers ---
@@ -416,7 +416,7 @@ test "setVoxel dirties neighbors across page boundary" {
     try std.testing.expect(primary_page_index != neighbor_page_index); // Ensure they are in different pages
 
     const neighbor_local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(neighbor_coord);
-    const neighbor_dirty_voxeme_idx = @as(usize, neighbor_page_index) * Grid.voxemes_per_page +
+    const neighbor_dirty_voxeme_idx = neighbor_page_index * Grid.voxemes_per_page +
         convert.localVoxemeCoordToIndex(neighbor_local_voxeme_coord);
 
     // --- Clear dirty flags to ensure a clean test state ---
