@@ -1651,17 +1651,13 @@ pub const UpdateManager = struct {
 
             const back_grid_indirection = &back_grid.pages.items(.voxeme_indirection)[back_page_index];
 
-            for (back_grid_indirection.indices, 0..) |back_voxeme_index, table_index| {
-                if (back_voxeme_index == PageTable.sentinel or back_voxeme_index == PageTable.tombstone) continue;
+            var back_voxeme_it = back_grid.pages.items(.dirty_voxeme_set)[back_page_index].iterator();
+            while (back_voxeme_it.next()) |local_voxeme_index| {
+                const local_voxeme_coord = convert.indexToLocalVoxemeCoord(local_voxeme_index);
 
-                const voxeme_coord = VoxemeTable.coordFromInt(back_grid_indirection.coordinates[table_index]);
-                const local_voxeme_idx = convert.localVoxemeCoordToIndex(voxeme_coord);
-
-                const dirty_voxeme_set = &back_grid.pages.items(.dirty_voxeme_set)[back_page_index];
-
-                if (!dirty_voxeme_set.isSet(local_voxeme_idx)) continue;
-
-                const front_voxeme_index = try front_grid.getOrCreateVoxeme(front_page_index, voxeme_coord, null) orelse unreachable;
+                const back_voxeme_index = back_grid_indirection.lookup(local_voxeme_coord);
+                if (back_voxeme_index == VoxemeTable.sentinel) continue; // should never happen
+                const front_voxeme_index = try front_grid.getOrCreateVoxeme(front_page_index, local_voxeme_coord, null) orelse unreachable;
 
                 front_grid.voxemes.items(.voxel)[front_voxeme_index] = back_grid.voxemes.items(.voxel)[back_voxeme_index];
 
