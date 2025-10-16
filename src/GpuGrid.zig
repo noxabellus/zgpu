@@ -490,6 +490,8 @@ pub const PageData = struct {
     visibility: Visibility,
     /// The indirection table mapping from `LocalCoord` to voxeme index in the `voxemes` MultiArrayList, within this page.
     voxeme_indirection: VoxemeTable,
+    /// Tracks which voxemes need to be checked for homogenization, pruning, and visibility recalculation.
+    dirty_voxeme_set: FixedBitSet(voxemes_per_page),
 }; // each page is 32780 bytes
 
 /// Small-scale voxel grid metadata supporting efficient GPU usage.
@@ -547,8 +549,6 @@ voxeme_free_list: std.ArrayList(u32),
 buffer_free_list: std.ArrayList(u32),
 /// Tracks which pages need to be checked for homogenization, pruning, and visibility recalculation.
 dirty_page_set: FixedBitSet(max_pages),
-/// Tracks which voxemes need to be checked for homogenization, pruning, and visibility recalculation.
-dirty_voxeme_set: FixedBitSet(max_pages * voxemes_per_page),
 
 /// Create a new, empty grid.
 /// This incurs several large allocations totalling around 85 megabytes.
@@ -589,8 +589,6 @@ pub fn init(allocator: std.mem.Allocator) !*Grid {
 
     self.dirty_page_set.unsetAll();
 
-    self.dirty_voxeme_set.unsetAll();
-
     // initialize the empty material
     self.material_properties.appendAssumeCapacity(.none);
 
@@ -621,7 +619,6 @@ pub fn clear(self: *Grid, clear_materials: bool) void {
     self.buffer_free_list.clearRetainingCapacity();
     if (clear_materials) self.material_properties.clearRetainingCapacity();
     self.dirty_page_set.unsetAll();
-    self.dirty_voxeme_set.unsetAll();
 }
 
 /// Copy the grid state, allocating a new Grid.
@@ -655,7 +652,6 @@ pub fn clone(self: *Grid) !*Grid {
     errdefer new_self.buffer_free_list.deinit(self.allocator);
 
     new_self.dirty_page_set.copy(&self.dirty_page_set);
-    new_self.dirty_voxeme_set.copy(&self.dirty_voxeme_set);
 
     return new_self;
 }
@@ -772,11 +768,11 @@ pub fn setVoxel(self: *Grid, global_voxel: vec3i, new_voxel: Voxel) !void {
     voxel.* = new_voxel;
 
     // --- MARK DIRTY ---
+    // NOTE: the voxel-level flags are for efficient data transfer only, so we don't need to mark them dirty here
+
     const local_voxeme_idx = convert.localVoxemeCoordToIndex(local_voxeme_coord);
-    const dirty_index = page_index * voxemes_per_page + local_voxeme_idx;
-    self.dirty_voxeme_set.set(dirty_index);
+    self.pages.items(.dirty_voxeme_set)[page_index].set(local_voxeme_idx);
     self.dirty_page_set.set(page_index);
-    self.voxels.items(.dirty_voxel_set)[buffer_index].set(index_in_buffer);
 
     for (offsets) |offset| {
         const neighbor_global_voxel = global_voxel + offset;
@@ -792,16 +788,7 @@ pub fn setVoxel(self: *Grid, global_voxel: vec3i, new_voxel: Voxel) !void {
 
             if (neighbor_voxeme_index != VoxemeTable.sentinel) {
                 const neighbor_local_voxeme_idx = convert.localVoxemeCoordToIndex(neighbor_local_voxeme_coord);
-                const neighbor_dirty_index = neighbor_page_index * voxemes_per_page + neighbor_local_voxeme_idx;
-
-                self.dirty_voxeme_set.set(neighbor_dirty_index);
-
-                const neighbor_buffer_index = self.voxemes.items(.buffer_indirection)[neighbor_voxeme_index];
-                if (neighbor_buffer_index != BufferData.sentinel) {
-                    const neighbor_local_voxel_coord = convert.globalVoxelToLocalVoxelCoord(neighbor_global_voxel);
-                    const neighbor_index_in_buffer = convert.localVoxelCoordToIndex(neighbor_local_voxel_coord);
-                    self.voxels.items(.dirty_voxel_set)[neighbor_buffer_index].set(neighbor_index_in_buffer);
-                }
+                self.pages.items(.dirty_voxeme_set)[neighbor_page_index].set(neighbor_local_voxeme_idx);
             }
         }
     }
@@ -825,6 +812,7 @@ fn getOrCreatePage(self: *Grid, page_coord: PageCoord, new_voxel: ?Voxel) !?u32 
         self.pages.items(.visibility)[page_index] = .none;
         self.pages.items(.voxel)[page_index] = .empty;
         self.pages.items(.voxeme_indirection)[page_index].init();
+        self.pages.items(.dirty_voxeme_set)[page_index].unsetAll();
 
         return page_index;
     } else {
@@ -872,8 +860,10 @@ fn getOrCreateBuffer(self: *Grid, voxeme_index: u32, new_voxel: ?Voxel) !?u32 {
         const new_buffer_index: u32 = if (self.buffer_free_list.pop()) |idx| idx else @intCast(try self.voxels.addOne(self.allocator));
         const new_voxels = &self.voxels.items(.voxel)[new_buffer_index];
         const new_visibility = &self.voxels.items(.visibility)[new_buffer_index];
+        const new_dirty_bits = &self.voxels.items(.dirty_voxel_set)[new_buffer_index];
         @memset(new_voxels, voxeme_data.*);
         @memset(new_visibility, Visibility.none); // ensure its at least not `undefined`; TODO: is this necessary?
+        new_dirty_bits.unsetAll();
 
         buffer_handle.* = new_buffer_index;
         voxeme_data.* = Voxel.empty;
@@ -1676,6 +1666,7 @@ pub const UpdateManager = struct {
             const arena = self.update_arena.allocator();
             defer _ = self.update_arena.reset(.retain_capacity);
 
+            // FIXME: this data no longer exists, it was moved into PageData
             var voxeme_wait_group = std.Thread.WaitGroup{};
             var voxeme_it = buffers.grid.dirty_voxeme_set.iterator(.{});
             while (voxeme_it.next()) |index| {
@@ -1727,10 +1718,11 @@ pub const UpdateManager = struct {
                 }
             }
 
+            // FIXME: this data no longer exists, it was moved into PageData
             voxeme_wait_group = std.Thread.WaitGroup{};
             voxeme_it = buffers.grid.dirty_voxeme_set.iterator(.{});
             while (voxeme_it.next()) |index| {
-                const page_index = buffers.grid.voxemes.items(.page_index)[index]; // TODO: this isn't a thing, need to rearch a bit
+                const page_index = buffers.grid.voxemes.items(.page_index)[index]; // TODO: this isn't a thing (rearch complete, just need to pivot iteration strategy)
                 const local_voxeme_coord = buffers.grid.voxemes.items(.local_coord)[index];
                 self.thread_pool.spawnWg(&voxeme_wait_group, voxeme_visibility_job, .{
                     self,

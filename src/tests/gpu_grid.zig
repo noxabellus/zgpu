@@ -220,8 +220,7 @@ test "setVoxel in empty world creates all structures" {
 
     // Assert the voxeme was marked dirty
     const local_voxeme_idx = Grid.convert.localVoxemeCoordToIndex(local_voxeme_coord);
-    const dirty_voxeme_index = page_index * Grid.voxemes_per_page + local_voxeme_idx;
-    try std.testing.expect(grid.dirty_voxeme_set.isSet(dirty_voxeme_index));
+    try std.testing.expect(grid.pages.items(.dirty_voxeme_set)[page_index].isSet(local_voxeme_idx));
 }
 
 test "setVoxel breaks homogeneous voxeme" {
@@ -279,8 +278,7 @@ test "setVoxel breaks homogeneous voxeme" {
     // Assert the voxeme was marked dirty
     const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(breaking_voxel);
     const local_voxeme_idx = Grid.convert.localVoxemeCoordToIndex(local_voxeme_coord);
-    const dirty_voxeme_index = local_voxeme_idx;
-    try std.testing.expect(grid.dirty_voxeme_set.isSet(dirty_voxeme_index));
+    try std.testing.expect(grid.pages.items(.dirty_voxeme_set)[0].isSet(local_voxeme_idx));
 }
 
 test "setVoxel modifies existing heterogeneous voxeme" {
@@ -325,8 +323,7 @@ test "setVoxel modifies existing heterogeneous voxeme" {
     // Assert the voxeme was marked dirty
     const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(vec3i{ 5, 5, 5 });
     const local_voxeme_idx = Grid.convert.localVoxemeCoordToIndex(local_voxeme_coord);
-    const dirty_voxeme_index = local_voxeme_idx;
-    try std.testing.expect(grid.dirty_voxeme_set.isSet(dirty_voxeme_index));
+    try std.testing.expect(grid.pages.items(.dirty_voxeme_set)[0].isSet(local_voxeme_idx));
 }
 
 test "setVoxel no-op does not allocate or dirty" {
@@ -350,10 +347,9 @@ test "setVoxel no-op does not allocate or dirty" {
 
     const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(vec3i{ 10, 10, 10 });
     const local_voxeme_idx = Grid.convert.localVoxemeCoordToIndex(local_voxeme_coord);
-    const dirty_voxeme_index = local_voxeme_idx;
 
     grid.dirty_page_set.unset(0);
-    grid.dirty_voxeme_set.unset(dirty_voxeme_index);
+    grid.pages.items(.dirty_voxeme_set)[0].unsetAll();
 
     // ACT: Set the voxel to the exact same material and state.
     try grid.setVoxel(vec3i{ 10, 10, 10 }, .{ .material_id = stone_mat });
@@ -367,7 +363,7 @@ test "setVoxel no-op does not allocate or dirty" {
     try std.testing.expect(!grid.dirty_page_set.isSet(0));
 
     // Assert the voxeme was not marked dirty
-    try std.testing.expect(!grid.dirty_voxeme_set.isSet(dirty_voxeme_index));
+    try std.testing.expect(!grid.pages.items(.dirty_voxeme_set)[0].isSet(local_voxeme_idx));
 }
 
 test "setVoxel dirties neighbors across page boundary" {
@@ -406,8 +402,7 @@ test "setVoxel dirties neighbors across page boundary" {
     try std.testing.expect(primary_page_index != PageTable.sentinel);
 
     const primary_local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(primary_coord);
-    const primary_dirty_voxeme_idx = primary_page_index * Grid.voxemes_per_page +
-        convert.localVoxemeCoordToIndex(primary_local_voxeme_coord);
+    const primary_dirty_voxeme_idx = convert.localVoxemeCoordToIndex(primary_local_voxeme_coord);
 
     // --- Get indices for the neighbor voxel's containers ---
     const neighbor_page_coord = convert.globalVoxelToPageCoord(neighbor_coord);
@@ -416,18 +411,18 @@ test "setVoxel dirties neighbors across page boundary" {
     try std.testing.expect(primary_page_index != neighbor_page_index); // Ensure they are in different pages
 
     const neighbor_local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(neighbor_coord);
-    const neighbor_dirty_voxeme_idx = neighbor_page_index * Grid.voxemes_per_page +
-        convert.localVoxemeCoordToIndex(neighbor_local_voxeme_coord);
+    const neighbor_dirty_voxeme_idx = convert.localVoxemeCoordToIndex(neighbor_local_voxeme_coord);
 
     // --- Clear dirty flags to ensure a clean test state ---
     grid.dirty_page_set.unsetAll();
-    grid.dirty_voxeme_set.unsetAll();
+    grid.pages.items(.dirty_voxeme_set)[primary_page_index].unsetAll();
+    grid.pages.items(.dirty_voxeme_set)[neighbor_page_index].unsetAll();
 
     // Verify clean state
     try std.testing.expect(!grid.dirty_page_set.isSet(primary_page_index));
     try std.testing.expect(!grid.dirty_page_set.isSet(neighbor_page_index));
-    try std.testing.expect(!grid.dirty_voxeme_set.isSet(primary_dirty_voxeme_idx));
-    try std.testing.expect(!grid.dirty_voxeme_set.isSet(neighbor_dirty_voxeme_idx));
+    try std.testing.expect(!grid.pages.items(.dirty_voxeme_set)[primary_page_index].isSet(primary_dirty_voxeme_idx));
+    try std.testing.expect(!grid.pages.items(.dirty_voxeme_set)[neighbor_page_index].isSet(neighbor_dirty_voxeme_idx));
 
     // ACT: Set the primary voxel, which should trigger dirtying its neighbors.
     try grid.setVoxel(primary_coord, dirt_voxel);
@@ -435,11 +430,11 @@ test "setVoxel dirties neighbors across page boundary" {
     // ASSERT:
     // 1. The primary page and voxeme should be dirty.
     try std.testing.expect(grid.dirty_page_set.isSet(primary_page_index));
-    try std.testing.expect(grid.dirty_voxeme_set.isSet(primary_dirty_voxeme_idx));
+    try std.testing.expect(grid.pages.items(.dirty_voxeme_set)[primary_page_index].isSet(primary_dirty_voxeme_idx));
 
     // 2. The neighbor page and voxeme across the boundary should also be dirty.
     try std.testing.expect(grid.dirty_page_set.isSet(neighbor_page_index));
-    try std.testing.expect(grid.dirty_voxeme_set.isSet(neighbor_dirty_voxeme_idx));
+    try std.testing.expect(grid.pages.items(.dirty_voxeme_set)[neighbor_page_index].isSet(neighbor_dirty_voxeme_idx));
 
     // 3. A neighbor in a direction that doesn't cross a page boundary (-X) should
     // still dirty its containing page (which is the primary page).
