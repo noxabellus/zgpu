@@ -12,7 +12,11 @@ pub const mat4 = [4]vec4;
 pub const mat3 = [3]vec3;
 
 pub const aabb2 = [2]vec2;
+pub const aabb2i = [2]vec2i;
+pub const aabb2u = [2]vec2u;
 pub const aabb3 = [2]vec3;
+pub const aabb3i = [2]vec3i;
+pub const aabb3u = [2]vec3u;
 
 pub const vec2 = @Vector(2, f32);
 pub const vec3 = @Vector(3, f32);
