@@ -179,7 +179,9 @@ test "setVoxel in empty world creates all structures" {
 
     // ACT: Set a single voxel at the origin.
     const global_voxel = vec3i{ 0, 0, 0 };
-    try grid.setVoxel(global_voxel, .{ .material_id = stone_mat });
+    try grid.applyCommands(&[_]Grid.Command{
+        .{ .set_voxel = .{ .global_voxel = global_voxel, .voxel = .{ .material_id = stone_mat } } },
+    });
 
     // ASSERT: Check that all structures were created correctly.
     try std.testing.expectEqual(@as(usize, 1), grid.pageCount());
@@ -241,7 +243,9 @@ test "setVoxel breaks homogeneous voxeme" {
 
     // ARRANGE: Create a state with a solid, homogeneous voxeme.
     // Easiest way is to set one voxel, then manually edit the grid state.
-    try grid.setVoxel(vec3i{ 0, 0, 0 }, .{ .material_id = stone_mat });
+    try grid.applyCommands(&[_]Grid.Command{
+        .{ .set_voxel = .{ .global_voxel = .{ 0, 0, 0 }, .voxel = .{ .material_id = stone_mat } } },
+    });
 
     // Manually "homogenize" the voxeme to be solid stone.
     grid.voxemes.items(.voxel)[0] = Voxel{ .material_id = stone_mat, .state = 0 };
@@ -254,7 +258,9 @@ test "setVoxel breaks homogeneous voxeme" {
 
     // ACT: Set a different voxel within the same voxeme to a new material.
     const breaking_voxel = vec3i{ 1, 1, 1 };
-    try grid.setVoxel(breaking_voxel, .{ .material_id = dirt_mat });
+    try grid.applyCommands(&[_]Grid.Command{
+        .{ .set_voxel = .{ .global_voxel = breaking_voxel, .voxel = .{ .material_id = dirt_mat } } },
+    });
 
     // ASSERT: Check that the break was handled correctly.
     try std.testing.expectEqual(initial_voxeme_count, grid.voxemeCount()); // No new voxeme created
@@ -298,7 +304,9 @@ test "setVoxel modifies existing heterogeneous voxeme" {
     });
 
     // ARRANGE: Create a heterogeneous state by setting one voxel.
-    try grid.setVoxel(vec3i{ 5, 5, 5 }, .{ .material_id = stone_mat });
+    try grid.applyCommands(&[_]Grid.Command{
+        .{ .set_voxel = .{ .global_voxel = .{ 5, 5, 5 }, .voxel = .{ .material_id = stone_mat } } },
+    });
     grid.dirty_page_set.unset(0); // Clear dirty flag for a clean test
 
     const initial_page_count = grid.pageCount();
@@ -306,7 +314,9 @@ test "setVoxel modifies existing heterogeneous voxeme" {
     const initial_buffer_count = grid.bufferCount();
 
     // ACT: Set the same voxel to a different material.
-    try grid.setVoxel(vec3i{ 5, 5, 5 }, .{ .material_id = dirt_mat });
+    try grid.applyCommands(&[_]Grid.Command{
+        .{ .set_voxel = .{ .global_voxel = .{ 5, 5, 5 }, .voxel = .{ .material_id = dirt_mat } } },
+    });
 
     // ASSERT: No new allocations should have occurred.
     try std.testing.expectEqual(initial_page_count, grid.pageCount());
@@ -338,7 +348,9 @@ test "setVoxel no-op does not allocate or dirty" {
     });
 
     // ARRANGE: Create a state.
-    try grid.setVoxel(vec3i{ 10, 10, 10 }, .{ .material_id = stone_mat });
+    try grid.applyCommands(&[_]Grid.Command{
+        .{ .set_voxel = .{ .global_voxel = .{ 10, 10, 10 }, .voxel = .{ .material_id = stone_mat } } },
+    });
 
     // Record initial state and clear dirty flags.
     const initial_page_count = grid.pageCount();
@@ -352,7 +364,9 @@ test "setVoxel no-op does not allocate or dirty" {
     grid.pages.items(.dirty_voxeme_set)[0].unsetAll();
 
     // ACT: Set the voxel to the exact same material and state.
-    try grid.setVoxel(vec3i{ 10, 10, 10 }, .{ .material_id = stone_mat });
+    try grid.applyCommands(&[_]Grid.Command{
+        .{ .set_voxel = .{ .global_voxel = .{ 10, 10, 10 }, .voxel = .{ .material_id = stone_mat } } },
+    });
 
     // ASSERT: Nothing should have changed.
     try std.testing.expectEqual(initial_page_count, grid.pageCount());
@@ -376,13 +390,11 @@ test "setVoxel dirties neighbors across page boundary" {
         .color = .grey,
         .flags = .{ .is_opaque = true },
     });
-    const stone_voxel = Voxel{ .material_id = stone_mat };
 
     const dirt_mat = try grid.registerMaterial(.{
         .color = .yellow,
         .flags = .{ .is_opaque = true },
     });
-    const dirt_voxel = Voxel{ .material_id = dirt_mat };
 
     // ARRANGE: Create two adjacent pages by setting a voxel in each,
     // right on the boundary we want to test.
@@ -393,8 +405,10 @@ test "setVoxel dirties neighbors across page boundary" {
     const neighbor_coord = vec3i{ 256, 0, 0 };
 
     // Create the initial structures.
-    try grid.setVoxel(primary_coord, stone_voxel);
-    try grid.setVoxel(neighbor_coord, stone_voxel);
+    try grid.applyCommands(&[_]Grid.Command{
+        .{ .set_voxel = .{ .global_voxel = primary_coord, .voxel = .{ .material_id = stone_mat } } },
+        .{ .set_voxel = .{ .global_voxel = neighbor_coord, .voxel = .{ .material_id = stone_mat } } },
+    });
 
     // --- Get indices for the primary voxel's containers ---
     const primary_page_coord = convert.globalVoxelToPageCoord(primary_coord);
@@ -425,7 +439,9 @@ test "setVoxel dirties neighbors across page boundary" {
     try std.testing.expect(!grid.pages.items(.dirty_voxeme_set)[neighbor_page_index].isSet(neighbor_dirty_voxeme_idx));
 
     // ACT: Set the primary voxel, which should trigger dirtying its neighbors.
-    try grid.setVoxel(primary_coord, dirt_voxel);
+    try grid.applyCommands(&[_]Grid.Command{
+        .{ .set_voxel = .{ .global_voxel = primary_coord, .voxel = .{ .material_id = dirt_mat } } },
+    });
 
     // ASSERT:
     // 1. The primary page and voxeme should be dirty.
