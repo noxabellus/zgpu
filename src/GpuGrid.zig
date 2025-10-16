@@ -1799,10 +1799,23 @@ pub const UpdateManager = struct {
             }
             self.thread_pool.waitAndWork(&page_wait_group);
 
-            // TODO : this should be done as a traversal, very inefficient as is
-            buffers.grid.dirty_page_set.unsetAll();
-            for (buffers.grid.pages.items(.dirty_voxeme_set)) |*set| set.unsetAll();
-            for (buffers.grid.voxels.items(.dirty_voxel_set)) |*set| set.unsetAll();
+            page_it = buffers.grid.dirty_page_set.iterator();
+            while (page_it.next()) |page_index| {
+                buffers.grid.dirty_page_set.unset(page_index);
+
+                var voxeme_it = buffers.grid.pages.items(.dirty_voxeme_set)[page_index].iterator();
+                while (voxeme_it.next()) |voxeme_index| {
+                    buffers.grid.pages.items(.dirty_voxeme_set)[page_index].unset(voxeme_index);
+
+                    const buffer_index = buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index];
+                    if (buffer_index == BufferData.sentinel) continue;
+
+                    var voxel_it = buffers.grid.voxels.items(.dirty_voxel_set)[buffer_index].iterator();
+                    while (voxel_it.next()) |voxel_index| {
+                        buffers.grid.voxels.items(.dirty_voxel_set)[buffer_index].unset(voxel_index);
+                    }
+                }
+            }
 
             buffers.mesh_cache.applyCommands(self.allocator, self.mesh_command_queue.buffer[0..self.mesh_command_queue.top]) catch |err| {
                 log.err("Failed to apply mesh cache commands: {s}\n", .{@errorName(err)});
