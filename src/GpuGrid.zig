@@ -1316,14 +1316,24 @@ pub const MeshCache = struct {
         try self.mesh_free_list.append(allocator, instance_index);
     }
 
+    /// Defragment a mesh cache and copy it into a new one.
+    pub fn clone(self: *MeshCache, temp_allocator: std.mem.Allocator, gpa: std.mem.Allocator) !*MeshCache {
+        const new_cache = try MeshCache.init(gpa);
+        errdefer new_cache.deinit(gpa);
+
+        try self.defragment_and_copy(temp_allocator, gpa, new_cache);
+
+        return new_cache;
+    }
+
     /// Defragment if necessary
-    pub fn maybeDefrag(self: *MeshCache, allocator: std.mem.Allocator, secondary_destination: ?*MeshCache) !void {
+    pub fn maybeDefrag(self: *MeshCache, temp_allocator: std.mem.Allocator, gpa: std.mem.Allocator) !void {
         const free_count = self.mesh_free_list.items.len;
         const total_count = self.meshes.len;
 
         // if more than 25% of instances are free, defrag
         if (free_count * 4 > total_count) {
-            return self.defragment(allocator, secondary_destination);
+            return self.defragment(temp_allocator, gpa);
         }
 
         // sum the number of allocated and used vertices and indices
@@ -1341,39 +1351,31 @@ pub const MeshCache = struct {
 
         // if more than 50% of allocated vertices or indices are unused, defrag
         if (allocated_vertices > used_vertices * 2 or allocated_indices > used_indices * 2) {
-            return self.defragment(allocator, secondary_destination);
+            return self.defragment(temp_allocator, gpa);
         }
-    }
-
-    /// Defragment a mesh cache and copy it into a new one.
-    pub fn clone(self: *MeshCache, allocator: std.mem.Allocator) !*MeshCache {
-        const new_cache = try MeshCache.init(allocator);
-        errdefer new_cache.deinit(allocator);
-
-        try self.defragment(allocator, new_cache);
-
-        return new_cache;
     }
 
     /// Defragment the mesh instance list, removing all free instances and compacting the list.
     /// This also rebuilds the indirection table and compacts the vertex and index buffers.
-    pub fn defragment(self: *MeshCache, allocator: std.mem.Allocator, secondary_destination: ?*MeshCache) !void {
+    pub fn defragment(self: *MeshCache, temp_allocator: std.mem.Allocator, gpa: std.mem.Allocator) !void {
+        return self.defragment_and_copy(temp_allocator, gpa, null);
+    }
+
+    inline fn defragment_and_copy(self: *MeshCache, temp_allocator: std.mem.Allocator, gpa: std.mem.Allocator, secondary_destination: ?*MeshCache) !void {
         var new_instances = std.MultiArrayList(MeshData).empty;
-        try new_instances.ensureTotalCapacity(allocator, self.meshes.len - self.mesh_free_list.items.len);
-        errdefer new_instances.deinit(allocator);
+        try new_instances.ensureTotalCapacity(gpa, self.meshes.len - self.mesh_free_list.items.len);
+        errdefer new_instances.deinit(gpa);
 
         var new_vertices = std.MultiArrayList(VertexData).empty;
-        try new_vertices.ensureTotalCapacity(allocator, self.vertices.len);
-        errdefer new_vertices.deinit(allocator);
+        try new_vertices.ensureTotalCapacity(gpa, self.vertices.len);
+        errdefer new_vertices.deinit(gpa);
 
         var new_indices = std.ArrayList(u32).empty;
-        try new_indices.ensureTotalCapacity(allocator, self.indices.items.len);
-        errdefer new_indices.deinit(allocator);
+        try new_indices.ensureTotalCapacity(gpa, self.indices.items.len);
+        errdefer new_indices.deinit(gpa);
 
-        const static = struct {
-            threadlocal var temp_table: PageTable = undefined;
-        };
-        const new_indirection = &static.temp_table;
+        const new_indirection = try temp_allocator.create(PageTable);
+        defer temp_allocator.destroy(new_indirection);
         new_indirection.init();
 
         for (0..self.meshes.len) |old_index| {
@@ -1383,7 +1385,7 @@ pub const MeshCache = struct {
 
             const instance_coord = self.meshes.items(.coord)[old_index];
 
-            const new_index: u32 = @intCast(try new_instances.addOne(allocator));
+            const new_index: u32 = @intCast(try new_instances.addOne(gpa));
             const success = new_indirection.insert(instance_coord, new_index);
             std.debug.assert(success); // this should never fail, it was already in a table
 
@@ -1395,8 +1397,8 @@ pub const MeshCache = struct {
             const old_index_offset = self.meshes.items(.index_offset)[old_index];
             const new_index_offset: u32 = @intCast(new_indices.items.len);
 
-            try new_vertices.resize(allocator, new_vertex_offset + vertex_count);
-            try new_indices.resize(allocator, new_index_offset + index_count);
+            try new_vertices.resize(gpa, new_vertex_offset + vertex_count);
+            try new_indices.resize(gpa, new_index_offset + index_count);
 
             @memcpy(new_vertices.items(.position)[new_vertex_offset .. new_vertex_offset + vertex_count], self.vertices.items(.position)[old_vertex_offset..].ptr);
             @memcpy(new_vertices.items(.normal)[new_vertex_offset .. new_vertex_offset + vertex_count], self.vertices.items(.normal)[old_vertex_offset..].ptr);
@@ -1419,14 +1421,14 @@ pub const MeshCache = struct {
         inline for (0..2) |i| {
             const dest = if (comptime i > 0) secondary_destination orelse return else self;
 
-            dest.meshes.deinit(allocator);
-            dest.meshes = if (comptime i > 0) try new_instances.clone(allocator) else new_instances;
+            dest.meshes.deinit(gpa);
+            dest.meshes = if (comptime i > 0) try new_instances.clone(gpa) else new_instances;
 
-            dest.vertices.deinit(allocator);
-            dest.vertices = if (comptime i > 0) try new_vertices.clone(allocator) else new_vertices;
+            dest.vertices.deinit(gpa);
+            dest.vertices = if (comptime i > 0) try new_vertices.clone(gpa) else new_vertices;
 
-            dest.indices.deinit(allocator);
-            dest.indices = if (comptime i > 0) try new_indices.clone(allocator) else new_indices;
+            dest.indices.deinit(gpa);
+            dest.indices = if (comptime i > 0) try new_indices.clone(gpa) else new_indices;
 
             dest.page_indirection.copy(new_indirection);
 
@@ -1804,6 +1806,10 @@ pub const UpdateManager = struct {
 
             buffers.mesh_cache.applyCommands(self.allocator, self.mesh_command_queue.buffer[0..self.mesh_command_queue.top]) catch |err| {
                 log.err("Failed to apply mesh cache commands: {s}\n", .{@errorName(err)});
+            };
+
+            buffers.mesh_cache.maybeDefrag(arena, self.allocator) catch |err| {
+                log.err("Failed to defragment mesh cache: {s}\n", .{@errorName(err)});
             };
         }
     }
