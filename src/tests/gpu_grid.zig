@@ -463,3 +463,114 @@ test "setVoxel dirties neighbors across page boundary" {
     // should be 2: the primary page and the existing neighbor page.
     try std.testing.expectEqual(@as(usize, 2), grid.dirty_page_set.count());
 }
+
+test "manager creates sphere mesh across four pages" {
+    // --- Create Grid and Generate Mesh ---
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    // const frame_arena = arena_state.allocator();
+
+    std.debug.print("Starting sphere mesh test...\n", .{});
+
+    // 1. Initialize the manager and its dependencies
+    var pool: std.Thread.Pool = undefined;
+    try pool.init(.{ .allocator = std.testing.allocator, .n_jobs = 4 });
+    defer pool.deinit();
+    const grid = try Grid.init(std.testing.allocator);
+    // Note: We don't defer grid.deinit() here because manager.deinit() returns ownership to us.
+
+    var manager = try Grid.Manager.init(grid, &pool);
+
+    // 2. Define the sphere material and voxel state
+    const solid_mat = try manager.front().grid.registerMaterial(.{ .color = .red, .flags = .{ .is_opaque = true } });
+    const sphere_voxel = Grid.Voxel{ .material_id = solid_mat };
+
+    // 3. Define the sphere geometry.
+    // The boundary between pages is at global voxel coordinates that are multiples of
+    // (page_axis_divisor * voxeme_axis_divisor) = 16 * 16 = 256.
+    // Placing the center at (256, 256, 128) will make it perfectly intersect the corner
+    // of pages (0,0,0), (1,0,0), (0,1,0), and (1,1,0).
+    const center_voxel = vec3i{ 256, 256, 128 };
+    const radius = 10;
+    const radius_sq = radius * radius;
+
+    const min_bound = center_voxel - @as(vec3i, @splat(radius));
+    const max_bound = center_voxel + @as(vec3i, @splat(radius));
+
+    // 4. Queue commands to create the sphere
+    var z = min_bound[2];
+    while (z <= max_bound[2]) : (z += 1) {
+        var y = min_bound[1];
+        while (y <= max_bound[1]) : (y += 1) {
+            var x = min_bound[0];
+            while (x <= max_bound[0]) : (x += 1) {
+                const current_voxel = vec3i{ x, y, z };
+                const offset = current_voxel - center_voxel;
+                const dist_sq = linalg.len_sq(offset);
+
+                if (dist_sq <= radius_sq) {
+                    try manager.queueCommand(.{ .set_voxel = .{
+                        .global_voxel = current_voxel,
+                        .voxel = sphere_voxel,
+                    } });
+                }
+            }
+        }
+    }
+
+    std.debug.print("Queued sphere voxel commands.\n", .{});
+
+    // 5. Signal the manager to process the commands and wait for completion.
+    // manager.deinit() joins the worker thread, ensuring all work is finished.
+    std.debug.print("Signaling manager to process queued commands...\n", .{});
+    manager.endFrame();
+    std.debug.print("Manager signaled 1; sleeping ..\n", .{});
+    std.Thread.sleep(std.time.ns_per_s);
+    std.debug.print("Waking up and signaling manager to swap buffers again\n", .{});
+    manager.endFrame();
+    std.debug.print("Manager signaled 2; front buffer should contain meshes\n", .{});
+    defer {
+        std.debug.print("Deinitializing manager...\n", .{});
+        var final_state = manager.deinit();
+        std.debug.print("Manager deinitialized, final state obtained.\n", .{});
+        final_state.deinit(); // Clean up the final grid and mesh cache
+    }
+
+    const mesh_cache = manager.front().mesh_cache;
+
+    // 6. Validate that the correct pages have generated meshes.
+    const affected_pages = [_]Grid.PageCoord{
+        Grid.convert.globalVoxelToPageCoord(.{ 255, 255, 128 }), // Page (0,0,0)
+        Grid.convert.globalVoxelToPageCoord(.{ 256, 255, 128 }), // Page (1,0,0)
+        Grid.convert.globalVoxelToPageCoord(.{ 255, 256, 128 }), // Page (0,1,0)
+        Grid.convert.globalVoxelToPageCoord(.{ 256, 256, 128 }), // Page (1,1,0)
+    };
+
+    // Sanity check our coordinate math
+    try std.testing.expectEqual(Grid.PageCoord{ .x = 0, .y = 0, .z = 0 }, affected_pages[0]);
+    try std.testing.expectEqual(Grid.PageCoord{ .x = 1, .y = 0, .z = 0 }, affected_pages[1]);
+    try std.testing.expectEqual(Grid.PageCoord{ .x = 0, .y = 1, .z = 0 }, affected_pages[2]);
+    try std.testing.expectEqual(Grid.PageCoord{ .x = 1, .y = 1, .z = 0 }, affected_pages[3]);
+
+    try std.testing.expectEqual(4, mesh_cache.meshes.len);
+
+    std.log.debug("Checking for meshes in affected pages...", .{});
+    for (affected_pages) |coord| {
+        const view = mesh_cache.getView(coord);
+        try std.testing.expect(view != null);
+        if (view) |v| {
+            std.log.debug("Found mesh for page {any}: indices={}", .{ coord, v.index_count });
+            try std.testing.expect(v.index_count > 0);
+        }
+    }
+
+    // 7. Validate that an unaffected page has no mesh.
+    std.log.debug("Checking for no mesh in unaffected page...", .{});
+    const unaffected_page = Grid.PageCoord{ .x = 5, .y = 5, .z = 5 };
+    try std.testing.expect(mesh_cache.getView(unaffected_page) == null);
+
+    try std.testing.expectEqual(7608, mesh_cache.vertices.len);
+    try std.testing.expectEqual(11412, mesh_cache.indices.items.len);
+
+    std.log.debug("Sphere mesh test passed.", .{});
+}

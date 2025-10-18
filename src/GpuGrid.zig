@@ -89,6 +89,12 @@ pub const voxels_per_voxeme = voxeme_axis_divisor * voxeme_axis_divisor * voxeme
 /// `voxemes_per_page * voxels_per_voxeme`; total (maximum) number of voxels in a page.
 pub const voxels_per_page = voxemes_per_page * voxels_per_voxeme;
 
+/// The number of voxemes on a single face of a page.
+pub const voxemes_per_page_face = page_axis_divisor * page_axis_divisor;
+
+/// The number of voxels on a single face of a voxeme.
+pub const voxels_per_voxeme_face = voxeme_axis_divisor * voxeme_axis_divisor;
+
 /// A coordinate identifying a page in the infinite 3D grid of pages.
 pub const PageCoord = packed struct(u32) {
     x: i11, // 2048 pages in x, y
@@ -97,6 +103,22 @@ pub const PageCoord = packed struct(u32) {
 
     /// Unsigned version of `PageCoord`, useful for bitcasting before hashing.
     pub const Unsigned = packed struct(u32) { x: u11, y: u11, z: u10 };
+
+    pub fn toVec3i(self: PageCoord) vec3i {
+        return vec3i{
+            @intCast(self.x),
+            @intCast(self.y),
+            @intCast(self.z),
+        };
+    }
+
+    pub fn fromVec3i(v: vec3i) PageCoord {
+        return PageCoord{
+            .x = @as(i11, @intCast(v[0])),
+            .y = @as(i11, @intCast(v[1])),
+            .z = @as(i10, @intCast(v[2])),
+        };
+    }
 
     pub fn add(self: PageCoord, other: PageCoord) PageCoord {
         return PageCoord{
@@ -121,6 +143,22 @@ pub const LocalCoord = packed struct(u12) {
     y: u4,
     z: u4,
 
+    pub fn fromVec3i(v: vec3i) LocalCoord {
+        return LocalCoord{
+            .x = @intCast(v[0]),
+            .y = @intCast(v[1]),
+            .z = @intCast(v[2]),
+        };
+    }
+
+    pub fn toVec3i(self: LocalCoord) vec3i {
+        return vec3i{
+            @intCast(self.x),
+            @intCast(self.y),
+            @intCast(self.z),
+        };
+    }
+
     pub fn add(self: LocalCoord, other: LocalCoord) LocalCoord {
         return LocalCoord{
             .x = self.x + other.x,
@@ -139,21 +177,22 @@ pub const LocalCoord = packed struct(u12) {
 };
 
 /// Unique identifier for a voxel material type.
-/// Supports up to 4096 materials including the empty state. See `MaterialProperties`, `registerMaterial`.
+/// Supports up to 4096 materials including the empty state. See `MaterialData`, `registerMaterial`.
 pub const MaterialId = enum(u12) { none = 0, _ };
 
 /// Maximum number of materials supported by the grid. (4096 including empty)
 pub const max_materials = std.math.maxInt(std.meta.Tag(MaterialId));
 
 /// Surface properties for a voxel material type. See `MaterialId`, `registerMaterial`.
-pub const MaterialProperties = extern struct {
+/// This data structure is not passed to the gpu, it is just a table layout for MultiArrayList.
+pub const MaterialData = struct {
     /// The base color of this material type before lighting.
     color: Color,
     /// State flags for this material type, such as whether it is opaque (occludes other voxels, light, etc).
     flags: MaterialFlags,
 
     /// The properties for the "no material" material / default state.
-    pub const none = MaterialProperties{
+    pub const none = MaterialData{
         .color = .none,
         .flags = .none,
     };
@@ -183,7 +222,7 @@ pub const Color = packed struct(u32) {
     }
 };
 
-/// State flags for a voxel material type. See `MaterialProperties`.
+/// State flags for a voxel material type. See `MaterialData`.
 pub const MaterialFlags = packed struct(u32) {
     /// Whether this material occludes other voxels, light, etc.
     is_opaque: bool,
@@ -204,6 +243,83 @@ pub const offsets = [6]vec3i{
     .{ 0, 0, -1 }, // -Z
 };
 
+fn generatePageFace(axis_idx: u2, const_val: u4) [voxemes_per_page_face]LocalCoord {
+    var face_coords: [voxemes_per_page_face]LocalCoord = undefined;
+    var i = 0;
+    var v = 0;
+    @setEvalBranchQuota(voxemes_per_page);
+    while (v < page_axis_divisor) : (v += 1) {
+        var u = 0;
+        while (u < page_axis_divisor) : (u += 1) {
+            face_coords[i] = switch (axis_idx) {
+                // +X/-X face, iterate over Y and Z
+                0 => LocalCoord{ .x = const_val, .y = @intCast(u), .z = @intCast(v) },
+                // +Y/-Y face, iterate over X and Z
+                1 => LocalCoord{ .x = @intCast(u), .y = const_val, .z = @intCast(v) },
+                // +Z/-Z face, iterate over X and Y
+                2 => LocalCoord{ .x = @intCast(u), .y = @intCast(v), .z = const_val },
+                else => unreachable,
+            };
+            i += 1;
+        }
+    }
+    return face_coords;
+}
+
+fn generateVoxemeFace(axis_idx: u2, const_val: u4) [voxels_per_voxeme_face]LocalCoord {
+    var face_coords: [voxels_per_voxeme_face]LocalCoord = undefined;
+    var i = 0;
+    var v = 0;
+    @setEvalBranchQuota(voxels_per_voxeme);
+    while (v < voxeme_axis_divisor) : (v += 1) {
+        var u = 0;
+        while (u < voxeme_axis_divisor) : (u += 1) {
+            face_coords[i] = switch (axis_idx) {
+                // +X/-X face, iterate over Y and Z
+                0 => LocalCoord{ .x = const_val, .y = @intCast(u), .z = @intCast(v) },
+                // +Y/-Y face, iterate over X and Z
+                1 => LocalCoord{ .x = @intCast(u), .y = const_val, .z = @intCast(v) },
+                // +Z/-Z face, iterate over X and Y
+                2 => LocalCoord{ .x = @intCast(u), .y = @intCast(v), .z = const_val },
+                else => unreachable,
+            };
+            i += 1;
+        }
+    }
+    return face_coords;
+}
+
+/// Precomputed local coordinates for all voxemes on each of the 6 faces of a page.
+/// The outer index corresponds to the `offsets` array index (0: +X, 1: -X, etc.).
+pub const page_face_voxeme_coords = blk: {
+    var coords: [6][voxemes_per_page_face]LocalCoord = undefined;
+
+    // The face on the *current* page that borders the neighbor in that direction.
+    coords[0] = generatePageFace(0, page_axis_mask); // +X face (x = 15)
+    coords[1] = generatePageFace(0, 0); // -X face (x = 0)
+    coords[2] = generatePageFace(1, page_axis_mask); // +Y face (y = 15)
+    coords[3] = generatePageFace(1, 0); // -Y face (y = 0)
+    coords[4] = generatePageFace(2, page_axis_mask); // +Z face (z = 15)
+    coords[5] = generatePageFace(2, 0); // -Z face (z = 0)
+
+    break :blk coords;
+};
+
+/// Precomputed local coordinates for all voxels on each of the 6 faces of a voxeme.
+pub const voxeme_face_voxel_coords = blk: {
+    var coords: [6][voxels_per_voxeme_face]LocalCoord = undefined;
+
+    // The face on the *current* voxeme that borders the neighbor in that direction.
+    coords[0] = generateVoxemeFace(0, voxeme_axis_mask); // +X face (x = 15)
+    coords[1] = generateVoxemeFace(0, 0); // -X face (x = 0)
+    coords[2] = generateVoxemeFace(1, voxeme_axis_mask); // +Y face (y = 15)
+    coords[3] = generateVoxemeFace(1, 0); // -Y face (y = 0)
+    coords[4] = generateVoxemeFace(2, voxeme_axis_mask); // +Z face (z = 15)
+    coords[5] = generateVoxemeFace(2, 0); // -Z face (z = 0)
+
+    break :blk coords;
+};
+
 /// Axis identifiers for the 3 axes in 3D space.
 /// These convert to indices in `offsets` and `Visibility`; add 1 for negative directions.
 pub const Axis = enum(u3) {
@@ -215,8 +331,16 @@ pub const Axis = enum(u3) {
         return @intFromEnum(self);
     }
 
-    pub fn fromIndex(index: u3) Axis {
-        return @enumFromInt(index & 0b110);
+    pub fn fromIndex(index: anytype) Axis {
+        return @enumFromInt(@as(u32, @intCast(index)) & 0b110);
+    }
+
+    pub fn toComponentIndex(self: Axis) u2 {
+        return switch (self) {
+            .x => 0,
+            .y => 1,
+            .z => 2,
+        };
     }
 };
 
@@ -226,31 +350,50 @@ pub const AxisDir = packed struct(u8) {
     positive: bool,
     _unused: u4 = 0,
 
+    pub const x_pos = AxisDir{ .axis = .x, .positive = true };
+    pub const x_neg = AxisDir{ .axis = .x, .positive = false };
+    pub const y_pos = AxisDir{ .axis = .y, .positive = true };
+    pub const y_neg = AxisDir{ .axis = .y, .positive = false };
+    pub const z_pos = AxisDir{ .axis = .z, .positive = true };
+    pub const z_neg = AxisDir{ .axis = .z, .positive = false };
+
     pub fn toIndex(self: AxisDir) u3 {
         return self.axis.toIndex() + @intFromBool(!self.positive);
     }
 
-    pub fn fromIndex(index: u3) AxisDir {
+    pub fn fromIndex(index: anytype) AxisDir {
         return AxisDir{
             .axis = Axis.fromIndex(index),
-            .positive = (index & 1) == 0,
+            .positive = (@as(u3, @intCast(index)) & 1) == 0,
         };
     }
 
     pub fn getOffset(self: AxisDir) vec3i {
         return offsets[self.toIndex()];
     }
+
+    pub fn toComponentIndex(self: AxisDir) u2 {
+        return self.axis.toComponentIndex();
+    }
+
+    pub const values = [_]AxisDir{
+        .x_pos,
+        .x_neg,
+        .y_pos,
+        .y_neg,
+        .z_pos,
+        .z_neg,
+    };
 };
 
 /// Visibility flags for the 6 faces of a volume.
-pub const Visibility = packed struct(u8) {
+pub const Visibility = packed struct(u6) {
     pos_x: bool,
     neg_x: bool,
     pos_y: bool,
     neg_y: bool,
     pos_z: bool,
     neg_z: bool,
-    _unused: u2 = 0,
 
     /// Completely unoccluded state.
     pub const all = Visibility{ .pos_x = true, .neg_x = true, .pos_y = true, .neg_y = true, .pos_z = true, .neg_z = true };
@@ -262,16 +405,16 @@ pub const Visibility = packed struct(u8) {
     pub fn getIndex(self: Visibility, index: u3) bool {
         const bits: u6 = @bitCast(self);
 
-        return (bits & (1 << index)) != 0;
+        return (bits & (@as(u6, 1) << index)) != 0;
     }
 
     /// Set the visibility for a specific axis and direction by index.
     pub fn setIndex(self: *Visibility, index: u3, value: bool) void {
-        var bits: u6 = @bitCast(*self);
+        var bits: u6 = @bitCast(self.*);
         if (value) {
-            bits |= (1 << index);
+            bits |= (@as(u6, 1) << index);
         } else {
-            bits &= ~(1 << index);
+            bits &= ~(@as(u6, 1) << index);
         }
         self.* = @bitCast(bits);
     }
@@ -336,12 +479,14 @@ pub fn SpacialHashTable(comptime Coord: type, comptime BitCoord: type, comptime 
         pub fn init(self: *Self) void {
             @memset(&self.indices, Self.sentinel);
             @memset(&self.coordinates, 0);
+            self.len = 0;
         }
 
         /// Copy the table state from another table into this one
         pub fn copy(self: *Self, other: *const Self) void {
             @memcpy(&self.indices, &other.indices);
             @memcpy(&self.coordinates, &other.coordinates);
+            self.len = other.len;
         }
 
         /// Hash function for `PageCoord`.
@@ -512,7 +657,7 @@ pub const VoxelBuffer = [voxels_per_voxeme]Voxel; // 16*16*16 voxels in a voxeme
 pub const VisibilityBuffer = [voxels_per_voxeme]Visibility; // 4kb
 
 /// A sparse, large-scale voxel grid supporting efficient GPU usage.
-/// This data structure is never really constructed, it is just a table layout for MultiArrayList
+/// This data structure is not passed to the gpu, it is just a table layout for MultiArrayList
 pub const PageData = struct {
     /// The coordinate of this page in the infinite 3D grid of pages.
     coord: PageCoord,
@@ -528,7 +673,7 @@ pub const PageData = struct {
 }; // each page is 33292 bytes
 
 /// Small-scale voxel grid metadata supporting efficient GPU usage.
-/// This data structure is never really constructed, it is just a table layout for MultiArrayList
+/// This data structure is not passed to the gpu, it is just a table layout for MultiArrayList
 pub const VoxemeData = struct {
     /// The coordinate of this voxeme within its page.
     coord: LocalCoord,
@@ -544,7 +689,7 @@ pub const VoxemeData = struct {
 }; // each voxeme is 12 bytes
 
 /// Dense storage for the detailed voxel data of a heterogeneous voxeme, supporting efficient GPU usage.
-/// This data structure is never really constructed, it is just a table layout for MultiArrayList
+/// This data structure is not passed to the gpu, it is just a table layout for MultiArrayList
 pub const BufferData = struct {
     /// The dirty bits for this buffer
     dirty_voxel_set: FixedBitSet(voxels_per_voxeme),
@@ -592,7 +737,7 @@ voxemes: std.MultiArrayList(VoxemeData),
 /// The list of voxel buffers in the grid in SOA format.
 voxels: std.MultiArrayList(BufferData),
 /// The list of registered material properties for this grid.
-material_properties: std.ArrayList(MaterialProperties),
+materials: std.MultiArrayList(MaterialData),
 /// The list of pages that are free to be reused.
 /// Necessary because we cannot move or truly delete pages in the MultiArrayList.
 page_free_list: std.ArrayList(u32),
@@ -616,7 +761,7 @@ pub fn init(allocator: std.mem.Allocator) !*Grid {
     self.pages = .empty;
     self.voxemes = .empty;
     self.voxels = .empty;
-    self.material_properties = .empty;
+    self.materials = .empty;
     self.page_free_list = .empty;
     self.voxeme_free_list = .empty;
     self.buffer_free_list = .empty;
@@ -630,8 +775,8 @@ pub fn init(allocator: std.mem.Allocator) !*Grid {
     try self.voxels.ensureTotalCapacity(allocator, 1024); // ~20mb
     errdefer self.voxels.deinit(allocator);
 
-    try self.material_properties.ensureTotalCapacity(allocator, max_materials); // ~32kb
-    errdefer self.material_properties.deinit(allocator);
+    try self.materials.ensureTotalCapacity(allocator, max_materials); // ~32kb
+    errdefer self.materials.deinit(allocator);
 
     try self.page_free_list.ensureTotalCapacity(allocator, 1024); // ~4kb
     errdefer self.page_free_list.deinit(allocator);
@@ -645,7 +790,7 @@ pub fn init(allocator: std.mem.Allocator) !*Grid {
     self.dirty_page_set.unsetAll();
 
     // initialize the empty material
-    self.material_properties.appendAssumeCapacity(.none);
+    self.materials.appendAssumeCapacity(.none);
 
     return self;
 }
@@ -655,7 +800,7 @@ pub fn deinit(self: *Grid) void {
     self.voxels.deinit(self.allocator);
     self.voxemes.deinit(self.allocator);
     self.pages.deinit(self.allocator);
-    self.material_properties.deinit(self.allocator);
+    self.materials.deinit(self.allocator);
     self.page_free_list.deinit(self.allocator);
     self.buffer_free_list.deinit(self.allocator);
     self.voxeme_free_list.deinit(self.allocator);
@@ -672,7 +817,7 @@ pub fn clear(self: *Grid, clear_materials: bool) void {
     self.page_free_list.clearRetainingCapacity();
     self.voxeme_free_list.clearRetainingCapacity();
     self.buffer_free_list.clearRetainingCapacity();
-    if (clear_materials) self.material_properties.clearRetainingCapacity();
+    if (clear_materials) self.materials.clearRetainingCapacity();
     self.dirty_page_set.unsetAll();
 }
 
@@ -694,8 +839,8 @@ pub fn clone(self: *Grid) !*Grid {
     new_self.voxels = try self.voxels.clone(self.allocator);
     errdefer new_self.voxels.deinit(self.allocator);
 
-    new_self.material_properties = try self.material_properties.clone(self.allocator);
-    errdefer new_self.material_properties.deinit(self.allocator);
+    new_self.materials = try self.materials.clone(self.allocator);
+    errdefer new_self.materials.deinit(self.allocator);
 
     new_self.page_free_list = try self.page_free_list.clone(self.allocator);
     errdefer new_self.page_free_list.deinit(self.allocator);
@@ -733,26 +878,32 @@ pub fn voxelCount(self: *const Grid) usize {
 
 /// The number of registered materials in the grid.
 pub fn materialCount(self: *const Grid) usize {
-    return self.material_properties.items.len;
+    return self.materials.len;
 }
 
 /// Register a new material type for use in voxels.
 /// Returns the MaterialId for the new material type.
-pub fn registerMaterial(self: *Grid, properties: MaterialProperties) !MaterialId {
+pub fn registerMaterial(self: *Grid, properties: MaterialData) !MaterialId {
     const index = self.materialCount();
     if (index >= max_materials) {
         return error.OutOfMaterials;
     }
 
-    self.material_properties.appendAssumeCapacity(properties);
+    try self.materials.append(self.allocator, properties);
 
     return @enumFromInt(index);
 }
 
 /// Get the properties for a material type by its MaterialId.
-pub fn getMaterial(self: *const Grid, id: MaterialId) *const MaterialProperties {
+pub fn getMaterial(self: *const Grid, id: MaterialId) *const MaterialData {
     const index = @intFromEnum(id);
-    return &self.material_properties.items[index];
+    return &self.materials.get(index);
+}
+
+/// Get the opacity of a material by its MaterialId.
+pub fn isOpaqueMaterial(self: *const Grid, id: MaterialId) bool {
+    const mat = self.getMaterial(id);
+    return mat.flags.is_opaque;
 }
 
 /// Check if a voxel at the given global voxel coordinate is occluding.
@@ -802,6 +953,7 @@ pub fn getVoxel(world: *const Grid, global_voxel: vec3i) Voxel {
     return buffer[index_in_buffer]; // Final Voxel!
 }
 
+/// Applies a list of commands to the grid. This is intended to be called by the Manager on the back buffer.
 pub fn applyCommands(self: *Grid, commands: []const Command) !void {
     for (commands) |command| {
         switch (command) {
@@ -814,58 +966,83 @@ pub fn applyCommands(self: *Grid, commands: []const Command) !void {
 }
 
 fn setAABB(self: *Grid, aabb: aabb3i, new_voxel: Voxel) !void {
-    const min_page = convert.globalVoxelToPageCoord(aabb[0]);
-    const max_page = convert.globalVoxelToPageCoord(aabb[1] - vec3i{ 1, 1, 1 }).add(.{ .x = 1, .y = 1, .z = 1 });
+    const min_v = aabb[0];
+    const max_v = aabb[1];
 
-    var page_x = min_page.x;
-    while (page_x < max_page.x) : (page_x += 1) {
-        var page_y = min_page.y;
-        while (page_y < max_page.y) : (page_y += 1) {
-            var page_z = min_page.z;
-            while (page_z < max_page.z) : (page_z += 1) {
+    const min_page_coord = convert.globalVoxelToPageCoord(min_v);
+    const max_page_coord_inclusive = convert.globalVoxelToPageCoord(max_v - vec3i{ 1, 1, 1 });
+
+    var page_z = min_page_coord.z;
+    while (page_z <= max_page_coord_inclusive.z) : (page_z += 1) {
+        var page_y = min_page_coord.y;
+        while (page_y <= max_page_coord_inclusive.y) : (page_y += 1) {
+            var page_x = min_page_coord.x;
+            while (page_x <= max_page_coord_inclusive.x) : (page_x += 1) {
                 const page_coord = PageCoord{ .x = page_x, .y = page_y, .z = page_z };
 
-                // This may or may not be a full page; we need to check if it's fully contained.
                 const page_min_voxel = convert.partsToGlobalVoxel(page_coord, .{ .x = 0, .y = 0, .z = 0 }, .{ .x = 0, .y = 0, .z = 0 });
-                const page_max_voxel = page_min_voxel + @as(vec3i, @splat(page_scale));
+                const page_max_voxel = page_min_voxel + @as(vec3i, @splat(page_axis_divisor * voxeme_axis_divisor));
+                const page_aabb = aabb3i{ page_min_voxel, page_max_voxel };
 
-                if (linalg.aabb_contains(aabb, .{ page_min_voxel, page_max_voxel })) {
-                    try self.setPage(page_coord, new_voxel);
+                if (linalg.aabb_contains(aabb, page_aabb)) {
+                    // Page is fully contained.
+                    const page_index = try self.getOrCreatePage(page_coord, new_voxel) orelse continue;
+                    try self.setPageCore(page_coord, page_index, new_voxel);
+                    if (new_voxel == Voxel.empty) continue; // Page was freed.
+
+                    // --- Optimized Dirty-Marking for Shell ---
+                    self.dirty_page_set.set(page_index);
+                    self.pages.items(.dirty_voxeme_set)[page_index].setAll();
+
+                    const is_on_shell = [6]bool{
+                        page_coord.x == max_page_coord_inclusive.x, // +X
+                        page_coord.x == min_page_coord.x, // -X
+                        page_coord.y == max_page_coord_inclusive.y, // +Y
+                        page_coord.y == min_page_coord.y, // -Y
+                        page_coord.z == max_page_coord_inclusive.z, // +Z
+                        page_coord.z == min_page_coord.z, // -Z
+                    };
+
+                    for (is_on_shell, 0..) |on_shell, i| {
+                        if (!on_shell) continue;
+
+                        const neighbor_page_coord = page_coord.addOffset(offsets[i]);
+                        const neighbor_page_index = self.page_indirection.lookup(neighbor_page_coord);
+                        if (neighbor_page_index == PageTable.sentinel) continue;
+
+                        self.dirty_page_set.set(neighbor_page_index);
+
+                        const neighbor_face_index = i ^ 1;
+                        const neighbor_dirty_set = &self.pages.items(.dirty_voxeme_set)[neighbor_page_index];
+                        for (page_face_voxeme_coords[neighbor_face_index]) |local_coord| {
+                            neighbor_dirty_set.set(convert.localVoxemeCoordToIndex(local_coord));
+                        }
+                    }
                 } else {
-                    // we need to step down to voxeme level
-                    const min_voxeme = convert.globalVoxelToLocalVoxemeCoord(@max(aabb[0], page_min_voxel));
-                    const max_voxeme = convert.globalVoxelToLocalVoxemeCoord(@min(aabb[1], page_max_voxel) - vec3i{ 1, 1, 1 }).add(.{ .x = 1, .y = 1, .z = 1 });
-
-                    var voxeme_x = min_voxeme.x;
-                    while (voxeme_x < max_voxeme.x) : (voxeme_x += 1) {
-                        var voxeme_y = min_voxeme.y;
-                        while (voxeme_y < max_voxeme.y) : (voxeme_y += 1) {
-                            var voxeme_z = min_voxeme.z;
-                            while (voxeme_z < max_voxeme.z) : (voxeme_z += 1) {
+                    // Page is partially contained, fall back to voxeme/voxel level.
+                    var voxeme_z: u4 = 0;
+                    while (voxeme_z < page_axis_divisor) : (voxeme_z += 1) {
+                        var voxeme_y: u4 = 0;
+                        while (voxeme_y < page_axis_divisor) : (voxeme_y += 1) {
+                            var voxeme_x: u4 = 0;
+                            while (voxeme_x < page_axis_divisor) : (voxeme_x += 1) {
                                 const local_voxeme_coord = LocalCoord{ .x = voxeme_x, .y = voxeme_y, .z = voxeme_z };
-
-                                // This may or may not overlap the voxeme at all; we need to check for overlap.
-                                // This may or may not be a full voxeme; we need to check if it's fully contained.
-                                const voxeme_min_voxel = page_min_voxel + convert.partsToGlobalVoxel(page_coord, local_voxeme_coord, .{ .x = 0, .y = 0, .z = 0 });
+                                const voxeme_min_voxel = page_min_voxel + (vec3i{ @intCast(voxeme_x), @intCast(voxeme_y), @intCast(voxeme_z) } << @splat(voxeme_axis_shift));
                                 const voxeme_max_voxel = voxeme_min_voxel + @as(vec3i, @splat(voxeme_axis_divisor));
                                 const voxeme_aabb = aabb3i{ voxeme_min_voxel, voxeme_max_voxel };
 
                                 if (!linalg.aabb_overlapping(aabb, voxeme_aabb)) continue;
 
                                 if (linalg.aabb_contains(aabb, voxeme_aabb)) {
-                                    // full containment, set whole voxeme
                                     try self.setVoxeme(page_coord, local_voxeme_coord, new_voxel);
                                 } else {
-                                    // partial overlap, set individual voxels
-                                    var local_voxel_x: u4 = 0;
-                                    while (local_voxel_x < voxeme_axis_divisor) : (local_voxel_x += 1) {
+                                    var local_voxel_z: u4 = 0;
+                                    while (local_voxel_z < voxeme_axis_divisor) : (local_voxel_z += 1) {
                                         var local_voxel_y: u4 = 0;
                                         while (local_voxel_y < voxeme_axis_divisor) : (local_voxel_y += 1) {
-                                            var local_voxel_z: u4 = 0;
-                                            while (local_voxel_z < voxeme_axis_divisor) : (local_voxel_z += 1) {
-                                                const local_voxel_coord = LocalCoord{ .x = local_voxel_x, .y = local_voxel_y, .z = local_voxel_z };
-                                                const global_voxel_coord = convert.partsToGlobalVoxel(page_coord, local_voxeme_coord, local_voxel_coord);
-
+                                            var local_voxel_x: u4 = 0;
+                                            while (local_voxel_x < voxeme_axis_divisor) : (local_voxel_x += 1) {
+                                                const global_voxel_coord = voxeme_min_voxel + vec3i{ @intCast(local_voxel_x), @intCast(local_voxel_y), @intCast(local_voxel_z) };
                                                 if (linalg.aabb_contains_point(aabb, global_voxel_coord)) {
                                                     try self.setVoxel(global_voxel_coord, new_voxel);
                                                 }
@@ -882,45 +1059,53 @@ fn setAABB(self: *Grid, aabb: aabb3i, new_voxel: Voxel) !void {
     }
 }
 
-fn setPage(self: *Grid, page_coord: PageCoord, new_voxel: Voxel) !void {
-    const page_index = try self.getOrCreatePage(page_coord, new_voxel) orelse return;
-    const page = &self.pages.items(.voxel)[page_index];
+/// Internal helper to change page state without triggering neighbor updates.
+fn setPageCore(self: *Grid, page_coord: PageCoord, page_index: u32, new_voxel: Voxel) !void {
+    const page_voxel = &self.pages.items(.voxel)[page_index];
+    if (page_voxel.* == new_voxel and self.pages.items(.voxeme_indirection)[page_index].len == 0) return;
 
-    if (page.* == new_voxel) return;
-
-    // free voxemes
+    // Free existing voxemes within this page
     const voxeme_table: *VoxemeTable = &self.pages.items(.voxeme_indirection)[page_index];
     for (voxeme_table.indices) |voxeme_index| {
         if (voxeme_index == VoxemeTable.sentinel or voxeme_index == VoxemeTable.tombstone) continue;
-
-        const buffer_index = &self.voxemes.items(.buffer_indirection)[voxeme_index];
-        if (buffer_index.* != BufferData.sentinel) {
-            try self.buffer_free_list.append(self.allocator, buffer_index.*);
+        const buffer_index_ptr = &self.voxemes.items(.buffer_indirection)[voxeme_index];
+        if (buffer_index_ptr.* != BufferData.sentinel) {
+            try self.buffer_free_list.append(self.allocator, buffer_index_ptr.*);
         }
         try self.voxeme_free_list.append(self.allocator, voxeme_index);
     }
 
     if (new_voxel != Voxel.empty) {
-        page.* = new_voxel;
-        voxeme_table.init(); // clear the table
+        page_voxel.* = new_voxel;
+        voxeme_table.init(); // Clear the table
     } else {
-        // free page
+        // Free page
         self.page_indirection.remove(page_coord);
         try self.page_free_list.append(self.allocator, page_index);
     }
+}
+
+fn setPage(self: *Grid, page_coord: PageCoord, new_voxel: Voxel) !void {
+    const page_index = try self.getOrCreatePage(page_coord, new_voxel) orelse return;
+    try self.setPageCore(page_coord, page_index, new_voxel);
+    if (new_voxel == Voxel.empty) return;
 
     // --- MARK DIRTY ---
     self.dirty_page_set.set(page_index);
     self.pages.items(.dirty_voxeme_set)[page_index].setAll();
 
-    for (offsets) |offset| {
+    for (offsets, 0..) |offset, i| {
         const neighbor_page_coord = page_coord.addOffset(offset);
         const neighbor_page_index = self.page_indirection.lookup(neighbor_page_coord);
         if (neighbor_page_index == PageTable.sentinel) continue;
-        self.dirty_page_set.set(neighbor_page_index);
-        self.pages.items(.dirty_voxeme_set)[neighbor_page_index].setAll();
 
-        // TODO: set neighbor voxemes dirty too
+        self.dirty_page_set.set(neighbor_page_index);
+
+        const neighbor_face_index = i ^ 1;
+        const neighbor_dirty_set = &self.pages.items(.dirty_voxeme_set)[neighbor_page_index];
+        for (page_face_voxeme_coords[neighbor_face_index]) |local_coord| {
+            neighbor_dirty_set.set(convert.localVoxemeCoordToIndex(local_coord));
+        }
     }
 }
 
@@ -952,7 +1137,51 @@ fn setVoxeme(self: *Grid, page_coord: PageCoord, local_voxeme_coord: LocalCoord,
     self.pages.items(.dirty_voxeme_set)[page_index].set(local_voxeme_idx);
     self.dirty_page_set.set(page_index);
 
-    // TODO: set neighbor voxemes dirty too
+    // --- MARK NEIGHBORS DIRTY ---
+    const current_local_i = vec3i{ @intCast(local_voxeme_coord.x), @intCast(local_voxeme_coord.y), @intCast(local_voxeme_coord.z) };
+    for (offsets) |offset| {
+        const neighbor_local_i = current_local_i + offset;
+        var neighbor_page_coord = page_coord;
+        var neighbor_local_coord: LocalCoord = undefined;
+
+        // Check X boundary
+        if (neighbor_local_i[0] < 0) {
+            neighbor_page_coord.x -= 1;
+            neighbor_local_coord.x = page_axis_mask;
+        } else if (neighbor_local_i[0] >= page_axis_divisor) {
+            neighbor_page_coord.x += 1;
+            neighbor_local_coord.x = 0;
+        } else {
+            neighbor_local_coord.x = @intCast(neighbor_local_i[0]);
+        }
+        // Check Y boundary
+        if (neighbor_local_i[1] < 0) {
+            neighbor_page_coord.y -= 1;
+            neighbor_local_coord.y = page_axis_mask;
+        } else if (neighbor_local_i[1] >= page_axis_divisor) {
+            neighbor_page_coord.y += 1;
+            neighbor_local_coord.y = 0;
+        } else {
+            neighbor_local_coord.y = @intCast(neighbor_local_i[1]);
+        }
+        // Check Z boundary
+        if (neighbor_local_i[2] < 0) {
+            neighbor_page_coord.z -= 1;
+            neighbor_local_coord.z = page_axis_mask;
+        } else if (neighbor_local_i[2] >= page_axis_divisor) {
+            neighbor_page_coord.z += 1;
+            neighbor_local_coord.z = 0;
+        } else {
+            neighbor_local_coord.z = @intCast(neighbor_local_i[2]);
+        }
+
+        const neighbor_page_index = self.page_indirection.lookup(neighbor_page_coord);
+        if (neighbor_page_index != PageTable.sentinel) {
+            self.dirty_page_set.set(neighbor_page_index);
+            const neighbor_local_voxeme_idx = convert.localVoxemeCoordToIndex(neighbor_local_coord);
+            self.pages.items(.dirty_voxeme_set)[neighbor_page_index].set(neighbor_local_voxeme_idx);
+        }
+    }
 }
 
 fn setVoxel(self: *Grid, global_voxel: vec3i, new_voxel: Voxel) !void {
@@ -980,21 +1209,18 @@ fn setVoxel(self: *Grid, global_voxel: vec3i, new_voxel: Voxel) !void {
 
     for (offsets) |offset| {
         const neighbor_global_voxel = global_voxel + offset;
-        const neighbor_page_coord = convert.globalVoxelToPageCoord(neighbor_global_voxel);
-        const neighbor_page_index = self.page_indirection.lookup(neighbor_page_coord);
+        const neighbor_parts = convert.globalVoxelToParts(neighbor_global_voxel);
+        const neighbor_page_index = self.page_indirection.lookup(neighbor_parts.page_coord);
 
         if (neighbor_page_index != PageTable.sentinel) {
             self.dirty_page_set.set(neighbor_page_index);
 
-            const neighbor_local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(neighbor_global_voxel);
-            const neighbor_voxeme_table: *VoxemeTable = &self.pages.items(.voxeme_indirection)[neighbor_page_index];
-            const neighbor_voxeme_index = neighbor_voxeme_table.lookup(neighbor_local_voxeme_coord);
+            const neighbor_voxeme_table: *const VoxemeTable = &self.pages.items(.voxeme_indirection)[neighbor_page_index];
+            const neighbor_voxeme_index = neighbor_voxeme_table.lookup(neighbor_parts.local_voxeme_coord);
 
             if (neighbor_voxeme_index != VoxemeTable.sentinel) {
-                const neighbor_local_voxeme_idx = convert.localVoxemeCoordToIndex(neighbor_local_voxeme_coord);
+                const neighbor_local_voxeme_idx = convert.localVoxemeCoordToIndex(neighbor_parts.local_voxeme_coord);
                 self.pages.items(.dirty_voxeme_set)[neighbor_page_index].set(neighbor_local_voxeme_idx);
-
-                // NOTE: the voxel-level flags are for efficient data transfer only, so we don't need to mark neighbors dirty
             }
         }
     }
@@ -1134,6 +1360,19 @@ pub const convert = struct {
         };
     }
 
+    /// Deconstructs a global voxel coordinate into all its constituent parts.
+    pub inline fn globalVoxelToParts(v: vec3i) struct {
+        page_coord: PageCoord,
+        local_voxeme_coord: LocalCoord,
+        local_voxel_coord: LocalCoord,
+    } {
+        return .{
+            .page_coord = globalVoxelToPageCoord(v),
+            .local_voxeme_coord = globalVoxelToLocalVoxemeCoord(v),
+            .local_voxel_coord = globalVoxelToLocalVoxelCoord(v),
+        };
+    }
+
     // --- Local Coords to 1D Buffer Indices ---
 
     /// 3D local voxeme coordinate (0-15) to a 1D buffer index for a page's VoxemeTable.
@@ -1215,7 +1454,7 @@ pub const MeshDescriptor = extern struct {
     position: [*]const vec3,
     normal: [*]const vec3,
     uv: [*]const vec2,
-    material_id: [*]const MaterialId,
+    material_id: [*]const u32, // u32 for direct GPU compatibility
     indices: [*]const u32,
 };
 
@@ -1254,12 +1493,12 @@ pub const MeshCache = struct {
     mesh_free_list: std.ArrayList(u32),
 
     /// The vertex data which is currently ready for render.
-    /// This data structure is never really constructed, it is just a table layout for MultiArrayList
+    /// This data structure is not passed to the gpu, it is just a table layout for MultiArrayList
     pub const VertexData = struct {
         position: vec3,
         normal: vec3,
         uv: vec2,
-        material_id: MaterialId, // while material id is itself 12 bits, the multiarraylist will pad this to the nearest byte-aligned size, u16; which is gpu friendly
+        material_id: u32, // stored as u32 for direct GPU compatibility (MaterialId is u12 but gets widened)
     };
 
     /// A mesh instance which is currently ready for render.
@@ -1462,7 +1701,10 @@ pub const MeshCache = struct {
         @memcpy(self.vertices.items(.material_id)[vertex_offset .. vertex_offset + mesh_descriptor.vertex_count], mesh_descriptor.material_id);
 
         const index_offset = self.meshes.items(.index_offset)[index];
-        @memcpy(self.indices.items[index_offset .. index_offset + mesh_descriptor.index_count], mesh_descriptor.indices);
+        const indices_slice = self.indices.items[index_offset .. index_offset + mesh_descriptor.index_count];
+        for (indices_slice, 0..) |*dest_index, i| {
+            dest_index.* = mesh_descriptor.indices[i] + vertex_offset;
+        }
 
         // replace or append the indirection
         const success = self.page_indirection.insert(mesh_descriptor.coord, index);
@@ -1707,14 +1949,17 @@ pub const Manager = struct {
         grid: *Grid,
         mesh_cache: *MeshCache,
         pub fn deinit(self: *SwapBuffers) void {
-            self.grid.deinit();
             self.mesh_cache.deinit(self.grid.allocator);
+            self.grid.deinit();
         }
     };
 
     pub const PruneCommand = union(enum) {
         prune_page: PageCoord,
-        prune_voxeme: struct { PageCoord, LocalCoord },
+        prune_voxeme: struct {
+            page_coord: PageCoord,
+            local_coord: LocalCoord,
+        },
     };
 
     /// The allocator used for all allocations, taken from the input Grid for consistent, concurrent-safe access.
@@ -1730,18 +1975,24 @@ pub const Manager = struct {
 
     /// Mesh cache command queue used by the manager thread
     mesh_command_queue: AsyncQueue(MeshCache.Command),
-
     /// Grid pruning command queue used by the manager thread
     prune_command_queue: AsyncQueue(PruneCommand),
+    /// Queue for freed buffers from parallel jobs
+    buffer_free_queue: AsyncQueue(u32),
+    /// Queue for freed voxemes from parallel jobs
+    voxeme_free_queue: AsyncQueue(u32),
 
     /// Arena allocator for temporary allocations during updates.
     update_arena: std.heap.ArenaAllocator,
 
     /// Synchronization mutex for the front buffer.
     sync_mutex: std.Thread.Mutex,
+    /// Mutex for the command queue.
+    cmd_mutex: std.Thread.Mutex,
     /// Signals the manager thread that there is update work to do in the front buffer.
     signal: std.Thread.Condition,
     /// The shutdown signal for the manager thread.
+    frame_ready: std.atomic.Value(bool),
     running: std.atomic.Value(bool),
     /// The thread pool used for parallel updates.
     thread_pool: *std.Thread.Pool,
@@ -1750,11 +2001,11 @@ pub const Manager = struct {
 
     /// Create a new update manager for the given grid.
     /// This allocates a second grid as the back buffer.
-    /// The thread pool is also initialized here.
     /// This does not take fully ownership of the given grid;
     /// the caller is still responsible for deinitializing it. See `deinit`.
-    pub fn init(grid: *Grid, pool: *std.Thread.Pool) !Manager {
-        var self: Manager = undefined;
+    pub fn init(grid: *Grid, pool: *std.Thread.Pool) !*Manager {
+        const self = try grid.allocator.create(Manager);
+        errdefer grid.allocator.destroy(self);
 
         self.allocator = grid.allocator;
 
@@ -1774,7 +2025,9 @@ pub const Manager = struct {
         self.front_index = 0;
 
         self.sync_mutex = .{};
+        self.cmd_mutex = .{};
         self.signal = .{};
+        self.frame_ready = .init(false);
         self.running = .init(true);
 
         self.grid_command_queue = .empty;
@@ -1787,6 +2040,12 @@ pub const Manager = struct {
         self.prune_command_queue = try AsyncQueue(PruneCommand).init(self.allocator, max_pages * voxemes_per_page); // TODO: calculate memory usage
         errdefer self.prune_command_queue.deinit(self.allocator);
 
+        self.buffer_free_queue = try AsyncQueue(u32).init(self.allocator, max_pages * voxemes_per_page);
+        errdefer self.buffer_free_queue.deinit(self.allocator);
+
+        self.voxeme_free_queue = try AsyncQueue(u32).init(self.allocator, max_pages * voxemes_per_page);
+        errdefer self.voxeme_free_queue.deinit(self.allocator);
+
         self.update_arena = std.heap.ArenaAllocator.init(self.allocator);
         errdefer self.update_arena.deinit();
 
@@ -1794,8 +2053,7 @@ pub const Manager = struct {
 
         self.manager_thread = try std.Thread.spawn(.{
             .allocator = self.allocator,
-            // use default stack size (16mb)
-        }, manager, .{&self});
+        }, manager, .{self});
 
         return self;
     }
@@ -1813,15 +2071,24 @@ pub const Manager = struct {
     pub fn deinit(self: *Manager) SwapBuffers {
         const out = self.front();
 
+        std.debug.print("Grid.Manager deinit: shutting down manager thread\n", .{});
         {
             self.sync_mutex.lock();
-            defer self.sync_mutex.unlock();
+            std.debug.print("Grid.Manager deinit: lock acquired\n", .{});
+            defer {
+                self.sync_mutex.unlock();
+                std.debug.print("Grid.Manager deinit: lock released\n", .{});
+            }
 
             self.running.store(false, .monotonic);
+            std.debug.print("Grid.Manager deinit: running flag cleared\n", .{});
             self.signal.broadcast(); // wake the manager thread if it is waiting
+            std.debug.print("Grid.Manager deinit: signal broadcasted\n", .{});
         }
 
+        std.debug.print("Grid.Manager deinit: waiting for manager thread to join\n", .{});
         self.manager_thread.join(); // manager will wait for jobs to finish
+        std.debug.print("Grid.Manager deinit: manager thread joined\n", .{});
 
         var back_mut = self.back();
         back_mut.deinit();
@@ -1829,83 +2096,103 @@ pub const Manager = struct {
         self.grid_command_queue.deinit(self.allocator);
         self.mesh_command_queue.deinit(self.allocator);
         self.prune_command_queue.deinit(self.allocator);
+        self.buffer_free_queue.deinit(self.allocator);
+        self.voxeme_free_queue.deinit(self.allocator);
         self.update_arena.deinit();
 
-        self.* = undefined; // debug safety
+        const allocator = self.allocator;
+        allocator.destroy(self);
 
         return out;
     }
 
-    /// Swaps the front and back buffers, copying dirty data from the new back to the new front to prevent update loss.
-    pub fn endFrame(self: *Manager) !void {
-        self.sync_mutex.lock();
-        defer self.sync_mutex.unlock();
-
-        self.front_index = ~self.front_index; // swap front and back
-
-        // FIXME: the rest of this is no longer necessary with async command systems
-        const back_grid = self.back().grid;
-        const front_grid = self.front().grid;
-
-        // NOTE: it is very important that we do not set dirty bits in the front grid here,
-        // this creates a feedback loop where the front grid is always dirty and never stabilizes.
-        // Instead, we only copy dirty data from the back grid to the front grid, and leave the front grid's dirty bits alone.
-        // The data we are copying now will no longer be dirty in the next swap, which is what the dirty bits are supposed to indicate.
-        // NOTE: it is also important to *not* copy visibility data
-        var back_page_it = back_grid.dirty_page_set.iterator();
-        while (back_page_it.next()) |back_page_index| {
-            const page_coord = back_grid.pages.items(.coord)[back_page_index];
-            const front_page_index = try front_grid.getOrCreatePage(page_coord, null) orelse unreachable;
-
-            front_grid.pages.items(.coord)[front_page_index] = page_coord;
-            front_grid.pages.items(.voxel)[front_page_index] = back_grid.pages.items(.voxel)[back_page_index];
-
-            const back_grid_indirection = &back_grid.pages.items(.voxeme_indirection)[back_page_index];
-
-            var back_voxeme_it = back_grid.pages.items(.dirty_voxeme_set)[back_page_index].iterator();
-            while (back_voxeme_it.next()) |local_voxeme_index| {
-                const local_voxeme_coord = convert.indexToLocalVoxemeCoord(local_voxeme_index);
-
-                const back_voxeme_index = back_grid_indirection.lookup(local_voxeme_coord);
-                if (back_voxeme_index == VoxemeTable.sentinel) continue; // should never happen
-                const front_voxeme_index = try front_grid.getOrCreateVoxeme(front_page_index, local_voxeme_coord, null) orelse unreachable;
-
-                front_grid.voxemes.items(.voxel)[front_voxeme_index] = back_grid.voxemes.items(.voxel)[back_voxeme_index];
-
-                if (back_grid.voxemes.items(.buffer_indirection)[back_voxeme_index] != BufferData.sentinel) {
-                    const back_buffer_index = back_grid.voxemes.items(.buffer_indirection)[back_voxeme_index];
-                    const front_buffer_index = try front_grid.getOrCreateBuffer(front_voxeme_index, null) orelse unreachable;
-
-                    const back_dirty_voxel_set = &back_grid.voxels.items(.dirty_voxel_set)[back_buffer_index];
-                    const back_voxels = &back_grid.voxels.items(.voxel)[back_buffer_index];
-                    const front_voxels = &front_grid.voxels.items(.voxel)[front_buffer_index];
-
-                    var back_dirty_voxel_it = back_dirty_voxel_set.iterator();
-                    while (back_dirty_voxel_it.next()) |voxel_index| {
-                        front_voxels[voxel_index] = back_voxels[voxel_index];
-                    }
-                }
-            }
-        }
-
-        self.signal.signal(); // wake the manager thread if it is waiting
+    /// Queues a command for the manager thread to process. This is the main thread's primary write interface.
+    pub fn queueCommand(self: *Manager, command: Grid.Command) !void {
+        self.cmd_mutex.lock();
+        defer self.cmd_mutex.unlock();
+        try self.grid_command_queue.append(self.allocator, command);
     }
 
-    fn manager(self: *Manager) void {
-        while (self.running.load(.monotonic)) {
-            const buffers = guard: {
-                self.sync_mutex.lock();
-                defer self.sync_mutex.unlock();
+    /// Swaps the front and back buffers and signals the manager that a new frame of commands is ready.
+    pub fn endFrame(self: *Manager) void {
+        std.debug.print("Grid.Manager endFrame: swapping buffers\n", .{});
+        {
+            self.sync_mutex.lock();
+            defer {
+                self.sync_mutex.unlock();
+                std.debug.print("Grid.Manager endFrame: lock released\n", .{});
+            }
 
-                // TODO: use command buffer instead of dirty bits to trigger updates
-                while (self.back().grid.dirty_page_set.count() == 0 and self.running.load(.monotonic)) {
-                    self.signal.wait(&self.sync_mutex);
+            std.debug.print("Grid.Manager endFrame: lock acquired\n", .{});
+
+            // Swap front and back buffers
+            self.front_index = ~self.front_index;
+            self.frame_ready.store(true, .monotonic);
+            std.debug.print("Grid.Mananger endFrame: buffers swapped\n", .{});
+
+            // Wake the manager thread if it is waiting
+            self.signal.broadcast();
+            std.debug.print("Grid.Manager endFrame: signal sent\n", .{});
+        }
+    }
+
+    pub fn manager(self: *Manager) void {
+        var local_command_buffer: std.ArrayList(Grid.Command) = .empty;
+        defer local_command_buffer.deinit(self.allocator);
+
+        std.debug.print("Grid.Manager thread: started\n", .{});
+
+        while (self.running.load(.monotonic)) {
+            self.sync_mutex.lock();
+            defer self.sync_mutex.unlock();
+            const buffers = wait_and_copy: {
+                // Wait until a frame is ready or we're shutting down
+                wait_loop: while (true) {
+                    if (!self.frame_ready.load(.monotonic) and self.running.load(.monotonic)) {
+                        std.debug.print("Grid.Manager thread: waiting for work\n", .{});
+                        self.signal.wait(&self.sync_mutex);
+                        std.debug.print("Grid.Manager thread: woke from wait\n", .{});
+                        continue :wait_loop;
+                    } else {
+                        std.debug.print("Grid.Manager thread: breaking wait loop, frame_ready: {}, running: {}\n", .{
+                            self.frame_ready.load(.monotonic),
+                            self.running.load(.monotonic),
+                        });
+                        break :wait_loop;
+                    }
                 }
 
-                if (!self.running.load(.monotonic)) return;
+                self.frame_ready.store(false, .monotonic);
 
-                break :guard self.back();
+                if (!self.running.load(.monotonic)) {
+                    std.debug.print("Grid.Manager thread: shutting down\n", .{});
+                    return;
+                }
+
+                {
+                    self.cmd_mutex.lock();
+                    defer self.cmd_mutex.unlock();
+
+                    // Drain the queue into a local buffer so we can unlock quickly.
+                    local_command_buffer.clearRetainingCapacity();
+                    local_command_buffer.appendSlice(self.allocator, self.grid_command_queue.items) catch |err| {
+                        std.debug.print("Grid.Manager thread: failed to copy command buffer: {s}; exiting\n", .{@errorName(err)});
+                        return;
+                    };
+                    self.grid_command_queue.clearRetainingCapacity();
+                    break :wait_and_copy self.back();
+                }
             };
+
+            std.debug.print("Grid.Manager thread: processing {d} commands\n", .{local_command_buffer.items.len});
+
+            // 2. Apply all queued commands to the back grid. This populates the dirty sets.
+            buffers.grid.applyCommands(local_command_buffer.items) catch |err| {
+                log.err("Failed to apply grid commands: {s}; exiting", .{@errorName(err)});
+                return;
+            };
+
+            std.debug.print("Grid.Manager thread: applied commands, dirty pages: {d}\n", .{buffers.grid.dirty_page_set.count()});
 
             const arena = self.update_arena.allocator();
             defer _ = self.update_arena.reset(.retain_capacity);
@@ -1915,21 +2202,34 @@ pub const Manager = struct {
 
             var page_it = buffers.grid.dirty_page_set.iterator();
 
-            // TODO: apply new async commands
+            std.debug.print("Grid.Manager processing dirty voxemes\n", .{});
 
+            // 3. Process dirty voxemes for homogenization/pruning.
             while (page_it.next()) |page_index| {
                 var voxeme_it = buffers.grid.pages.items(.dirty_voxeme_set)[page_index].iterator();
-                while (voxeme_it.next()) |voxeme_index| {
+                while (voxeme_it.next()) |local_voxeme_1d_idx| {
                     self.thread_pool.spawnWg(&voxeme_wait_group, voxeme_job, .{
                         self,
                         arena,
                         buffers,
-                        voxeme_index,
+                        page_index,
+                        local_voxeme_1d_idx,
                     });
                 }
             }
             self.thread_pool.waitAndWork(&voxeme_wait_group);
 
+            // Drain buffer free queue before next steps.
+            while (self.buffer_free_queue.dequeue_sync()) |buffer_idx| {
+                buffers.grid.buffer_free_list.append(self.allocator, buffer_idx) catch |err| {
+                    std.debug.print("Grid.Manager thread: failed to append to buffer free list: {s}; exiting\n", .{@errorName(err)});
+                    return;
+                };
+            }
+
+            std.debug.print("Grid.Manager thread: processing dirty pages\n", .{});
+
+            // 4. Process dirty pages for homogenization/pruning.
             page_it = buffers.grid.dirty_page_set.iterator();
             while (page_it.next()) |index| {
                 self.thread_pool.spawnWg(&page_wait_group, page_job, .{
@@ -1941,6 +2241,17 @@ pub const Manager = struct {
             }
             self.thread_pool.waitAndWork(&page_wait_group);
 
+            // Drain voxeme free queue
+            while (self.voxeme_free_queue.dequeue_sync()) |voxeme_idx| {
+                buffers.grid.voxeme_free_list.append(self.allocator, voxeme_idx) catch |err| {
+                    std.debug.print("Grid.Manager thread: failed to append to buffer free list: {s}; exiting\n", .{@errorName(err)});
+                    return;
+                };
+            }
+
+            std.debug.print("Grid.Manager thread: applying pruning commands\n", .{});
+
+            // 5. Apply any generated pruning commands serially.
             while (self.prune_command_queue.dequeue_sync()) |cmd| {
                 switch (cmd) {
                     .prune_page => |page_coord| {
@@ -1948,41 +2259,57 @@ pub const Manager = struct {
                         std.debug.assert(page_index != PageTable.sentinel);
 
                         buffers.grid.page_indirection.remove(page_coord);
-                        buffers.grid.page_free_list.append(self.allocator, page_index) catch @panic("Page free list overflow");
+                        buffers.grid.page_free_list.append(self.allocator, page_index) catch |err| {
+                            std.debug.print("Grid.Manager thread: failed to append to page free list: {s}; exiting\n", .{@errorName(err)});
+                            return;
+                        };
 
-                        self.mesh_command_queue.enqueue_sync(.{ .remove = page_coord }) catch @panic("Mesh command queue overflow");
+                        self.mesh_command_queue.enqueue_sync(.{ .remove = page_coord }) catch |err| {
+                            std.debug.print("Grid.Manager thread: failed to enqueue mesh cache remove command: {s}; exiting\n", .{@errorName(err)});
+                            return;
+                        };
                     },
                     .prune_voxeme => |coords| {
-                        const page_coord, const local_voxeme_coord = coords;
-                        const page_index = buffers.grid.page_indirection.lookup(page_coord);
+                        const page_index = buffers.grid.page_indirection.lookup(coords.page_coord);
                         std.debug.assert(page_index != PageTable.sentinel);
 
                         const voxeme_indirection: *VoxemeTable = &buffers.grid.pages.items(.voxeme_indirection)[page_index];
 
-                        const voxeme_index = voxeme_indirection.lookup(local_voxeme_coord);
-                        std.debug.assert(voxeme_index != PageTable.sentinel);
+                        const voxeme_index = voxeme_indirection.lookup(coords.local_coord);
+                        std.debug.assert(voxeme_index != VoxemeTable.sentinel);
 
-                        voxeme_indirection.remove(local_voxeme_coord);
-                        buffers.grid.voxeme_free_list.append(self.allocator, voxeme_index) catch @panic("Voxeme free list overflow");
+                        voxeme_indirection.remove(coords.local_coord);
+                        buffers.grid.voxeme_free_list.append(self.allocator, voxeme_index) catch |err| {
+                            std.debug.print("Grid.Manager thread: failed to append to voxeme free list: {s}; exiting\n", .{@errorName(err)});
+                            return;
+                        };
                     },
                 }
             }
 
+            std.debug.print("Grid.Manager thread: recalculating voxeme visibility\n", .{});
+
+            // 6. Recalculate visibility for dirty voxemes.
+            voxeme_wait_group = std.Thread.WaitGroup{};
             page_it = buffers.grid.dirty_page_set.iterator();
             while (page_it.next()) |page_index| {
                 var voxeme_it = buffers.grid.pages.items(.dirty_voxeme_set)[page_index].iterator();
-                while (voxeme_it.next()) |voxeme_index| {
+                while (voxeme_it.next()) |local_voxeme_1d_idx| {
                     self.thread_pool.spawnWg(&voxeme_wait_group, voxeme_visibility_job, .{
                         self,
                         arena,
                         buffers,
                         page_index,
-                        voxeme_index,
+                        local_voxeme_1d_idx,
                     });
                 }
             }
             self.thread_pool.waitAndWork(&voxeme_wait_group);
 
+            std.debug.print("Grid.Manager thread: recalculating page visibility\n", .{});
+
+            // 7. Recalculate visibility for dirty pages.
+            page_wait_group = std.Thread.WaitGroup{};
             page_it = buffers.grid.dirty_page_set.iterator();
             while (page_it.next()) |index| {
                 self.thread_pool.spawnWg(&page_wait_group, page_visibility_job, .{
@@ -1994,10 +2321,15 @@ pub const Manager = struct {
             }
             self.thread_pool.waitAndWork(&page_wait_group);
 
+            std.debug.print("Grid.Manager thread: generating/updating meshes\n", .{});
+
+            // 8. Generate/update meshes for any dirty pages.
+            page_wait_group = std.Thread.WaitGroup{};
             for (buffers.grid.page_indirection.indices) |page_index| {
                 if (page_index == PageTable.sentinel or page_index == PageTable.tombstone) continue;
                 const page_coord = buffers.grid.pages.items(.coord)[page_index];
 
+                // Remesh if the page was directly dirtied, OR if it doesn't have a mesh yet.
                 if (!buffers.grid.dirty_page_set.isSet(page_index) and buffers.mesh_cache.page_indirection.lookup(page_coord) != PageTable.sentinel) continue;
 
                 self.thread_pool.spawnWg(&page_wait_group, mesh_job, .{
@@ -2009,80 +2341,531 @@ pub const Manager = struct {
             }
             self.thread_pool.waitAndWork(&page_wait_group);
 
+            std.debug.print("Grid.Manager thread: clearing dirty bits\n", .{});
+
+            // 9. Finalize: clear all dirty bits, apply mesh commands, and defrag.
             page_it = buffers.grid.dirty_page_set.iterator();
             while (page_it.next()) |page_index| {
-                buffers.grid.dirty_page_set.unset(page_index);
+                const dirty_set = &buffers.grid.pages.items(.dirty_voxeme_set)[page_index];
+                const voxeme_indirection = &buffers.grid.pages.items(.voxeme_indirection)[page_index];
 
-                var voxeme_it = buffers.grid.pages.items(.dirty_voxeme_set)[page_index].iterator();
-                while (voxeme_it.next()) |voxeme_index| {
-                    buffers.grid.pages.items(.dirty_voxeme_set)[page_index].unset(voxeme_index);
+                dirty_set.unsetAll();
 
-                    const buffer_index = buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index];
-                    if (buffer_index == BufferData.sentinel) continue;
-
-                    var voxel_it = buffers.grid.voxels.items(.dirty_voxel_set)[buffer_index].iterator();
-                    while (voxel_it.next()) |voxel_index| {
-                        buffers.grid.voxels.items(.dirty_voxel_set)[buffer_index].unset(voxel_index);
-                    }
+                for (voxeme_indirection.indices) |voxeme_idx| {
+                    if (voxeme_idx == VoxemeTable.sentinel or voxeme_idx == VoxemeTable.tombstone) continue;
+                    const buffer_idx = buffers.grid.voxemes.items(.buffer_indirection)[voxeme_idx];
+                    if (buffer_idx == BufferData.sentinel) continue;
+                    buffers.grid.voxels.items(.dirty_voxel_set)[buffer_idx].unsetAll();
                 }
             }
+            buffers.grid.dirty_page_set.unsetAll();
+
+            std.debug.print("Grid.Manager thread: applying mesh cache commands\n", .{});
 
             buffers.mesh_cache.applyCommands(self.allocator, self.mesh_command_queue.buffer[0..self.mesh_command_queue.top]) catch |err| {
-                log.err("Failed to apply mesh cache commands: {s}\n", .{@errorName(err)});
+                std.debug.print("Grid.Manager thread: Failed to apply mesh cache commands: {s}; exiting\n", .{@errorName(err)});
+                return;
             };
+            self.mesh_command_queue.top = 0; // Reset queue
+
+            std.debug.print("Grid.Manager thread: defragmenting mesh cache if necessary\n", .{});
 
             buffers.mesh_cache.maybeDefrag(arena, self.allocator) catch |err| {
-                log.err("Failed to defragment mesh cache: {s}\n", .{@errorName(err)});
+                std.debug.print("Grid.Manager thread: Failed to defragment mesh cache: {s}; exiting\n", .{@errorName(err)});
+                return;
             };
         }
     }
 
-    fn voxeme_job(self: *Manager, arena: std.mem.Allocator, buffers: SwapBuffers, local_voxeme_index: u32) void {
-        // TODO: homogenize if possible. this involves checking all voxels in the voxeme;
-        //       if they are all of the same type, they can be homogenized
-        // TODO: determine if dirty voxeme can be pruned, enqueue prune command if so;
-        //       this is only possible if the voxeme is homogenized to the page material
-
-        _ = self;
+    /// Homogenizes a voxeme if all its voxels are identical, and prunes it if its state matches its parent page.
+    fn voxeme_job(self: *Manager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32, local_voxeme_1d_index: u32) void {
         _ = arena;
-        _ = buffers;
-        _ = local_voxeme_index;
+
+        const voxeme_coord = convert.indexToLocalVoxemeCoord(local_voxeme_1d_index);
+        const voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[page_index].lookup(voxeme_coord);
+        if (voxeme_index == VoxemeTable.sentinel) return;
+
+        const buffer_handle = buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index];
+
+        // try to homogenize
+        if (buffer_handle != BufferData.sentinel) {
+            const buffer_data = &buffers.grid.voxels.items(.voxel)[buffer_handle];
+
+            var first_voxel: ?Voxel = null;
+            var all_identical = true;
+
+            for (buffer_data) |*voxel| {
+                if (first_voxel == null) {
+                    first_voxel = voxel.*;
+                } else if (voxel.* != first_voxel.?) {
+                    all_identical = false;
+                    break;
+                }
+            }
+
+            if (all_identical) {
+                // Homogenize
+                buffers.grid.voxemes.items(.voxel)[voxeme_index] = first_voxel.?;
+
+                // Free the buffer
+                buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index] = BufferData.sentinel;
+                self.buffer_free_queue.enqueue(buffer_handle) catch |err| {
+                    std.debug.print("Grid.Manager voxeme_job: failed to enqueue freed buffer: {s}\n", .{@errorName(err)});
+                    return;
+                };
+            }
+        }
+
+        // try to prune
+        const buffer_handle_2 = buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index];
+        if (buffer_handle_2 == BufferData.sentinel) {
+            const voxeme_voxel = buffers.grid.voxemes.items(.voxel)[voxeme_index];
+            const page_voxel = buffers.grid.pages.items(.voxel)[page_index];
+
+            if (voxeme_voxel == page_voxel) {
+                // Prune
+                self.prune_command_queue.enqueue(.{
+                    .prune_voxeme = .{
+                        .page_coord = buffers.grid.pages.items(.coord)[page_index],
+                        .local_coord = convert.indexToLocalVoxemeCoord(local_voxeme_1d_index),
+                    },
+                }) catch |err| {
+                    std.debug.print("Grid.Manager voxeme_job: failed to enqueue prune command: {s}\n", .{@errorName(err)});
+                    return;
+                };
+            }
+        }
     }
 
+    /// Homogenizes a page if all its voxemes are identical, and prunes it if its state is empty.
     fn page_job(self: *Manager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32) void {
-        // TODO: homogenize if possible. this involves checking all voxemes in the page;
-        //       if they are all homogeneous and of the same type, they can be pruned and the page can take the homogeneous type
-        // TODO: determine if dirty page can be pruned, enqueue prune command if so;
-        //       this is only possible if the page is homogenized to empty
-
-        _ = self;
         _ = arena;
-        _ = buffers;
-        _ = page_index;
+
+        const page_voxel = buffers.grid.pages.items(.voxel)[page_index];
+
+        // try to homogenize
+        var all_identical = true;
+
+        var voxeme_1d_index: u32 = 0;
+        while (voxeme_1d_index < voxemes_per_page) : (voxeme_1d_index += 1) {
+            const voxeme_coord = convert.indexToLocalVoxemeCoord(voxeme_1d_index);
+            const voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[page_index].lookup(voxeme_coord);
+            if (voxeme_index == VoxemeTable.sentinel) continue;
+            const voxeme_voxel = buffers.grid.voxemes.items(.voxel)[voxeme_index];
+            const buffer_handle = buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index];
+            if (buffer_handle != BufferData.sentinel or voxeme_voxel != page_voxel) {
+                all_identical = false;
+                break;
+            }
+        }
+
+        if (!all_identical) return;
+
+        if (page_voxel != Voxel.empty) {
+
+            // Homogenize
+            // Free all voxeme buffers
+            var voxeme_1d_index_2: u32 = 0;
+            while (voxeme_1d_index_2 < voxemes_per_page) : (voxeme_1d_index_2 += 1) {
+                const voxeme_coord = convert.indexToLocalVoxemeCoord(voxeme_1d_index_2);
+                const voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[page_index].lookup(voxeme_coord);
+                if (voxeme_index == VoxemeTable.sentinel) continue;
+                const buffer_handle = buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index];
+                if (buffer_handle != BufferData.sentinel) {
+                    buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index] = BufferData.sentinel;
+                    self.buffer_free_queue.enqueue(buffer_handle) catch |err| {
+                        std.debug.print("Grid.Manager page_job: failed to enqueue freed buffer: {s}\n", .{@errorName(err)});
+                        return;
+                    };
+                }
+                self.voxeme_free_queue.enqueue(voxeme_index) catch |err| {
+                    std.debug.print("Grid.Manager page_job: failed to enqueue freed voxeme: {s}\n", .{@errorName(err)});
+                    return;
+                };
+            }
+        } else {
+            // Prune
+            self.prune_command_queue.enqueue(.{ .prune_page = buffers.grid.pages.items(.coord)[page_index] }) catch |err| {
+                std.debug.print("Grid.Manager page_job: failed to enqueue prune command: {s}\n", .{@errorName(err)});
+                return;
+            };
+        }
     }
 
-    fn voxeme_visibility_job(self: *Manager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32, local_voxeme_index: u32) void {
-        // TODO: recalculate visibility for voxeme
+    /// Recalculates the 6-face visibility for a specific voxeme and all of its heterogeneous voxels, if it has any.
+    fn voxeme_visibility_job(self: *Manager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32, local_voxeme_1d_index: u32) void {
         _ = self;
         _ = arena;
-        _ = buffers;
-        _ = page_index;
-        _ = local_voxeme_index;
+
+        const page_coord = buffers.grid.pages.items(.coord)[page_index];
+        const voxeme_coord = convert.indexToLocalVoxemeCoord(local_voxeme_1d_index);
+        const voxeme_coord_i = voxeme_coord.toVec3i();
+        const voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[page_index].lookup(voxeme_coord);
+        if (voxeme_index == VoxemeTable.sentinel) return; // TODO: cache implicit voxeme visibility in the case of homogeneous page
+
+        // recalculate gross visibility based on neighbor voxeme homogeny
+        var new_voxeme_vis = Visibility.all;
+
+        for (AxisDir.values) |axis_dir| {
+            const component_index = axis_dir.toComponentIndex();
+            const offset_index = axis_dir.toIndex();
+            const offset = offsets[offset_index];
+
+            const neighbor_page_index = check_same_page: {
+                // zig fmt: off
+                if ((voxeme_coord_i[component_index] == 0 and !axis_dir.positive)
+                or  (voxeme_coord_i[component_index] == voxeme_axis_divisor - 1 and axis_dir.positive)) {
+                // zig fmt: on
+                    // neighbor is in a different page
+                    const neighbor_page_coord = page_coord.addOffset(offset);
+                    break :check_same_page buffers.grid.page_indirection.lookup(neighbor_page_coord);
+                } else {
+                    // neighbor is in the same page
+                    break :check_same_page page_index;
+                }
+            };
+
+            const neighbor_is_opaque = check_opacity: {
+                if (neighbor_page_index != PageTable.sentinel) {
+                    var neighbor_voxeme_coord = voxeme_coord_i;
+                    neighbor_voxeme_coord[component_index] = if (axis_dir.positive) 0 else voxeme_axis_divisor - 1;
+
+                    const neighbor_voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[neighbor_page_index].lookup(.fromVec3i(neighbor_voxeme_coord));
+
+                    if (neighbor_voxeme_index != VoxemeTable.sentinel) {
+                        const neighbor_buffer_handle = buffers.grid.voxemes.items(.buffer_indirection)[neighbor_voxeme_index];
+                        if (neighbor_buffer_handle == BufferData.sentinel) {
+                            const neighbor_homo_voxel = buffers.grid.voxemes.items(.voxel)[neighbor_voxeme_index];
+                            break :check_opacity buffers.grid.isOpaqueMaterial(neighbor_homo_voxel.material_id);
+                        } else {
+                            break :check_opacity false;
+                        }
+                    } else {
+                        const neighbor_homo_voxel = buffers.grid.pages.items(.voxel)[neighbor_page_index];
+                        break :check_opacity buffers.grid.isOpaqueMaterial(neighbor_homo_voxel.material_id);
+                    }
+                } else {
+                    break :check_opacity false;
+                }
+            };
+
+            if (neighbor_is_opaque) {
+                new_voxeme_vis.set(axis_dir, false);
+                std.debug.print("Grid.Manager voxeme_visibility_job: page {any} voxeme {any} face {any} set to not visible due to opaque neighbor", .{
+                    page_coord,
+                    voxeme_coord,
+                    axis_dir,
+                });
+            }
+        }
+
+        const buffer_handle = buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index];
+        if (buffer_handle != BufferData.sentinel) {
+            const buffer_data = &buffers.grid.voxels.items(.visibility)[buffer_handle];
+
+            // Recalculate visibility for all voxels in the buffer
+            // TODO: this could be split up to better utilize thread pool
+            for (0..voxels_per_voxeme) |voxel_1d_index| {
+                const local_voxel_coord = convert.indexToLocalVoxelCoord(@intCast(voxel_1d_index));
+                const global_voxel_coord = convert.partsToGlobalVoxel(page_coord, voxeme_coord, local_voxel_coord);
+
+                var new_vis = Visibility.all;
+
+                for (AxisDir.values) |axis_dir| {
+                    const offset_index = axis_dir.toIndex();
+                    const offset = offsets[offset_index];
+                    const neighbor_global_coord = global_voxel_coord + offset;
+                    if (buffers.grid.isOpaqueVoxel(neighbor_global_coord)) {
+                        new_vis.set(axis_dir, false);
+                    }
+                }
+
+                std.debug.print("computed visibility for voxel {d}: {any}", .{ global_voxel_coord, new_vis });
+                buffer_data[voxel_1d_index] = new_vis;
+            }
+        }
     }
 
+    /// Recalculates the 6-face visibility for a specific page.
     fn page_visibility_job(self: *Manager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32) void {
-        // TODO: recalculate visibility for page, enqueue mesh command if any visibility changed
         _ = self;
         _ = arena;
-        _ = buffers;
-        _ = page_index;
+        const page_coord = buffers.grid.pages.items(.coord)[page_index];
+        var new_page_vis = Visibility.all;
+        for (AxisDir.values) |axis_dir| {
+            const offset_index = axis_dir.toIndex();
+            const offset = offsets[offset_index];
+            const neighbor_page_coord = page_coord.addOffset(offset);
+            const neighbor_page_index = buffers.grid.page_indirection.lookup(neighbor_page_coord);
+            const neighbor_is_opaque =
+                if (neighbor_page_index != PageTable.sentinel)
+                    // zig fmt: off
+                        buffers.grid.pages.items(.voxeme_indirection)[neighbor_page_index].len == 0
+                    and buffers.grid.isOpaqueMaterial(buffers.grid.pages.items(.voxel)[neighbor_page_index].material_id)
+                    // zig fmt: on
+                else
+                    false;
+
+            if (neighbor_is_opaque) {
+                new_page_vis.set(axis_dir, false);
+                std.debug.print("Grid.Manager page_visibility_job: page {any} face {any} set to not visible due to opaque neighbor\n", .{
+                    page_coord,
+                    axis_dir,
+                });
+            }
+        }
     }
 
+    /// Generates a mesh for a dirty page using a simple "naive cubes" algorithm.
     fn mesh_job(self: *Manager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32) void {
-        // TODO: generate mesh for page, enqueue mesh command
-        _ = self;
-        _ = arena;
-        _ = buffers;
-        _ = page_index;
+        var vertices: std.MultiArrayList(MeshCache.VertexData) = .empty;
+        var indices: std.ArrayList(u32) = .empty;
+
+        const page_coord = buffers.grid.pages.items(.coord)[page_index];
+        pageMeshBasic(buffers.grid, arena, page_coord, &vertices, &indices) catch |err| {
+            std.debug.print("Grid.Manager mesh_job: failed to generate basic mesh for page {any}: {s}\n", .{ page_coord, @errorName(err) });
+            return;
+        };
+
+        const min_global_voxel = convert.partsToGlobalVoxel(
+            page_coord,
+            .{ .x = 0, .y = 0, .z = 0 },
+            .{ .x = 0, .y = 0, .z = 0 },
+        );
+        const max_global_voxel = convert.partsToGlobalVoxel(
+            page_coord,
+            .{ .x = page_axis_divisor - 1, .y = page_axis_divisor - 1, .z = page_axis_divisor - 1 },
+            .{ .x = voxeme_axis_divisor - 1, .y = voxeme_axis_divisor - 1, .z = voxeme_axis_divisor - 1 },
+        );
+        const min_world = convert.globalVoxelToWorld(min_global_voxel);
+        const max_world = convert.globalVoxelToWorld(max_global_voxel) + @as(vec3, @splat(voxel_scale));
+
+        const descriptor = MeshDescriptor{
+            .coord = page_coord,
+            .bounds = .{ min_world, max_world },
+            .vertex_count = @intCast(vertices.len),
+            .index_count = @intCast(indices.items.len),
+
+            .position = vertices.items(.position).ptr,
+            .normal = vertices.items(.normal).ptr,
+            .uv = vertices.items(.uv).ptr,
+            .material_id = vertices.items(.material_id).ptr,
+            .indices = indices.items.ptr,
+        };
+
+        self.mesh_command_queue.enqueue_sync(.{ .insert = descriptor }) catch |err| {
+            std.debug.print("Grid.Manager mesh_job: failed to enqueue mesh cache update command for page {any}: {s}\n", .{ page_coord, @errorName(err) });
+            return;
+        };
     }
 };
+
+const FaceData = struct {
+    normal: vec3,
+    // Vertices in counter-clockwise order for correct winding
+    vertices: [4]vec3,
+    uvs: [4]vec2 = .{ .{ 0, 0 }, .{ 1, 0 }, .{ 1, 1 }, .{ 0, 1 } },
+};
+
+// Data for the 6 faces of a unit cube.
+// The order MUST match the bit order of the Visibility struct for the fast meshing path.
+// 0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z
+const face_data = [_]FaceData{
+    // 0: +X
+    .{ .normal = .{ 1, 0, 0 }, .vertices = .{ .{ 1, 0, 0 }, .{ 1, 1, 0 }, .{ 1, 1, 1 }, .{ 1, 0, 1 } } },
+    // 1: -X
+    .{ .normal = .{ -1, 0, 0 }, .vertices = .{ .{ 0, 0, 1 }, .{ 0, 1, 1 }, .{ 0, 1, 0 }, .{ 0, 0, 0 } } },
+    // 2: +Y
+    .{ .normal = .{ 0, 1, 0 }, .vertices = .{ .{ 0, 1, 0 }, .{ 0, 1, 1 }, .{ 1, 1, 1 }, .{ 1, 1, 0 } } },
+    // 3: -Y
+    .{ .normal = .{ 0, -1, 0 }, .vertices = .{ .{ 1, 0, 0 }, .{ 1, 0, 1 }, .{ 0, 0, 1 }, .{ 0, 0, 0 } } },
+    // 4: +Z
+    .{ .normal = .{ 0, 0, 1 }, .vertices = .{ .{ 1, 0, 1 }, .{ 1, 1, 1 }, .{ 0, 1, 1 }, .{ 0, 0, 1 } } },
+    // 5: -Z
+    .{ .normal = .{ 0, 0, -1 }, .vertices = .{ .{ 0, 0, 0 }, .{ 0, 1, 0 }, .{ 1, 1, 0 }, .{ 1, 0, 0 } } },
+};
+
+/// Helper function to generate a quad for a single face.
+fn addFace(
+    gpa: std.mem.Allocator,
+    vertices: *std.MultiArrayList(MeshCache.VertexData),
+    indices: *std.ArrayList(u32),
+    axis_dir: AxisDir,
+    origin: vec3,
+    scale: f32,
+    material: MaterialId,
+) !void {
+    std.debug.print("adding face: {any}, origin={d}, scale={d}\n", .{ axis_dir, origin, scale });
+
+    const face_index = axis_dir.toIndex();
+
+    const base_vertex_index: u32 = @intCast(vertices.len);
+    const data = &face_data[face_index];
+
+    for (data.vertices, data.uvs) |v_offset, uv| {
+        const pos = origin + v_offset * @as(vec3, @splat(scale));
+        try vertices.append(gpa, .{
+            .position = pos,
+            .normal = data.normal,
+            .uv = uv,
+            .material_id = @intFromEnum(material), // Convert MaterialId (u12 enum) to u32 for GPU
+        });
+    }
+
+    try indices.appendSlice(gpa, &.{
+        base_vertex_index + 0, base_vertex_index + 1, base_vertex_index + 2,
+        base_vertex_index + 0, base_vertex_index + 2, base_vertex_index + 3,
+    });
+}
+
+/// Generates a simple, blocky, non-greedy mesh for a single Voxeme.
+pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_index: u32, local_voxeme_coord: LocalCoord, vertices: *std.MultiArrayList(MeshCache.VertexData), indices: *std.ArrayList(u32)) !void {
+    const page_coord = self.pages.items(.coord)[page_index];
+    const voxeme_index = self.pages.items(.voxeme_indirection)[page_index].lookup(local_voxeme_coord);
+    if (voxeme_index == VoxemeTable.sentinel) {
+        std.debug.print("voxemeMeshBasic called on non-existent voxeme at {any}, {any}\n", .{ page_coord, local_voxeme_coord });
+        return;
+    }
+
+    const buffer_index = self.voxemes.items(.buffer_indirection)[voxeme_index];
+
+    if (buffer_index == BufferData.sentinel) {
+        std.debug.print("meshing simple homogeneous voxel data at {any}, {any}\n", .{ page_coord, local_voxeme_coord });
+
+        // large-volume voxel
+        const data = self.voxemes.items(.voxel)[voxeme_index];
+        if (data.material_id == .none) {
+            std.debug.print("voxemeMeshBasic called on empty voxeme {any}, skipping\n", .{local_voxeme_coord});
+            return;
+        }
+
+        const local_voxeme_origin = convert.partsToGlobalVoxel(page_coord, local_voxeme_coord, .{ .x = 0, .y = 0, .z = 0 });
+        const world_voxeme_origin = convert.globalVoxelToWorld(local_voxeme_origin);
+
+        const visibility = self.voxemes.items(.visibility)[voxeme_index];
+
+        for (AxisDir.values) |axis_dir| {
+            const visible_face = visibility.get(axis_dir);
+
+            if (visible_face) {
+                std.debug.print("adding face for voxeme {any}, {any}\n", .{ page_coord, local_voxeme_coord });
+                try addFace(
+                    gpa,
+                    vertices,
+                    indices,
+                    axis_dir,
+                    world_voxeme_origin,
+                    voxeme_scale,
+                    data.material_id,
+                );
+            } else {
+                std.debug.print("skipping face for voxeme {any}, {any}, {any}\n", .{ page_coord, local_voxeme_coord, axis_dir });
+            }
+        }
+    } else {
+        std.debug.print("meshing dense voxel data at {any}, {any}\n", .{ page_coord, local_voxeme_coord });
+
+        // mesh the dense voxel data
+        const data = self.voxels.items(.voxel)[buffer_index];
+        const visibility = self.voxels.items(.visibility)[buffer_index];
+
+        for (0..voxels_per_voxeme) |voxel_1d_index| {
+            const voxel = data[voxel_1d_index];
+            if (voxel.material_id == .none) continue;
+
+            const vis = visibility[voxel_1d_index];
+
+            const local_voxel_coord = convert.indexToLocalVoxelCoord(@intCast(voxel_1d_index));
+            const global_voxel_coord = convert.partsToGlobalVoxel(page_coord, local_voxeme_coord, local_voxel_coord);
+            const world_voxel_coord = convert.globalVoxelToWorld(global_voxel_coord);
+
+            for (AxisDir.values) |axis_dir| {
+                const visible_face = vis.get(axis_dir);
+
+                if (visible_face) {
+                    std.debug.print("adding face for voxel {d}\n", .{global_voxel_coord});
+                    try addFace(
+                        gpa,
+                        vertices,
+                        indices,
+                        axis_dir,
+                        world_voxel_coord,
+                        voxel_scale,
+                        voxel.material_id,
+                    );
+                } else {
+                    std.debug.print("skipping face for voxel {d}, {any}\n", .{ global_voxel_coord, axis_dir });
+                }
+            }
+        }
+    }
+}
+
+/// Generates a simple, blocky, non-greedy mesh for an entire Page.
+pub fn pageMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_coord: PageCoord, vertices: *std.MultiArrayList(MeshCache.VertexData), indices: *std.ArrayList(u32)) !void {
+    const page_index = self.page_indirection.lookup(page_coord);
+    if (page_index == PageTable.sentinel) {
+        std.debug.print("pageMeshBasic called on non-existent page at {any}\n", .{page_coord});
+        return;
+    }
+
+    const is_hetero = self.pages.items(.voxeme_indirection)[page_index].len != 0;
+    const page_homo_voxel = self.pages.items(.voxel)[page_index];
+
+    if (!is_hetero) {
+        std.debug.print("meshing homo page at {any}\n", .{page_index});
+
+        // large-volume voxel
+        if (page_homo_voxel.material_id == .none) {
+            std.debug.print("pageMeshBasic detected residual empty page at {any}\n", .{page_coord});
+            return;
+        }
+        const page_homo_vis = self.pages.items(.visibility)[page_index];
+
+        const local_page_origin = convert.partsToGlobalVoxel(page_coord, .{ .x = 0, .y = 0, .z = 0 }, .{ .x = 0, .y = 0, .z = 0 });
+        const world_page_origin = convert.globalVoxelToWorld(local_page_origin);
+
+        for (AxisDir.values) |axis_dir| {
+            const visible_face = page_homo_vis.get(axis_dir);
+            if (visible_face) {
+                std.debug.print("add face for homo page {any}, {any}\n", .{ page_coord, axis_dir });
+                try addFace(
+                    gpa,
+                    vertices,
+                    indices,
+                    axis_dir,
+                    world_page_origin,
+                    page_scale,
+                    page_homo_voxel.material_id,
+                );
+            } else {
+                std.debug.print("skipping occluded face {any}, {any}", .{ page_coord, axis_dir });
+            }
+        }
+    } else {
+        std.debug.print("meshing hetero page at {any}\n", .{page_coord});
+
+        for (0..voxemes_per_page) |voxeme_1d_index| {
+            const local_voxeme_coord = convert.indexToLocalVoxemeCoord(@intCast(voxeme_1d_index));
+
+            const voxeme_index = self.pages.items(.voxeme_indirection)[page_index].lookup(local_voxeme_coord);
+            if (voxeme_index != VoxemeTable.sentinel) {
+                try voxemeMeshBasic(self, gpa, page_index, local_voxeme_coord, vertices, indices);
+            } else {
+                if (page_homo_voxel.material_id == .none) continue;
+
+                try implicitVoxemeMeshBasic(self, gpa, page_coord, local_voxeme_coord, vertices, indices);
+            }
+        }
+    }
+}
+
+pub fn implicitVoxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_coord: PageCoord, local_voxeme_coord: LocalCoord, vertices: *std.MultiArrayList(MeshCache.VertexData), indices: *std.ArrayList(u32)) !void {
+    _ = self;
+    _ = gpa;
+    _ = page_coord;
+    _ = local_voxeme_coord;
+    _ = vertices;
+    _ = indices;
+    std.debug.print("TODO: Skipping implicit voxeme\n", .{});
+}
