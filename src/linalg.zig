@@ -82,16 +82,20 @@ pub fn numComponents(comptime T: type) usize {
     return @typeInfo(T).vector.len;
 }
 
-pub fn dot(a: anytype, b: @TypeOf(a)) f32 {
-    var result: f32 = 0.0;
+pub fn dot(a: anytype, b: @TypeOf(a)) @typeInfo(@TypeOf(a)).vector.child {
+    var result: @typeInfo(@TypeOf(a)).vector.child = 0.0;
     inline for (0..comptime numComponents(@TypeOf(a))) |i| {
         result += a[i] * b[i];
     }
     return result;
 }
 
-pub fn len(v: anytype) f32 {
+pub fn len(v: anytype) @typeInfo(@TypeOf(v)).vector.child {
     return std.math.sqrt(dot(v, v));
+}
+
+pub fn len_sq(v: anytype) @typeInfo(@TypeOf(v)).vector.child {
+    return dot(v, v);
 }
 
 pub fn normalize(v: anytype) @TypeOf(v) {
