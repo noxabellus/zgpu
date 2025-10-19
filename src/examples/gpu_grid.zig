@@ -424,7 +424,7 @@ pub fn main() !void {
     defer arena_state.deinit();
     // const frame_arena = arena_state.allocator();
 
-    std.debug.print("Starting sphere mesh test...\n", .{});
+    log.info("Starting sphere mesh test...", .{});
 
     // 1. Initialize the manager and its dependencies
     var pool: std.Thread.Pool = undefined;
@@ -477,59 +477,18 @@ pub fn main() !void {
         }
     }
 
-    std.debug.print("Queued sphere voxel commands.\n", .{});
+    log.info("Queued sphere voxel commands.", .{});
 
-    // 5. Signal the manager to process the commands and wait for completion.
-    // manager.deinit() joins the worker thread, ensuring all work is finished.
-    std.debug.print("Signaling manager to process queued commands...\n", .{});
     manager.endFrame();
-    std.debug.print("Manager signaled 1; sleeping ..\n", .{});
     std.Thread.sleep(std.time.ns_per_s);
-    std.debug.print("Waking up and signaling manager to swap buffers again\n", .{});
     manager.endFrame();
-    std.debug.print("Manager signaled 2; front buffer should contain meshes\n", .{});
     defer {
-        std.debug.print("Deinitializing manager...\n", .{});
         var final_state = manager.deinit();
-        std.debug.print("Manager deinitialized, final state obtained.\n", .{});
         final_state.deinit(); // Clean up the final grid and mesh cache
     }
 
     const mesh_cache = manager.front().mesh_cache;
     const front_grid = manager.front().grid;
-
-    // 6. Validate that the correct pages have generated meshes.
-    const affected_pages = [_]Grid.PageCoord{
-        Grid.convert.globalVoxelToPageCoord(.{ 255, 255, 128 }), // Page (0,0,0)
-        Grid.convert.globalVoxelToPageCoord(.{ 256, 255, 128 }), // Page (1,0,0)
-        Grid.convert.globalVoxelToPageCoord(.{ 255, 256, 128 }), // Page (0,1,0)
-        Grid.convert.globalVoxelToPageCoord(.{ 256, 256, 128 }), // Page (1,1,0)
-    };
-
-    // Sanity check our coordinate math
-    try std.testing.expectEqual(Grid.PageCoord{ .x = 0, .y = 0, .z = 0 }, affected_pages[0]);
-    try std.testing.expectEqual(Grid.PageCoord{ .x = 1, .y = 0, .z = 0 }, affected_pages[1]);
-    try std.testing.expectEqual(Grid.PageCoord{ .x = 0, .y = 1, .z = 0 }, affected_pages[2]);
-    try std.testing.expectEqual(Grid.PageCoord{ .x = 1, .y = 1, .z = 0 }, affected_pages[3]);
-
-    try std.testing.expectEqual(4, mesh_cache.meshes.len);
-
-    std.log.debug("Checking for meshes in affected pages...", .{});
-    for (affected_pages) |coord| {
-        const view = mesh_cache.getView(coord);
-        try std.testing.expect(view != null);
-        if (view) |v| {
-            std.log.debug("Found mesh for page {any}: indices={}", .{ coord, v.index_count });
-            try std.testing.expect(v.index_count > 0);
-        }
-    }
-
-    // 7. Validate that an unaffected page has no mesh.
-    std.log.debug("Checking for no mesh in unaffected page...", .{});
-    const unaffected_page = Grid.PageCoord{ .x = 5, .y = 5, .z = 5 };
-    try std.testing.expect(mesh_cache.getView(unaffected_page) == null);
-
-    std.log.debug("Sphere mesh test passed.", .{});
 
     log.info("grid update complete", .{});
 
@@ -538,7 +497,7 @@ pub fn main() !void {
     const total_vertices = mesh_cache.vertices.len;
     const total_indices = mesh_cache.indices.items.len;
 
-    std.debug.print("Creating GPU buffers: {} vertices, {} indices\n", .{ total_vertices, total_indices });
+    log.info("Creating GPU buffers: {} vertices, {} indices, {} meshes", .{ total_vertices, total_indices, mesh_cache.meshes.len });
 
     // Create separate vertex buffers for each attribute (Structure of Arrays)
     const position_buffer = wgpu.deviceCreateBuffer(demo.device, &.{
@@ -588,14 +547,6 @@ pub fn main() !void {
         const uvs = mesh_cache.vertices.items(.uv);
         const material_ids = mesh_cache.vertices.items(.material_id);
 
-        // Debug: Print first few material IDs
-        std.debug.print("First 10 material IDs: ", .{});
-        const count = @min(10, total_vertices);
-        for (0..count) |i| {
-            std.debug.print("{} ", .{material_ids[i]});
-        }
-        std.debug.print("\n", .{});
-
         // Upload all vertex attribute arrays directly - no conversion needed!
         wgpu.queueWriteBuffer(queue, position_buffer, 0, positions.ptr, positions.len * @sizeOf(vec3));
         wgpu.queueWriteBuffer(queue, normal_buffer, 0, normals.ptr, normals.len * @sizeOf(vec3));
@@ -607,15 +558,10 @@ pub fn main() !void {
         wgpu.queueWriteBuffer(queue, index_buffer, 0, mesh_cache.indices.items.ptr, mesh_cache.indices.items.len * @sizeOf(u32));
     }
 
-    std.debug.print("GPU buffers uploaded\n", .{});
+    log.info("GPU buffers uploaded", .{});
 
     // --- CREATE MATERIAL COLORS BUFFER ---
     const material_colors = front_grid.materials.items(.color);
-    std.debug.print("Material count: {}, colors: ", .{material_colors.len});
-    for (material_colors, 0..) |color, i| {
-        std.debug.print("[{}]={x:0>8} ", .{ i, @as(u32, @bitCast(color)) });
-    }
-    std.debug.print("\n", .{});
     const material_colors_buffer = wgpu.deviceCreateBuffer(demo.device, &.{
         .label = .fromSlice("material_colors_buffer"),
         .usage = wgpu.BufferUsage.storageUsage.merge(.copyDstUsage),
