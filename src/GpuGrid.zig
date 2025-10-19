@@ -15,6 +15,8 @@ const std = @import("std");
 const log = std.log.scoped(.gpu_grid);
 
 const linalg = @import("linalg.zig");
+const FixedBitSet = @import("FixedBitSet.zig");
+const SpacialHashTable = @import("SpacialHashTable.zig");
 
 const vec2 = linalg.vec2;
 const vec3 = linalg.vec3;
@@ -443,218 +445,20 @@ pub const Voxel = packed struct(u32) {
     pub const empty = Voxel{ .material_id = .none };
 };
 
-/// A spacial hash table mapping from `Coord` to index in a MultiArrayList.
-/// This structure is not thread-safe and relies on the command queue architecture implemented in the update manager.
-pub fn SpacialHashTable(comptime Coord: type, comptime BitCoord: type, comptime max_indirections: comptime_int) type {
-    return extern struct {
-        const Self = @This();
-
-        const CoordInt = std.meta.Int(.unsigned, @bitSizeOf(Coord));
-
-        fn coordFromInt(value: u32) Coord {
-            const bits: CoordInt = @truncate(value);
-            return @bitCast(bits);
-        }
-
-        fn intFromCoord(coord: Coord) u32 {
-            const bits: CoordInt = @bitCast(coord);
-            return bits;
-        }
-
-        /// Mask for wrapping hash indices.
-        pub const indirection_mask = max_indirections - 1;
-        /// Marks an empty entry that has never been used.
-        pub const sentinel: u32 = std.math.maxInt(u32);
-        /// Marks a deleted entry that can be reused.
-        pub const tombstone: u32 = sentinel - 1;
-
-        /// The indices into the `pages` MultiArrayList for this page; or `sentinel` if empty, `tombstone` if deleted.
-        indices: [max_indirections]u32,
-        /// The coordinates for the slots in the table.
-        coordinates: [max_indirections]u32,
-        /// The number of valid entries in the table.
-        len: u32,
-
-        /// Initialize the table to empty state.
-        pub fn init(self: *Self) void {
-            @memset(&self.indices, Self.sentinel);
-            @memset(&self.coordinates, 0);
-            self.len = 0;
-        }
-
-        /// Copy the table state from another table into this one
-        pub fn copy(self: *Self, other: *const Self) void {
-            @memcpy(&self.indices, &other.indices);
-            @memcpy(&self.coordinates, &other.coordinates);
-            self.len = other.len;
-        }
-
-        /// Hash function for `PageCoord`.
-        fn hash(coord: Coord) u32 {
-            const bits: BitCoord = @bitCast(coord);
-            const h = (@as(u32, bits.x) *% 92837111) ^ (@as(u32, bits.y) *% 689287499) ^ (@as(u32, bits.z) *% 283923481);
-            return h & indirection_mask;
-        }
-
-        /// Look up the index bound to `coord` in the table, or `sentinel` if not found.
-        /// This is a non-thread-safe operation; use only from the main thread on the front buffer.
-        pub fn lookup(self: *const Self, coord: Coord) u32 {
-            var h = hash(coord);
-            for (0..max_indirections) |_| {
-                const index = self.indices[h];
-                if (index == sentinel) {
-                    return sentinel; // Chain ends here.
-                }
-                if (index != tombstone and coordFromInt(self.coordinates[h]) == coord) {
-                    return index; // Found it!
-                }
-                h = (h + 1) & indirection_mask;
-            }
-            return sentinel;
-        }
-
-        /// Insert a new index binding for `coord` into the table, or update an existing binding.
-        /// This is a non-thread-safe operation; use only from the main thread on the front buffer.
-        pub fn insert(self: *Self, coord: Coord, new_index: u32) bool {
-            var h = hash(coord);
-            for (0..max_indirections) |_| {
-                const index = self.indices[h];
-                if (index == sentinel or index == tombstone) {
-                    // Empty or deleted slot; claim it.
-                    self.indices[h] = new_index;
-                    self.coordinates[h] = intFromCoord(coord);
-                    self.len += 1;
-                    return true;
-                }
-                if (index != tombstone and coordFromInt(self.coordinates[h]) == coord) {
-                    // Existing binding; update it.
-                    self.indices[h] = new_index;
-                    return true;
-                }
-                h = (h + 1) & indirection_mask;
-            }
-            return false; // Table full
-        }
-
-        /// Remove the index binding for `coord` from the table, if it exists.
-        /// This is a non-thread-safe operation; use only from the main thread on the front buffer.
-        pub fn remove(self: *Self, coord: Coord) void {
-            var h = hash(coord);
-            for (0..max_indirections) |_| {
-                const index = self.indices[h];
-                if (index == sentinel) return;
-                if (index != tombstone and coordFromInt(self.coordinates[h]) == coord) {
-                    self.indices[h] = tombstone;
-                    self.len -= 1;
-                    return;
-                }
-                h = (h + 1) & indirection_mask;
-            }
-        }
-    };
-}
-
 /// A spacial hash table for pages.
-pub const PageTable = SpacialHashTable(PageCoord, PageCoord.Unsigned, max_pages);
-
+pub const PageTable = SpacialHashTable.new(PageCoord, PageCoord.Unsigned, max_pages);
 /// A spacial hash table for voxemes within a page.
-pub const VoxemeTable = SpacialHashTable(LocalCoord, LocalCoord, voxemes_per_page);
-
-/// A fixed-size bit set for tracking dirty state, etc.
-/// This works for all of our bitsets, where std.StaticBitSet causes segfaults on larger sizes.
-pub fn FixedBitSet(comptime N: comptime_int) type {
-    if (N == 0) @compileError("FixedBitSet size cannot be zero");
-
-    return extern struct {
-        const Self = @This();
-        const Word = u64;
-        const word_bits = @bitSizeOf(Word);
-        pub const num_words = (N + word_bits - 1) / word_bits;
-
-        words: [num_words]Word,
-
-        /// Sets the bit at the given index to 1.
-        pub fn set(self: *Self, index: u32) void {
-            std.debug.assert(index < N);
-            const word_index = index / word_bits;
-            const bit_index = index % word_bits;
-            self.words[word_index] |= (@as(Word, 1) << @intCast(bit_index));
-        }
-
-        /// Sets the bit at the given index to 0.
-        pub fn unset(self: *Self, index: u32) void {
-            std.debug.assert(index < N);
-            const word_index = index / word_bits;
-            const bit_index = index % word_bits;
-            self.words[word_index] &= ~(@as(Word, 1) << @intCast(bit_index));
-        }
-
-        /// Returns true if the bit at the given index is 1.
-        pub fn isSet(self: *const Self, index: u32) bool {
-            std.debug.assert(index < N);
-            const word_index = index / word_bits;
-            const bit_index = index % word_bits;
-            return (self.words[word_index] & (@as(Word, 1) << @intCast(bit_index))) != 0;
-        }
-
-        /// Sets all bits to 1.
-        pub fn setAll(self: *Self) void {
-            @memset(&self.words, std.math.maxInt(Word));
-        }
-
-        /// Sets all bits to 0.
-        pub fn unsetAll(self: *Self) void {
-            @memset(&self.words, 0);
-        }
-
-        /// Copy state from another bit set into this one.
-        pub fn copy(self: *Self, other: *const Self) void {
-            @memcpy(&self.words, &other.words);
-        }
-
-        /// Counts the number of set bits.
-        pub fn count(self: *const Self) u32 {
-            var total: u32 = 0;
-            for (self.words) |word| {
-                total += @popCount(word);
-            }
-            return total;
-        }
-
-        /// An iterator that yields the index of each set bit.
-        pub const Iterator = struct {
-            words: []const Word,
-            word_index: u32 = 0,
-            current_word: Word = 0,
-
-            pub fn next(self: *Iterator) ?u32 {
-                while (self.current_word == 0) {
-                    if (self.word_index >= num_words) return null;
-                    self.current_word = self.words[self.word_index];
-                    self.word_index += 1;
-                }
-
-                const bit_offset = @ctz(self.current_word);
-                const bit_index = (self.word_index - 1) * word_bits + bit_offset;
-
-                // Unset this bit in our temporary copy so we find the next one
-                self.current_word &= self.current_word - 1;
-
-                return bit_index;
-            }
-        };
-
-        /// Returns an iterator over the set bits.
-        pub fn iterator(self: *const Self) Iterator {
-            return .{ .words = &self.words };
-        }
-    };
-}
-
+pub const VoxemeTable = SpacialHashTable.new(LocalCoord, LocalCoord, voxemes_per_page);
 /// A dense minimum-scale voxel state grid.
 pub const VoxelBuffer = [voxels_per_voxeme]Voxel; // 16*16*16 voxels in a voxeme; 16kb
 /// A dense minimum-scale voxel visibility grid.
 pub const VisibilityBuffer = [voxels_per_voxeme]Visibility; // 4kb
+/// Fixed width bit set tracking dirty pages within the grid.
+pub const DirtyPageSet = FixedBitSet.new(max_pages);
+/// Fixed width bit set tracking dirty voxemes within a page.
+pub const DirtyVoxemeSet = FixedBitSet.new(voxemes_per_page);
+/// Fixed width bit set tracking dirty voxels within a voxeme.
+pub const DirtyVoxelSet = FixedBitSet.new(voxels_per_voxeme);
 
 /// A sparse, large-scale voxel grid supporting efficient GPU usage.
 /// This data structure is not passed to the gpu, it is just a table layout for MultiArrayList
@@ -669,7 +473,7 @@ pub const PageData = struct {
     /// The indirection table mapping from `LocalCoord` to voxeme index in the `voxemes` MultiArrayList, within this page.
     voxeme_indirection: VoxemeTable,
     /// Tracks which voxemes need to be checked for homogenization, pruning, and visibility recalculation.
-    dirty_voxeme_set: FixedBitSet(voxemes_per_page),
+    dirty_voxeme_set: DirtyVoxemeSet,
 }; // each page is 33292 bytes
 
 /// Small-scale voxel grid metadata supporting efficient GPU usage.
@@ -692,7 +496,7 @@ pub const VoxemeData = struct {
 /// This data structure is not passed to the gpu, it is just a table layout for MultiArrayList
 pub const BufferData = struct {
     /// The dirty bits for this buffer
-    dirty_voxel_set: FixedBitSet(voxels_per_voxeme),
+    dirty_voxel_set: DirtyVoxelSet,
     /// The voxel state data for this buffer.
     voxel: VoxelBuffer,
     /// The visibility data for this buffer.
@@ -748,7 +552,7 @@ voxeme_free_list: std.ArrayList(u32),
 /// Necessary because we cannot move or truly delete buffers in the MultiArrayList.
 buffer_free_list: std.ArrayList(u32),
 /// Tracks which pages need to be checked for homogenization, pruning, and visibility recalculation.
-dirty_page_set: FixedBitSet(max_pages), // 8kb
+dirty_page_set: DirtyPageSet, // 8kb
 
 /// Create a new, empty grid.
 /// This incurs several large allocations totalling around 85 megabytes.
