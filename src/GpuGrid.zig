@@ -33,24 +33,16 @@ test {
 }
 
 /// The Voxeme scale is the base unit for all other scales. A voxeme scale of 1.0
-/// means each voxeme is 1m^3. This gives our "coarse voxels" a reasonable size for
-/// pathfinding etc. The actual, small-voxel scale is derived by dividing this by
-/// the voxeme_axis_divisor. The current divisor of 16 means that the smallest voxel
+/// means each voxeme is 1m^3. The current divisor of 16 means that the smallest voxel
 /// is 1/16m = 6.25cm, which is a quite small size and will allow for fairly
-/// detailed geometry, at the cost of memory usage for detailed areas. Our sparse
-/// data structures alleviate this cost where detail is sparse.
+/// detailed geometry.
 pub const voxeme_scale = 1.0;
 
-/// Allow up to 65535 pages total in memory at a time. At the default sizes, this
-/// would allow 1km^2 in memory for a world with z-depth of 256m. The in-memory
-/// volume can be adjusted without changing level of detail by changing the
-/// `page_axis_divisor`, but it is important to realize that this is the *working*
-/// region of the world, where voxels can be modified in ~realtime. It is possible
-/// to *visualize* larger worlds, by leaving generated meshes in memory while
-/// refocusing the loaded pages to new areas. The actual live portion the player is
-/// using does not need to be 1km^2 in general; thus, this leaves a large overhead
-/// for loading pages during distant-land generation, and for simulation.
-pub const max_pages = std.math.maxInt(u16);
+/// The number of pages along each axis in the grid.
+/// This determines the maximum world size supported by the grid.
+/// Each axis supports `grid_axis_divisor` pages, so the total world size is 512^3 pages,
+/// forming a 4km^3 cube with the current settings.
+pub const grid_axis_divisor = 512;
 
 //// The number of voxemes along each axis in a page. Changing this value does not
 //// change level of detail in the world, but it does effect how much volume can be
@@ -62,34 +54,49 @@ pub const page_axis_divisor = 16;
 //// areas. Setting it larger leads to more memory usage, but more detail.
 pub const voxeme_axis_divisor = 16;
 
+/// The size of the grid in world units (meters).
+pub const grid_scale = page_scale * @as(comptime_float, grid_axis_divisor);
 /// The size of a page in world units (meters).
 pub const page_scale = voxeme_scale * @as(comptime_float, page_axis_divisor);
 /// The size of a voxel in world units (meters).
 pub const voxel_scale = voxeme_scale / @as(comptime_float, voxeme_axis_divisor);
 
+/// The inverse of `grid_scale`, useful for fast multiplication instead of division.
+pub const inv_grid_scale = 1.0 / grid_scale;
 /// The inverse of `page_scale`, useful for fast multiplication instead of division.
 pub const inv_page_scale = 1.0 / page_scale;
 /// The inverse of `voxel_scale`, useful for fast multiplication instead of division.
 pub const inv_voxel_scale = 1.0 / voxel_scale;
 
+/// `log2(grid_axis_divisor)`; useful for optimizing coordinate conversions via bitwise shift.
+pub const grid_axis_shift = std.math.log2(grid_axis_divisor);
 /// `log2(page_axis_divisor)`; useful for optimizing coordinate conversions via bitwise shift.
 pub const page_axis_shift = std.math.log2(page_axis_divisor);
 /// `log2(voxeme_axis_divisor)`; useful for optimizing coordinate conversions via bitwise shift.
 pub const voxeme_axis_shift = std.math.log2(voxeme_axis_divisor);
 /// `page_axis_shift + voxeme_axis_shift`; useful for optimizing coordinate conversions via bitwise shift.
-pub const total_shift = page_axis_shift + voxeme_axis_shift;
+pub const local_shift = page_axis_shift + voxeme_axis_shift;
 
+/// `grid_axis_divisor - 1`; useful for fast modulo operations via bitwise &.
+pub const grid_axis_mask = grid_axis_divisor - 1;
 /// `page_axis_divisor - 1`; useful for fast modulo operations via bitwise &.
 pub const page_axis_mask = page_axis_divisor - 1;
 /// `voxeme_axis_divisor - 1`; useful for fast modulo operations via bitwise &.
 pub const voxeme_axis_mask = voxeme_axis_divisor - 1;
 
+/// Maximum number of pages in the grid.
+pub const max_pages = grid_axis_divisor * grid_axis_divisor * grid_axis_divisor;
 /// `pow(page_axis_divisor, 3)`; total (maximum) number of voxemes in a page.
 pub const voxemes_per_page = page_axis_divisor * page_axis_divisor * page_axis_divisor; // no comptime pow
 /// `pow(voxeme_axis_divisor, 3)`; total (maximum) number of voxels in a voxeme.
 pub const voxels_per_voxeme = voxeme_axis_divisor * voxeme_axis_divisor * voxeme_axis_divisor;
 /// `voxemes_per_page * voxels_per_voxeme`; total (maximum) number of voxels in a page.
 pub const voxels_per_page = voxemes_per_page * voxels_per_voxeme;
+/// Maximum number of voxels in the entire grid. Relatively huge number.
+pub const max_voxels = max_pages * voxels_per_page;
+
+/// The number of pages on a single face of the grid.
+pub const pages_per_grid_face = grid_axis_divisor * grid_axis_divisor;
 
 /// The number of voxemes on a single face of a page.
 pub const voxemes_per_page_face = page_axis_divisor * page_axis_divisor;
@@ -97,93 +104,15 @@ pub const voxemes_per_page_face = page_axis_divisor * page_axis_divisor;
 /// The number of voxels on a single face of a voxeme.
 pub const voxels_per_voxeme_face = voxeme_axis_divisor * voxeme_axis_divisor;
 
-/// A coordinate identifying a page in the infinite 3D grid of pages.
-pub const PageCoord = packed struct(u32) {
-    x: i11, // 2048 pages in x, y
-    y: i11,
-    z: i10, // 1024 pages in z
+/// A sentinel value for "no index" in indirection tables.
+pub const sentinel_index: u32 = std.math.maxInt(u32);
 
-    /// Unsigned version of `PageCoord`, useful for bitcasting before hashing.
-    pub const Unsigned = packed struct(u32) { x: u11, y: u11, z: u10 };
-
-    pub fn toVec3i(self: PageCoord) vec3i {
-        return vec3i{
-            @intCast(self.x),
-            @intCast(self.y),
-            @intCast(self.z),
-        };
-    }
-
-    pub fn fromVec3i(v: vec3i) PageCoord {
-        return PageCoord{
-            .x = @as(i11, @intCast(v[0])),
-            .y = @as(i11, @intCast(v[1])),
-            .z = @as(i10, @intCast(v[2])),
-        };
-    }
-
-    pub fn add(self: PageCoord, other: PageCoord) PageCoord {
-        return PageCoord{
-            .x = self.x + other.x,
-            .y = self.y + other.y,
-            .z = self.z + other.z,
-        };
-    }
-
-    pub fn addOffset(self: PageCoord, offset: vec3i) PageCoord {
-        return PageCoord{
-            .x = self.x + @as(i11, @intCast(offset[0])),
-            .y = self.y + @as(i11, @intCast(offset[1])),
-            .z = self.z + @as(i10, @intCast(offset[2])),
-        };
-    }
-};
-
-/// A coordinate identifying a voxeme within a page, or a voxel within a voxeme.
-pub const LocalCoord = packed struct(u12) {
-    x: u4,
-    y: u4,
-    z: u4,
-
-    pub fn fromVec3i(v: vec3i) LocalCoord {
-        return LocalCoord{
-            .x = @intCast(v[0]),
-            .y = @intCast(v[1]),
-            .z = @intCast(v[2]),
-        };
-    }
-
-    pub fn toVec3i(self: LocalCoord) vec3i {
-        return vec3i{
-            @intCast(self.x),
-            @intCast(self.y),
-            @intCast(self.z),
-        };
-    }
-
-    pub fn add(self: LocalCoord, other: LocalCoord) LocalCoord {
-        return LocalCoord{
-            .x = self.x + other.x,
-            .y = self.y + other.y,
-            .z = self.z + other.z,
-        };
-    }
-
-    pub fn addOffset(self: LocalCoord, offset: vec3i) LocalCoord {
-        return LocalCoord{
-            .x = @intCast(@as(i32, @intCast(self.x)) + offset[0]),
-            .y = @intCast(@as(i32, @intCast(self.y)) + offset[1]),
-            .z = @intCast(@as(i32, @intCast(self.z)) + offset[2]),
-        };
-    }
-};
+/// Maximum number of materials supported by the grid. (4096 including empty)
+pub const max_materials = std.math.maxInt(std.meta.Tag(MaterialId));
 
 /// Unique identifier for a voxel material type.
 /// Supports up to 4096 materials including the empty state. See `MaterialData`, `registerMaterial`.
 pub const MaterialId = enum(u12) { none = 0, _ };
-
-/// Maximum number of materials supported by the grid. (4096 including empty)
-pub const max_materials = std.math.maxInt(std.meta.Tag(MaterialId));
 
 /// Surface properties for a voxel material type. See `MaterialId`, `registerMaterial`.
 /// This data structure is not passed to the gpu, it is just a table layout for MultiArrayList.
@@ -245,8 +174,8 @@ pub const offsets = [6]vec3i{
     .{ 0, 0, -1 }, // -Z
 };
 
-fn generatePageFace(axis_idx: u2, const_val: u4) [voxemes_per_page_face]LocalCoord {
-    var face_coords: [voxemes_per_page_face]LocalCoord = undefined;
+fn generatePageFace(axis_idx: u2, const_val: u4) [voxemes_per_page_face]vec3i {
+    var face_coords: [voxemes_per_page_face]vec3i = undefined;
     var i = 0;
     var v = 0;
     @setEvalBranchQuota(voxemes_per_page);
@@ -255,11 +184,11 @@ fn generatePageFace(axis_idx: u2, const_val: u4) [voxemes_per_page_face]LocalCoo
         while (u < page_axis_divisor) : (u += 1) {
             face_coords[i] = switch (axis_idx) {
                 // +X/-X face, iterate over Y and Z
-                0 => LocalCoord{ .x = const_val, .y = @intCast(u), .z = @intCast(v) },
+                0 => vec3i{ const_val, @intCast(u), @intCast(v) },
                 // +Y/-Y face, iterate over X and Z
-                1 => LocalCoord{ .x = @intCast(u), .y = const_val, .z = @intCast(v) },
+                1 => vec3i{ @intCast(u), const_val, @intCast(v) },
                 // +Z/-Z face, iterate over X and Y
-                2 => LocalCoord{ .x = @intCast(u), .y = @intCast(v), .z = const_val },
+                2 => vec3i{ @intCast(u), @intCast(v), const_val },
                 else => unreachable,
             };
             i += 1;
@@ -268,8 +197,8 @@ fn generatePageFace(axis_idx: u2, const_val: u4) [voxemes_per_page_face]LocalCoo
     return face_coords;
 }
 
-fn generateVoxemeFace(axis_idx: u2, const_val: u4) [voxels_per_voxeme_face]LocalCoord {
-    var face_coords: [voxels_per_voxeme_face]LocalCoord = undefined;
+fn generateVoxemeFace(axis_idx: u2, const_val: u4) [voxels_per_voxeme_face]vec3i {
+    var face_coords: [voxels_per_voxeme_face]vec3i = undefined;
     var i = 0;
     var v = 0;
     @setEvalBranchQuota(voxels_per_voxeme);
@@ -278,11 +207,11 @@ fn generateVoxemeFace(axis_idx: u2, const_val: u4) [voxels_per_voxeme_face]Local
         while (u < voxeme_axis_divisor) : (u += 1) {
             face_coords[i] = switch (axis_idx) {
                 // +X/-X face, iterate over Y and Z
-                0 => LocalCoord{ .x = const_val, .y = @intCast(u), .z = @intCast(v) },
+                0 => vec3i{ const_val, @intCast(u), @intCast(v) },
                 // +Y/-Y face, iterate over X and Z
-                1 => LocalCoord{ .x = @intCast(u), .y = const_val, .z = @intCast(v) },
+                1 => vec3i{ @intCast(u), const_val, @intCast(v) },
                 // +Z/-Z face, iterate over X and Y
-                2 => LocalCoord{ .x = @intCast(u), .y = @intCast(v), .z = const_val },
+                2 => vec3i{ @intCast(u), @intCast(v), const_val },
                 else => unreachable,
             };
             i += 1;
@@ -294,7 +223,7 @@ fn generateVoxemeFace(axis_idx: u2, const_val: u4) [voxels_per_voxeme_face]Local
 /// Precomputed local coordinates for all voxemes on each of the 6 faces of a page.
 /// The outer index corresponds to the `offsets` array index (0: +X, 1: -X, etc.).
 pub const page_face_voxeme_coords = blk: {
-    var coords: [6][voxemes_per_page_face]LocalCoord = undefined;
+    var coords: [6][voxemes_per_page_face]vec3i = undefined;
 
     // The face on the *current* page that borders the neighbor in that direction.
     coords[0] = generatePageFace(0, page_axis_mask); // +X face (x = 15)
@@ -309,7 +238,7 @@ pub const page_face_voxeme_coords = blk: {
 
 /// Precomputed local coordinates for all voxels on each of the 6 faces of a voxeme.
 pub const voxeme_face_voxel_coords = blk: {
-    var coords: [6][voxels_per_voxeme_face]LocalCoord = undefined;
+    var coords: [6][voxels_per_voxeme_face]vec3i = undefined;
 
     // The face on the *current* voxeme that borders the neighbor in that direction.
     coords[0] = generateVoxemeFace(0, voxeme_axis_mask); // +X face (x = 15)
@@ -446,9 +375,9 @@ pub const Voxel = packed struct(u32) {
 };
 
 /// A spacial hash table for pages.
-pub const PageTable = SpacialHashTable.new(PageCoord, PageCoord.Unsigned, max_pages);
+pub const PageTable = SpacialHashTable.new(std.math.maxInt(u16));
 /// A spacial hash table for voxemes within a page.
-pub const VoxemeTable = SpacialHashTable.new(LocalCoord, LocalCoord, voxemes_per_page);
+pub const VoxemeTable = SpacialHashTable.new(voxemes_per_page);
 /// A dense minimum-scale voxel state grid.
 pub const VoxelBuffer = [voxels_per_voxeme]Voxel; // 16*16*16 voxels in a voxeme; 16kb
 /// A dense minimum-scale voxel visibility grid.
@@ -464,13 +393,13 @@ pub const DirtyVoxelSet = FixedBitSet.new(voxels_per_voxeme);
 /// This data structure is not passed to the gpu, it is just a table layout for MultiArrayList
 pub const PageData = struct {
     /// The coordinate of this page in the infinite 3D grid of pages.
-    coord: PageCoord,
+    coord: vec3i,
     /// The homogeneous voxel data for this page.
     /// Even if the page contains voxemes, this is still the default voxel state for implicit voxemes.
     voxel: Voxel,
     /// Coarse visibility data for this page.
     visibility: Visibility,
-    /// The indirection table mapping from `LocalCoord` to voxeme index in the `voxemes` MultiArrayList, within this page.
+    /// The indirection table mapping from `vec3i` to voxeme index in the `voxemes` MultiArrayList, within this page.
     voxeme_indirection: VoxemeTable,
     /// Tracks which voxemes need to be checked for homogenization, pruning, and visibility recalculation.
     dirty_voxeme_set: DirtyVoxemeSet,
@@ -480,7 +409,7 @@ pub const PageData = struct {
 /// This data structure is not passed to the gpu, it is just a table layout for MultiArrayList
 pub const VoxemeData = struct {
     /// The coordinate of this voxeme within its page.
-    coord: LocalCoord,
+    coord: vec3i,
     /// The homogeneous voxel data for this voxeme;
     /// unlike page-level voxel data, this is only valid
     /// if `buffer_indirection` is `BufferData.sentinel`.
@@ -514,12 +443,12 @@ pub const Command = union(enum) {
         voxel: Voxel,
     },
     set_page: struct {
-        coord: PageCoord,
+        coord: vec3i,
         voxel: Voxel,
     },
     set_voxeme: struct {
-        page_coord: PageCoord,
-        local_coord: LocalCoord,
+        page_coord: vec3i,
+        local_coord: vec3i,
         voxel: Voxel,
     },
     set_voxel: struct {
@@ -532,8 +461,8 @@ pub const Command = union(enum) {
 
 /// Allocator used for all memory in the grid.
 allocator: std.mem.Allocator,
-/// The spacial hash table mapping from `PageCoord` to page index in the `pages` MultiArrayList.
-page_indirection: PageTable, // ~512kb
+/// The spacial hash table mapping from `vec3i` to page index in the `pages` MultiArrayList.
+page_indirection: *PageTable, // ~512kb
 /// The list of pages in the grid in SOA format.
 pages: std.MultiArrayList(PageData),
 /// The list of voxemes in the grid in SOA format.
@@ -552,7 +481,7 @@ voxeme_free_list: std.ArrayList(u32),
 /// Necessary because we cannot move or truly delete buffers in the MultiArrayList.
 buffer_free_list: std.ArrayList(u32),
 /// Tracks which pages need to be checked for homogenization, pruning, and visibility recalculation.
-dirty_page_set: DirtyPageSet, // 8kb
+dirty_page_set: *DirtyPageSet, // 16mb
 
 /// Create a new, empty grid.
 /// This incurs several large allocations totalling around 85 megabytes.
@@ -561,7 +490,6 @@ pub fn init(allocator: std.mem.Allocator) !*Grid {
     errdefer allocator.destroy(self);
 
     self.allocator = allocator;
-    self.page_indirection.init();
     self.pages = .empty;
     self.voxemes = .empty;
     self.voxels = .empty;
@@ -569,6 +497,10 @@ pub fn init(allocator: std.mem.Allocator) !*Grid {
     self.page_free_list = .empty;
     self.voxeme_free_list = .empty;
     self.buffer_free_list = .empty;
+
+    self.page_indirection = try allocator.create(PageTable);
+    errdefer allocator.destroy(self.page_indirection);
+    self.page_indirection.init();
 
     try self.pages.ensureTotalCapacity(allocator, 1024); // ~32mb
     errdefer self.pages.deinit(allocator);
@@ -593,6 +525,8 @@ pub fn init(allocator: std.mem.Allocator) !*Grid {
     try self.buffer_free_list.ensureTotalCapacity(allocator, 1024); // ~4kb
     errdefer self.buffer_free_list.deinit(allocator);
 
+    self.dirty_page_set = try allocator.create(DirtyPageSet);
+    errdefer allocator.destroy(self.dirty_page_set);
     self.dirty_page_set.unsetAll();
 
     // initialize the empty material
@@ -604,12 +538,14 @@ pub fn init(allocator: std.mem.Allocator) !*Grid {
 /// Deinitialize the grid and free all associated memory.
 pub fn deinit(self: *Grid) void {
     self.voxels.deinit(self.allocator);
+    self.allocator.destroy(self.page_indirection);
     self.voxemes.deinit(self.allocator);
     self.pages.deinit(self.allocator);
     self.materials.deinit(self.allocator);
     self.page_free_list.deinit(self.allocator);
     self.buffer_free_list.deinit(self.allocator);
     self.voxeme_free_list.deinit(self.allocator);
+    self.allocator.destroy(self.dirty_page_set);
     self.allocator.destroy(self);
 }
 
@@ -634,7 +570,10 @@ pub fn clone(self: *Grid) !*Grid {
 
     new_self.allocator = self.allocator;
 
-    new_self.page_indirection.copy(&self.page_indirection);
+    new_self.page_indirection = try self.allocator.create(PageTable);
+    errdefer self.allocator.destroy(new_self.page_indirection);
+
+    new_self.page_indirection.copy(self.page_indirection);
 
     new_self.voxemes = try self.voxemes.clone(self.allocator);
     errdefer new_self.voxemes.deinit(self.allocator);
@@ -657,7 +596,9 @@ pub fn clone(self: *Grid) !*Grid {
     new_self.buffer_free_list = try self.buffer_free_list.clone(self.allocator);
     errdefer new_self.buffer_free_list.deinit(self.allocator);
 
-    new_self.dirty_page_set.copy(&self.dirty_page_set);
+    new_self.dirty_page_set = try self.allocator.create(DirtyPageSet);
+    errdefer self.allocator.destroy(new_self.dirty_page_set);
+    new_self.dirty_page_set.copy(self.dirty_page_set);
 
     return new_self;
 }
@@ -777,15 +718,15 @@ fn setAABB(self: *Grid, aabb: aabb3i, new_voxel: Voxel) !void {
     const min_page_coord = convert.globalVoxelToPageCoord(min_v);
     const max_page_coord_inclusive = convert.globalVoxelToPageCoord(max_v - vec3i{ 1, 1, 1 });
 
-    var page_z = min_page_coord.z;
-    while (page_z <= max_page_coord_inclusive.z) : (page_z += 1) {
-        var page_y = min_page_coord.y;
-        while (page_y <= max_page_coord_inclusive.y) : (page_y += 1) {
-            var page_x = min_page_coord.x;
-            while (page_x <= max_page_coord_inclusive.x) : (page_x += 1) {
-                const page_coord = PageCoord{ .x = page_x, .y = page_y, .z = page_z };
+    var page_z = min_page_coord[2];
+    while (page_z <= max_page_coord_inclusive[2]) : (page_z += 1) {
+        var page_y = min_page_coord[1];
+        while (page_y <= max_page_coord_inclusive[1]) : (page_y += 1) {
+            var page_x = min_page_coord[0];
+            while (page_x <= max_page_coord_inclusive[0]) : (page_x += 1) {
+                const page_coord = vec3i{ page_x, page_y, page_z };
 
-                const page_min_voxel = convert.partsToGlobalVoxel(page_coord, .{ .x = 0, .y = 0, .z = 0 }, .{ .x = 0, .y = 0, .z = 0 });
+                const page_min_voxel = convert.partsToGlobalVoxel(page_coord, .{ 0, 0, 0 }, .{ 0, 0, 0 });
                 const page_max_voxel = page_min_voxel + @as(vec3i, @splat(page_axis_divisor * voxeme_axis_divisor));
                 const page_aabb = aabb3i{ page_min_voxel, page_max_voxel };
 
@@ -800,18 +741,18 @@ fn setAABB(self: *Grid, aabb: aabb3i, new_voxel: Voxel) !void {
                     self.pages.items(.dirty_voxeme_set)[page_index].setAll();
 
                     const is_on_shell = [6]bool{
-                        page_coord.x == max_page_coord_inclusive.x, // +X
-                        page_coord.x == min_page_coord.x, // -X
-                        page_coord.y == max_page_coord_inclusive.y, // +Y
-                        page_coord.y == min_page_coord.y, // -Y
-                        page_coord.z == max_page_coord_inclusive.z, // +Z
-                        page_coord.z == min_page_coord.z, // -Z
+                        page_coord[0] == max_page_coord_inclusive[0], // +X
+                        page_coord[0] == min_page_coord[0], // -X
+                        page_coord[1] == max_page_coord_inclusive[1], // +Y
+                        page_coord[1] == min_page_coord[1], // -Y
+                        page_coord[2] == max_page_coord_inclusive[2], // +Z
+                        page_coord[2] == min_page_coord[2], // -Z
                     };
 
                     for (is_on_shell, 0..) |on_shell, i| {
                         if (!on_shell) continue;
 
-                        const neighbor_page_coord = page_coord.addOffset(offsets[i]);
+                        const neighbor_page_coord = page_coord + offsets[i];
                         const neighbor_page_index = self.page_indirection.lookup(neighbor_page_coord);
                         if (neighbor_page_index == PageTable.sentinel) continue;
 
@@ -831,7 +772,7 @@ fn setAABB(self: *Grid, aabb: aabb3i, new_voxel: Voxel) !void {
                         while (voxeme_y < page_axis_divisor) : (voxeme_y += 1) {
                             var voxeme_x: u4 = 0;
                             while (voxeme_x < page_axis_divisor) : (voxeme_x += 1) {
-                                const local_voxeme_coord = LocalCoord{ .x = voxeme_x, .y = voxeme_y, .z = voxeme_z };
+                                const local_voxeme_coord = vec3i{ voxeme_x, voxeme_y, voxeme_z };
                                 const voxeme_min_voxel = page_min_voxel + (vec3i{ @intCast(voxeme_x), @intCast(voxeme_y), @intCast(voxeme_z) } << @splat(voxeme_axis_shift));
                                 const voxeme_max_voxel = voxeme_min_voxel + @as(vec3i, @splat(voxeme_axis_divisor));
                                 const voxeme_aabb = aabb3i{ voxeme_min_voxel, voxeme_max_voxel };
@@ -865,7 +806,7 @@ fn setAABB(self: *Grid, aabb: aabb3i, new_voxel: Voxel) !void {
 }
 
 /// Internal helper to change page state without triggering neighbor updates.
-fn setPageCore(self: *Grid, page_coord: PageCoord, page_index: u32, new_voxel: Voxel) !void {
+fn setPageCore(self: *Grid, page_coord: vec3i, page_index: u32, new_voxel: Voxel) !void {
     const page_voxel = &self.pages.items(.voxel)[page_index];
     if (page_voxel.* == new_voxel and self.pages.items(.voxeme_indirection)[page_index].len == 0) return;
 
@@ -890,7 +831,7 @@ fn setPageCore(self: *Grid, page_coord: PageCoord, page_index: u32, new_voxel: V
     }
 }
 
-fn setPage(self: *Grid, page_coord: PageCoord, new_voxel: Voxel) !void {
+fn setPage(self: *Grid, page_coord: vec3i, new_voxel: Voxel) !void {
     const page_index = try self.getOrCreatePage(page_coord, new_voxel) orelse return;
     try self.setPageCore(page_coord, page_index, new_voxel);
     if (new_voxel == Voxel.empty) return;
@@ -900,7 +841,7 @@ fn setPage(self: *Grid, page_coord: PageCoord, new_voxel: Voxel) !void {
     self.pages.items(.dirty_voxeme_set)[page_index].setAll();
 
     for (offsets, 0..) |offset, i| {
-        const neighbor_page_coord = page_coord.addOffset(offset);
+        const neighbor_page_coord = page_coord + offset;
         const neighbor_page_index = self.page_indirection.lookup(neighbor_page_coord);
         if (neighbor_page_index == PageTable.sentinel) continue;
 
@@ -914,7 +855,7 @@ fn setPage(self: *Grid, page_coord: PageCoord, new_voxel: Voxel) !void {
     }
 }
 
-fn setVoxeme(self: *Grid, page_coord: PageCoord, local_voxeme_coord: LocalCoord, new_voxel: Voxel) !void {
+fn setVoxeme(self: *Grid, page_coord: vec3i, local_voxeme_coord: vec3i, new_voxel: Voxel) !void {
     const page_index = try self.getOrCreatePage(page_coord, new_voxel) orelse return;
     const voxeme_index = try self.getOrCreateVoxeme(page_index, local_voxeme_coord, new_voxel) orelse return;
     const voxeme = &self.voxemes.items(.voxel)[voxeme_index];
@@ -943,41 +884,41 @@ fn setVoxeme(self: *Grid, page_coord: PageCoord, local_voxeme_coord: LocalCoord,
     self.dirty_page_set.set(page_index);
 
     // --- MARK NEIGHBORS DIRTY ---
-    const current_local_i = vec3i{ @intCast(local_voxeme_coord.x), @intCast(local_voxeme_coord.y), @intCast(local_voxeme_coord.z) };
+    const current_local_i = vec3i{ @intCast(local_voxeme_coord[0]), @intCast(local_voxeme_coord[1]), @intCast(local_voxeme_coord[2]) };
     for (offsets) |offset| {
         const neighbor_local_i = current_local_i + offset;
         var neighbor_page_coord = page_coord;
-        var neighbor_local_coord: LocalCoord = undefined;
+        var neighbor_local_coord: vec3i = undefined;
 
         // Check X boundary
         if (neighbor_local_i[0] < 0) {
-            neighbor_page_coord.x -= 1;
-            neighbor_local_coord.x = page_axis_mask;
+            neighbor_page_coord[0] -= 1;
+            neighbor_local_coord[0] = page_axis_mask;
         } else if (neighbor_local_i[0] >= page_axis_divisor) {
-            neighbor_page_coord.x += 1;
-            neighbor_local_coord.x = 0;
+            neighbor_page_coord[0] += 1;
+            neighbor_local_coord[0] = 0;
         } else {
-            neighbor_local_coord.x = @intCast(neighbor_local_i[0]);
+            neighbor_local_coord[0] = @intCast(neighbor_local_i[0]);
         }
         // Check Y boundary
         if (neighbor_local_i[1] < 0) {
-            neighbor_page_coord.y -= 1;
-            neighbor_local_coord.y = page_axis_mask;
+            neighbor_page_coord[1] -= 1;
+            neighbor_local_coord[1] = page_axis_mask;
         } else if (neighbor_local_i[1] >= page_axis_divisor) {
-            neighbor_page_coord.y += 1;
-            neighbor_local_coord.y = 0;
+            neighbor_page_coord[1] += 1;
+            neighbor_local_coord[1] = 0;
         } else {
-            neighbor_local_coord.y = @intCast(neighbor_local_i[1]);
+            neighbor_local_coord[1] = @intCast(neighbor_local_i[1]);
         }
         // Check Z boundary
         if (neighbor_local_i[2] < 0) {
-            neighbor_page_coord.z -= 1;
-            neighbor_local_coord.z = page_axis_mask;
+            neighbor_page_coord[2] -= 1;
+            neighbor_local_coord[2] = page_axis_mask;
         } else if (neighbor_local_i[2] >= page_axis_divisor) {
-            neighbor_page_coord.z += 1;
-            neighbor_local_coord.z = 0;
+            neighbor_page_coord[2] += 1;
+            neighbor_local_coord[2] = 0;
         } else {
-            neighbor_local_coord.z = @intCast(neighbor_local_i[2]);
+            neighbor_local_coord[2] = @intCast(neighbor_local_i[2]);
         }
 
         const neighbor_page_index = self.page_indirection.lookup(neighbor_page_coord);
@@ -1031,7 +972,7 @@ fn setVoxel(self: *Grid, global_voxel: vec3i, new_voxel: Voxel) !void {
     }
 }
 
-fn getOrCreatePage(self: *Grid, page_coord: PageCoord, new_voxel: ?Voxel) !?u32 {
+fn getOrCreatePage(self: *Grid, page_coord: vec3i, new_voxel: ?Voxel) !?u32 {
     const page_indirect_index = self.page_indirection.lookup(page_coord);
 
     if (page_indirect_index == PageTable.sentinel) {
@@ -1057,7 +998,7 @@ fn getOrCreatePage(self: *Grid, page_coord: PageCoord, new_voxel: ?Voxel) !?u32 
     }
 }
 
-fn getOrCreateVoxeme(self: *Grid, page_index: u32, local_voxeme_coord: LocalCoord, new_voxel: ?Voxel) !?u32 {
+fn getOrCreateVoxeme(self: *Grid, page_index: u32, local_voxeme_coord: vec3i, new_voxel: ?Voxel) !?u32 {
     const voxeme_table: *VoxemeTable = &self.pages.items(.voxeme_indirection)[page_index];
     const voxeme_index = voxeme_table.lookup(local_voxeme_coord);
 
@@ -1122,54 +1063,37 @@ pub const convert = struct {
 
     /// Global voxel coordinate to the containing Page's global coordinate.
     /// Used for hashing into the PageTable.
-    pub inline fn globalVoxelToPageCoord(v: vec3i) PageCoord {
+    pub inline fn globalVoxelToPageCoord(v: vec3i) vec3i {
         // A page's coordinate is the global voxel coordinate divided by the number of voxels
         // per page on each axis. This total shift is the combination of the page's
         // dimensions in voxemes and the voxeme's dimensions in voxels.
         // Fast floor division by (page_axis_divisor * voxeme_axis_divisor) using a shift.
-        const shifted = v >> @splat(total_shift);
-        // Pack the i32 components into the smaller bitfields of PageCoord.
-        return .{
-            .x = @intCast(shifted[0]),
-            .y = @intCast(shifted[1]),
-            .z = @intCast(shifted[2]),
-        };
+        return v >> @splat(local_shift);
     }
 
     /// Global voxel coordinate to the local coordinate of the voxeme *within its page*.
     /// Used for hashing into a specific page's VoxemeTable.
-    pub inline fn globalVoxelToLocalVoxemeCoord(v: vec3i) LocalCoord {
+    pub inline fn globalVoxelToLocalVoxemeCoord(v: vec3i) vec3i {
         // Get the global coordinate of the containing voxeme by dividing by voxeme size.
         const global_voxeme_coord = v >> comptime @splat(voxeme_axis_shift);
         // Get the local part of that coordinate within the page grid using a fast modulo.
         // A page has `page_axis_divisor` voxemes along each axis.
-        const local_coord = global_voxeme_coord & comptime @as(vec3i, @splat(page_axis_mask));
-        // Pack into the struct.
-        return .{
-            .x = @intCast(local_coord[0]),
-            .y = @intCast(local_coord[1]),
-            .z = @intCast(local_coord[2]),
-        };
+        return global_voxeme_coord & comptime @as(vec3i, @splat(page_axis_mask));
     }
 
     /// Global voxel coordinate to the local coordinate of the voxel *within its voxeme*.
     /// Used for indexing into a dense Voxel Buffer.
-    pub inline fn globalVoxelToLocalVoxelCoord(v: vec3i) LocalCoord {
+    pub inline fn globalVoxelToLocalVoxelCoord(v: vec3i) vec3i {
         // A voxeme has `voxeme_axis_divisor` voxels along each axis.
         // Fast modulo by that dimension gets the local coordinate.
-        const base = v & comptime @as(vec3i, @splat(voxeme_axis_mask));
-        return LocalCoord{
-            .x = @intCast(base[0]),
-            .y = @intCast(base[1]),
-            .z = @intCast(base[2]),
-        };
+        return v & comptime @as(vec3i, @splat(voxeme_axis_mask));
     }
 
     /// Deconstructs a global voxel coordinate into all its constituent parts.
     pub inline fn globalVoxelToParts(v: vec3i) struct {
-        page_coord: PageCoord,
-        local_voxeme_coord: LocalCoord,
-        local_voxel_coord: LocalCoord,
+        page_coord: vec3i,
+        local_voxeme_coord: vec3i,
+        local_voxel_coord: vec3i,
     } {
         return .{
             .page_coord = globalVoxelToPageCoord(v),
@@ -1181,65 +1105,61 @@ pub const convert = struct {
     // --- Local Coords to 1D Buffer Indices ---
 
     /// 3D local voxeme coordinate (0-15) to a 1D buffer index for a page's VoxemeTable.
-    pub inline fn localVoxemeCoordToIndex(local_coord: LocalCoord) u32 {
+    pub inline fn localVoxemeCoordToIndex(local_coord: vec3i) u32 {
         // Standard 3D to 1D mapping: x + y*WIDTH + z*WIDTH*HEIGHT
         // Page WIDTH and HEIGHT in voxemes are both `page_axis_divisor` (16).
         // x + y * 16 + z * 256
-        const x = @as(u32, local_coord.x);
-        const y = @as(u32, local_coord.y);
-        const z = @as(u32, local_coord.z);
+        const x: u32 = @bitCast(local_coord[0]);
+        const y: u32 = @bitCast(local_coord[1]);
+        const z: u32 = @bitCast(local_coord[2]);
         return x + (y << page_axis_shift) + (z << (page_axis_shift * 2));
     }
 
     /// 3D local voxel coordinate (0-15) to a 1D buffer index for a voxeme's VoxelBuffer.
-    pub inline fn localVoxelCoordToIndex(local_coord: LocalCoord) u32 {
+    pub inline fn localVoxelCoordToIndex(local_coord: vec3i) u32 {
         // Standard 3D to 1D mapping: x + y*WIDTH + z*WIDTH*HEIGHT
         // Voxeme WIDTH and HEIGHT in voxels are both `voxeme_axis_divisor` (16).
         // x + y * 16 + z * 256
-        const x = @as(u32, local_coord.x);
-        const y = @as(u32, local_coord.y);
-        const z = @as(u32, local_coord.z);
+        const x: u32 = @bitCast(local_coord[0]);
+        const y: u32 = @bitCast(local_coord[1]);
+        const z: u32 = @intCast(local_coord[2]);
         return x + (y << voxeme_axis_shift) + (z << (voxeme_axis_shift * 2));
     }
 
     // --- Low-Level to High-Level (Building Back Up) ---
 
     /// 1D buffer index for a page's VoxemeTable to a 3D local voxeme coordinate (0-15).
-    pub inline fn indexToLocalVoxemeCoord(index: u32) LocalCoord {
+    pub inline fn indexToLocalVoxemeCoord(index: u32) vec3i {
         return .{
-            .x = @intCast(index & page_axis_mask),
-            .y = @intCast((index >> page_axis_shift) & page_axis_mask),
-            .z = @intCast((index >> (page_axis_shift * 2)) & page_axis_mask),
+            @intCast(index & page_axis_mask),
+            @intCast((index >> page_axis_shift) & page_axis_mask),
+            @intCast((index >> (page_axis_shift * 2)) & page_axis_mask),
         };
     }
 
     /// 1D buffer index for a voxeme's VoxelBuffer to a 3D local voxel coordinate (0-15).
-    pub inline fn indexToLocalVoxelCoord(index: u32) LocalCoord {
+    pub inline fn indexToLocalVoxelCoord(index: u32) vec3i {
         return .{
-            .x = @intCast(index & voxeme_axis_mask),
-            .y = @intCast((index >> voxeme_axis_shift) & voxeme_axis_mask),
-            .z = @intCast((index >> (voxeme_axis_shift * 2)) & voxeme_axis_mask),
+            @intCast(index & voxeme_axis_mask),
+            @intCast((index >> voxeme_axis_shift) & voxeme_axis_mask),
+            @intCast((index >> (voxeme_axis_shift * 2)) & voxeme_axis_mask),
         };
     }
 
     /// Reconstructs a global voxel coordinate from its constituent parts.
     /// Useful for debugging or world generation algorithms.
     pub inline fn partsToGlobalVoxel(
-        page_coord: PageCoord,
-        local_voxeme: LocalCoord,
-        local_voxel: LocalCoord,
+        page_coord: vec3i,
+        local_voxeme: vec3i,
+        local_voxel: vec3i,
     ) vec3i {
-        const page_base: vec3i = .{ @as(i32, page_coord.x), @as(i32, page_coord.y), @as(i32, page_coord.z) };
-        const local_voxeme_base: vec3i = .{ @as(i32, local_voxeme.x), @as(i32, local_voxeme.y), @as(i32, local_voxeme.z) };
-        const local_voxel_base: vec3i = .{ @as(i32, local_voxel.x), @as(i32, local_voxel.y), @as(i32, local_voxel.z) };
-
         // Scale each coordinate up to the global voxel grid and add them together.
         // Page coord is scaled by total voxels per page axis.
         // Local voxeme coord is scaled by total voxels per voxeme axis.
         // Local voxel coord is the final offset.
-        return (page_base << comptime @splat(total_shift)) +
-            (local_voxeme_base << comptime @splat(voxeme_axis_shift)) +
-            local_voxel_base;
+        return (page_coord << comptime @splat(local_shift)) +
+            (local_voxeme << comptime @splat(voxeme_axis_shift)) +
+            local_voxel;
     }
 
     /// Global voxel coordinate back to a world-space position.
@@ -1251,7 +1171,7 @@ pub const convert = struct {
 
 /// Descriptor holding raw pointers to mesh data for integration into the cache.
 pub const MeshDescriptor = extern struct {
-    coord: PageCoord,
+    coord: vec3i,
     bounds: aabb3,
     vertex_count: u32,
     index_count: u32,
@@ -1265,7 +1185,7 @@ pub const MeshDescriptor = extern struct {
 
 /// A simplified MeshDescriptor for possible rendering.
 pub const MeshView = extern struct {
-    coord: PageCoord,
+    coord: vec3i,
     bounds: aabb3,
     index_offset: u32,
     index_count: u32,
@@ -1286,7 +1206,7 @@ pub const MeshCache = struct {
         std.testing.refAllDecls(@This());
     }
 
-    /// The indirection table mapping from `PageCoord` to page index in the `instances` ArrayList.
+    /// The indirection table mapping from `vec3i` to page index in the `instances` ArrayList.
     page_indirection: PageTable,
     /// The mesh data which is currently ready for render.
     vertices: std.MultiArrayList(VertexData),
@@ -1320,7 +1240,7 @@ pub const MeshCache = struct {
         },
 
         /// The page coordinate for this mesh instance.
-        coord: PageCoord,
+        coord: vec3i,
 
         /// The world-space axis-aligned bounding box for this mesh instance.
         bounds: aabb3,
@@ -1366,7 +1286,7 @@ pub const MeshCache = struct {
         /// Insert a new mesh instance.
         insert: MeshDescriptor,
         /// Remove an existing mesh instance by its page coordinate.
-        remove: PageCoord,
+        remove: vec3i,
     };
 
     /// Create a new, empty mesh cache.
@@ -1519,7 +1439,7 @@ pub const MeshCache = struct {
     /// Remove a mesh instance by its page coordinate.
     /// This is a trivial operation, as the actual mesh data is not freed;
     /// only the instance is removed from the indirection table and its index added to the free list.
-    fn removeInstance(self: *MeshCache, allocator: std.mem.Allocator, coord: PageCoord) !void {
+    fn removeInstance(self: *MeshCache, allocator: std.mem.Allocator, coord: vec3i) !void {
         const instance_index = self.page_indirection.lookup(coord);
         if (instance_index == PageTable.sentinel) return; // not found
 
@@ -1529,7 +1449,7 @@ pub const MeshCache = struct {
 
     /// Get a mesh render descriptor by its page coordinate.
     /// The descriptor must not be held beyond a frame boundary.
-    pub fn getView(self: *const MeshCache, coord: PageCoord) ?MeshView {
+    pub fn getView(self: *const MeshCache, coord: vec3i) ?MeshView {
         const instance_index = self.page_indirection.lookup(coord);
         if (instance_index == PageTable.sentinel) return null; // not found
 
@@ -1545,7 +1465,7 @@ pub const MeshCache = struct {
 
     /// Get a mesh instance descriptor by its page coordinate.
     /// The descriptor must not be held beyond a frame boundary.
-    pub fn getDescriptor(self: *const MeshCache, coord: PageCoord) ?MeshDescriptor {
+    pub fn getDescriptor(self: *const MeshCache, coord: vec3i) ?MeshDescriptor {
         const instance_index = self.page_indirection.lookup(coord);
 
         if (instance_index == PageTable.sentinel) return null; // not found
@@ -1761,10 +1681,10 @@ pub const Manager = struct {
     };
 
     pub const PruneCommand = union(enum) {
-        prune_page: PageCoord,
+        prune_page: vec3i,
         prune_voxeme: struct {
-            page_coord: PageCoord,
-            local_coord: LocalCoord,
+            page_coord: vec3i,
+            local_coord: vec3i,
         },
     };
 
@@ -1840,16 +1760,16 @@ pub const Manager = struct {
         try self.grid_command_queue.ensureTotalCapacity(self.allocator, 1024);
         errdefer self.grid_command_queue.deinit(self.allocator);
 
-        self.mesh_command_queue = try AsyncQueue(MeshCache.Command).init(self.allocator, max_pages); // TODO: calculate memory usage
+        self.mesh_command_queue = try AsyncQueue(MeshCache.Command).init(self.allocator, std.math.maxInt(u16)); // TODO: calculate memory usage
         errdefer self.mesh_command_queue.deinit(self.allocator);
 
-        self.prune_command_queue = try AsyncQueue(PruneCommand).init(self.allocator, max_pages * voxemes_per_page); // TODO: calculate memory usage
+        self.prune_command_queue = try AsyncQueue(PruneCommand).init(self.allocator, std.math.maxInt(u16)); // TODO: calculate memory usage
         errdefer self.prune_command_queue.deinit(self.allocator);
 
-        self.buffer_free_queue = try AsyncQueue(u32).init(self.allocator, max_pages * voxemes_per_page);
+        self.buffer_free_queue = try AsyncQueue(u32).init(self.allocator, std.math.maxInt(u16));
         errdefer self.buffer_free_queue.deinit(self.allocator);
 
-        self.voxeme_free_queue = try AsyncQueue(u32).init(self.allocator, max_pages * voxemes_per_page);
+        self.voxeme_free_queue = try AsyncQueue(u32).init(self.allocator, std.math.maxInt(u16));
         errdefer self.voxeme_free_queue.deinit(self.allocator);
 
         self.update_arena = std.heap.ArenaAllocator.init(self.allocator);
@@ -2266,7 +2186,6 @@ pub const Manager = struct {
 
         const page_coord = buffers.grid.pages.items(.coord)[page_index];
         const voxeme_coord = convert.indexToLocalVoxemeCoord(local_voxeme_1d_index);
-        const voxeme_coord_i = voxeme_coord.toVec3i();
         const voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[page_index].lookup(voxeme_coord);
         if (voxeme_index == VoxemeTable.sentinel) return; // TODO: cache implicit voxeme visibility in the case of homogeneous page
 
@@ -2280,11 +2199,11 @@ pub const Manager = struct {
 
             const neighbor_page_index = check_same_page: {
                 // zig fmt: off
-                if ((voxeme_coord_i[component_index] == 0 and !axis_dir.positive)
-                or  (voxeme_coord_i[component_index] == voxeme_axis_divisor - 1 and axis_dir.positive)) {
+                if ((voxeme_coord[component_index] == 0 and !axis_dir.positive)
+                or  (voxeme_coord[component_index] == voxeme_axis_divisor - 1 and axis_dir.positive)) {
                 // zig fmt: on
                     // neighbor is in a different page
-                    const neighbor_page_coord = page_coord.addOffset(offset);
+                    const neighbor_page_coord = page_coord + offset;
                     break :check_same_page buffers.grid.page_indirection.lookup(neighbor_page_coord);
                 } else {
                     // neighbor is in the same page
@@ -2294,10 +2213,10 @@ pub const Manager = struct {
 
             const neighbor_is_opaque = check_opacity: {
                 if (neighbor_page_index != PageTable.sentinel) {
-                    var neighbor_voxeme_coord = voxeme_coord_i;
+                    var neighbor_voxeme_coord = voxeme_coord;
                     neighbor_voxeme_coord[component_index] = if (axis_dir.positive) 0 else voxeme_axis_divisor - 1;
 
-                    const neighbor_voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[neighbor_page_index].lookup(.fromVec3i(neighbor_voxeme_coord));
+                    const neighbor_voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[neighbor_page_index].lookup(neighbor_voxeme_coord);
 
                     if (neighbor_voxeme_index != VoxemeTable.sentinel) {
                         const neighbor_buffer_handle = buffers.grid.voxemes.items(.buffer_indirection)[neighbor_voxeme_index];
@@ -2358,7 +2277,7 @@ pub const Manager = struct {
         for (AxisDir.values) |axis_dir| {
             const offset_index = axis_dir.toIndex();
             const offset = offsets[offset_index];
-            const neighbor_page_coord = page_coord.addOffset(offset);
+            const neighbor_page_coord = page_coord + offset;
             const neighbor_page_index = buffers.grid.page_indirection.lookup(neighbor_page_coord);
             const neighbor_is_opaque =
                 if (neighbor_page_index != PageTable.sentinel)
@@ -2390,13 +2309,13 @@ pub const Manager = struct {
 
         const min_global_voxel = convert.partsToGlobalVoxel(
             page_coord,
-            .{ .x = 0, .y = 0, .z = 0 },
-            .{ .x = 0, .y = 0, .z = 0 },
+            .{ 0, 0, 0 },
+            .{ 0, 0, 0 },
         );
         const max_global_voxel = convert.partsToGlobalVoxel(
             page_coord,
-            .{ .x = page_axis_divisor - 1, .y = page_axis_divisor - 1, .z = page_axis_divisor - 1 },
-            .{ .x = voxeme_axis_divisor - 1, .y = voxeme_axis_divisor - 1, .z = voxeme_axis_divisor - 1 },
+            .{ page_axis_divisor - 1, page_axis_divisor - 1, page_axis_divisor - 1 },
+            .{ voxeme_axis_divisor - 1, voxeme_axis_divisor - 1, voxeme_axis_divisor - 1 },
         );
         const min_world = convert.globalVoxelToWorld(min_global_voxel);
         const max_world = convert.globalVoxelToWorld(max_global_voxel) + @as(vec3, @splat(voxel_scale));
@@ -2478,7 +2397,7 @@ fn addFace(
 }
 
 /// Generates a simple, blocky, non-greedy mesh for a single Voxeme.
-pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_index: u32, local_voxeme_coord: LocalCoord, vertices: *std.MultiArrayList(MeshCache.VertexData), indices: *std.ArrayList(u32)) !void {
+pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_index: u32, local_voxeme_coord: vec3i, vertices: *std.MultiArrayList(MeshCache.VertexData), indices: *std.ArrayList(u32)) !void {
     const page_coord = self.pages.items(.coord)[page_index];
     const voxeme_index = self.pages.items(.voxeme_indirection)[page_index].lookup(local_voxeme_coord);
     if (voxeme_index == VoxemeTable.sentinel) {
@@ -2496,7 +2415,7 @@ pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_index: u3
             return;
         }
 
-        const local_voxeme_origin = convert.partsToGlobalVoxel(page_coord, local_voxeme_coord, .{ .x = 0, .y = 0, .z = 0 });
+        const local_voxeme_origin = convert.partsToGlobalVoxel(page_coord, local_voxeme_coord, .{ 0, 0, 0 });
         const world_voxeme_origin = convert.globalVoxelToWorld(local_voxeme_origin);
 
         const visibility = self.voxemes.items(.visibility)[voxeme_index];
@@ -2551,7 +2470,7 @@ pub fn voxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_index: u3
 }
 
 /// Generates a simple, blocky, non-greedy mesh for an entire Page.
-pub fn pageMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_coord: PageCoord, vertices: *std.MultiArrayList(MeshCache.VertexData), indices: *std.ArrayList(u32)) !void {
+pub fn pageMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_coord: vec3i, vertices: *std.MultiArrayList(MeshCache.VertexData), indices: *std.ArrayList(u32)) !void {
     const page_index = self.page_indirection.lookup(page_coord);
     if (page_index == PageTable.sentinel) {
         log.err("pageMeshBasic called on non-existent page at {any}", .{page_coord});
@@ -2569,7 +2488,7 @@ pub fn pageMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_coord: Page
         }
         const page_homo_vis = self.pages.items(.visibility)[page_index];
 
-        const local_page_origin = convert.partsToGlobalVoxel(page_coord, .{ .x = 0, .y = 0, .z = 0 }, .{ .x = 0, .y = 0, .z = 0 });
+        const local_page_origin = convert.partsToGlobalVoxel(page_coord, .{ 0, 0, 0 }, .{ 0, 0, 0 });
         const world_page_origin = convert.globalVoxelToWorld(local_page_origin);
 
         for (AxisDir.values) |axis_dir| {
@@ -2602,7 +2521,7 @@ pub fn pageMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_coord: Page
     }
 }
 
-pub fn implicitVoxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_coord: PageCoord, local_voxeme_coord: LocalCoord, vertices: *std.MultiArrayList(MeshCache.VertexData), indices: *std.ArrayList(u32)) !void {
+pub fn implicitVoxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_coord: vec3i, local_voxeme_coord: vec3i, vertices: *std.MultiArrayList(MeshCache.VertexData), indices: *std.ArrayList(u32)) !void {
     _ = self;
     _ = gpa;
     _ = page_coord;

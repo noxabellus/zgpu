@@ -1,11 +1,11 @@
 const std = @import("std");
+const log = std.log.scoped(.gpu_grid_tests);
+
 const linalg = @import("../linalg.zig");
 const vec3 = linalg.vec3;
 const vec3i = linalg.vec3i;
 const Voxel = Grid.Voxel;
 const VoxemeTable = Grid.VoxemeTable;
-const PageCoord = Grid.PageCoord;
-const LocalCoord = Grid.LocalCoord;
 const MaterialId = Grid.MaterialId;
 const PageTable = Grid.PageTable;
 
@@ -41,9 +41,9 @@ test "coordinate conversions round-trip" {
         const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(global_voxel);
         const local_voxel_coord = convert.globalVoxelToLocalVoxelCoord(global_voxel);
 
-        try std.testing.expectEqual(PageCoord{ .x = -3, .y = 1, .z = 7 }, page_coord);
-        try std.testing.expectEqual(LocalCoord{ .x = 13, .y = 1, .z = 8 }, local_voxeme_coord);
-        try std.testing.expectEqual(LocalCoord{ .x = 8, .y = 3, .z = 14 }, local_voxel_coord);
+        try std.testing.expectEqual(vec3i{ -3, 1, 7 }, page_coord);
+        try std.testing.expectEqual(vec3i{ 13, 1, 8 }, local_voxeme_coord);
+        try std.testing.expectEqual(vec3i{ 8, 3, 14 }, local_voxel_coord);
 
         // 1d. Bottom-up Reconstruction (integer round trip)
         const reconstructed_global_voxel = convert.partsToGlobalVoxel(page_coord, local_voxeme_coord, local_voxel_coord);
@@ -62,9 +62,9 @@ test "coordinate conversions round-trip" {
         const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(global_voxel);
         const local_voxel_coord = convert.globalVoxelToLocalVoxelCoord(global_voxel);
 
-        try std.testing.expectEqual(PageCoord{ .x = 34, .y = 17, .z = 120 }, page_coord);
-        try std.testing.expectEqual(LocalCoord{ .x = 8, .y = 3, .z = 14 }, local_voxeme_coord);
-        try std.testing.expectEqual(LocalCoord{ .x = 1, .y = 14, .z = 4 }, local_voxel_coord);
+        try std.testing.expectEqual(vec3i{ 34, 17, 120 }, page_coord);
+        try std.testing.expectEqual(vec3i{ 8, 3, 14 }, local_voxeme_coord);
+        try std.testing.expectEqual(vec3i{ 1, 14, 4 }, local_voxel_coord);
 
         const reconstructed_global_voxel = convert.partsToGlobalVoxel(page_coord, local_voxeme_coord, local_voxel_coord);
         try std.testing.expectEqual(global_voxel, reconstructed_global_voxel);
@@ -82,9 +82,9 @@ test "coordinate conversions round-trip" {
         const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(global_voxel);
         const local_voxel_coord = convert.globalVoxelToLocalVoxelCoord(global_voxel);
 
-        try std.testing.expectEqual(PageCoord{ .x = 0, .y = 0, .z = 0 }, page_coord);
-        try std.testing.expectEqual(LocalCoord{ .x = 0, .y = 0, .z = 0 }, local_voxeme_coord);
-        try std.testing.expectEqual(LocalCoord{ .x = 0, .y = 0, .z = 0 }, local_voxel_coord);
+        try std.testing.expectEqual(vec3i{ 0, 0, 0 }, page_coord);
+        try std.testing.expectEqual(vec3i{ 0, 0, 0 }, local_voxeme_coord);
+        try std.testing.expectEqual(vec3i{ 0, 0, 0 }, local_voxel_coord);
 
         const reconstructed_global_voxel = convert.partsToGlobalVoxel(page_coord, local_voxeme_coord, local_voxel_coord);
         try std.testing.expectEqual(global_voxel, reconstructed_global_voxel);
@@ -103,9 +103,9 @@ test "coordinate conversions round-trip" {
         const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(global_voxel);
         const local_voxel_coord = convert.globalVoxelToLocalVoxelCoord(global_voxel);
 
-        try std.testing.expectEqual(PageCoord{ .x = -1, .y = -1, .z = -1 }, page_coord);
-        try std.testing.expectEqual(LocalCoord{ .x = 15, .y = 15, .z = 15 }, local_voxeme_coord);
-        try std.testing.expectEqual(LocalCoord{ .x = 15, .y = 15, .z = 15 }, local_voxel_coord);
+        try std.testing.expectEqual(vec3i{ -1, -1, -1 }, page_coord);
+        try std.testing.expectEqual(vec3i{ 15, 15, 15 }, local_voxeme_coord);
+        try std.testing.expectEqual(vec3i{ 15, 15, 15 }, local_voxel_coord);
 
         const reconstructed_global_voxel = convert.partsToGlobalVoxel(page_coord, local_voxeme_coord, local_voxel_coord);
         try std.testing.expectEqual(global_voxel, reconstructed_global_voxel);
@@ -113,7 +113,7 @@ test "coordinate conversions round-trip" {
 
     // === Test Case 5: localCoordToIndex (remains the same) ===
     {
-        const index_coord = LocalCoord{ .x = 1, .y = 2, .z = 3 };
+        const index_coord = vec3i{ 1, 2, 3 };
         // Expected: 1 + (2 * 16) + (3 * 256) = 1 + 32 + 768 = 801
         try std.testing.expectEqual(@as(u16, 801), convert.localVoxelCoordToIndex(index_coord));
     }
@@ -162,7 +162,11 @@ test "Axis and offsets correctness" {
 }
 
 test "setVoxel in empty world creates all structures" {
-    const gpa = std.testing.allocator;
+    const old_log_level = std.testing.log_level;
+    defer std.testing.log_level = old_log_level;
+    std.testing.log_level = .debug;
+
+    const gpa = std.heap.page_allocator;
 
     var grid = try Grid.init(gpa);
     defer grid.deinit();
@@ -539,7 +543,7 @@ test "manager creates sphere mesh across four pages" {
     const mesh_cache = manager.front().mesh_cache;
 
     // 6. Validate that the correct pages have generated meshes.
-    const affected_pages = [_]Grid.PageCoord{
+    const affected_pages = [_]vec3i{
         Grid.convert.globalVoxelToPageCoord(.{ 255, 255, 128 }), // Page (0,0,0)
         Grid.convert.globalVoxelToPageCoord(.{ 256, 255, 128 }), // Page (1,0,0)
         Grid.convert.globalVoxelToPageCoord(.{ 255, 256, 128 }), // Page (0,1,0)
@@ -547,10 +551,10 @@ test "manager creates sphere mesh across four pages" {
     };
 
     // Sanity check our coordinate math
-    try std.testing.expectEqual(Grid.PageCoord{ .x = 0, .y = 0, .z = 0 }, affected_pages[0]);
-    try std.testing.expectEqual(Grid.PageCoord{ .x = 1, .y = 0, .z = 0 }, affected_pages[1]);
-    try std.testing.expectEqual(Grid.PageCoord{ .x = 0, .y = 1, .z = 0 }, affected_pages[2]);
-    try std.testing.expectEqual(Grid.PageCoord{ .x = 1, .y = 1, .z = 0 }, affected_pages[3]);
+    try std.testing.expectEqual(vec3i{ 0, 0, 0 }, affected_pages[0]);
+    try std.testing.expectEqual(vec3i{ 1, 0, 0 }, affected_pages[1]);
+    try std.testing.expectEqual(vec3i{ 0, 1, 0 }, affected_pages[2]);
+    try std.testing.expectEqual(vec3i{ 1, 1, 0 }, affected_pages[3]);
 
     try std.testing.expectEqual(4, mesh_cache.meshes.len);
 
@@ -565,7 +569,7 @@ test "manager creates sphere mesh across four pages" {
 
     // 7. Validate that an unaffected page has no mesh.
     std.log.debug("Checking for no mesh in unaffected page...", .{});
-    const unaffected_page = Grid.PageCoord{ .x = 5, .y = 5, .z = 5 };
+    const unaffected_page = vec3i{ 5, 5, 5 };
     try std.testing.expect(mesh_cache.getView(unaffected_page) == null);
 
     try std.testing.expectEqual(7608, mesh_cache.vertices.len);
