@@ -1807,6 +1807,7 @@ pub const MeshCache = struct {
     }
 
     inline fn defragment_and_copy(self: *MeshCache, temp_allocator: std.mem.Allocator, gpa: std.mem.Allocator, secondary_destination: ?*MeshCache) !void {
+        std.debug.print("Defragmenting MeshCache\n", .{});
         var new_instances = std.MultiArrayList(MeshData).empty;
         try new_instances.ensureTotalCapacity(gpa, self.meshes.len - self.mesh_free_list.items.len);
         errdefer new_instances.deinit(gpa);
@@ -2147,7 +2148,7 @@ pub const Manager = struct {
                 self.frame_ready.store(false, .monotonic);
 
                 if (!self.running.load(.monotonic)) {
-                    log.info("Grid.Manager thread: shutting down\n", .{});
+                    log.info("Grid.Manager thread: shutting down", .{});
                     return;
                 }
 
@@ -2172,8 +2173,11 @@ pub const Manager = struct {
                 return;
             };
 
-            const arena = self.update_arena.allocator();
-            defer _ = self.update_arena.reset(.retain_capacity);
+            _ = self.update_arena.reset(.retain_capacity);
+            var thread_safe_allocator = std.heap.ThreadSafeAllocator{
+                .child_allocator = self.update_arena.allocator(),
+            };
+            const arena = thread_safe_allocator.allocator();
 
             var voxeme_wait_group = std.Thread.WaitGroup{};
             var page_wait_group = std.Thread.WaitGroup{};

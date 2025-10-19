@@ -470,7 +470,7 @@ test "manager creates sphere mesh across four pages" {
     defer arena_state.deinit();
     // const frame_arena = arena_state.allocator();
 
-    std.debug.print("Starting sphere mesh test...\n", .{});
+    std.log.debug("Starting sphere mesh test...", .{});
 
     // 1. Initialize the manager and its dependencies
     var pool: std.Thread.Pool = undefined;
@@ -518,21 +518,21 @@ test "manager creates sphere mesh across four pages" {
         }
     }
 
-    std.debug.print("Queued sphere voxel commands.\n", .{});
+    std.log.debug("Queued sphere voxel commands.", .{});
 
     // 5. Signal the manager to process the commands and wait for completion.
     // manager.deinit() joins the worker thread, ensuring all work is finished.
-    std.debug.print("Signaling manager to process queued commands...\n", .{});
+    std.log.debug("Signaling manager to process queued commands...", .{});
     manager.endFrame();
-    std.debug.print("Manager signaled 1; sleeping ..\n", .{});
+    std.log.debug("Manager signaled 1; sleeping ..", .{});
     std.Thread.sleep(std.time.ns_per_s);
-    std.debug.print("Waking up and signaling manager to swap buffers again\n", .{});
+    std.log.debug("Waking up and signaling manager to swap buffers again", .{});
     manager.endFrame();
-    std.debug.print("Manager signaled 2; front buffer should contain meshes\n", .{});
+    std.log.debug("Manager signaled 2; front buffer should contain meshes", .{});
     defer {
-        std.debug.print("Deinitializing manager...\n", .{});
+        std.log.debug("Deinitializing manager...", .{});
         var final_state = manager.deinit();
-        std.debug.print("Manager deinitialized, final state obtained.\n", .{});
+        std.log.debug("Manager deinitialized, final state obtained.", .{});
         final_state.deinit(); // Clean up the final grid and mesh cache
     }
 
@@ -554,7 +554,6 @@ test "manager creates sphere mesh across four pages" {
 
     try std.testing.expectEqual(4, mesh_cache.meshes.len);
 
-    std.log.debug("Checking for meshes in affected pages...", .{});
     for (affected_pages) |coord| {
         const view = mesh_cache.getView(coord);
         try std.testing.expect(view != null);

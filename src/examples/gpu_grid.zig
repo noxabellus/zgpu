@@ -480,8 +480,11 @@ pub fn main() !void {
     log.info("Queued sphere voxel commands.", .{});
 
     manager.endFrame();
-    std.Thread.sleep(std.time.ns_per_s);
+    var time = try std.time.Timer.start();
+    std.Thread.sleep(std.time.ns_per_ms);
     manager.endFrame();
+    const elapsed = time.read();
+    log.info("Waited {d}ms for grid update to finish", .{@as(f64, @floatFromInt(elapsed)) / @as(f64, @floatFromInt(std.time.ns_per_ms))});
     defer {
         var final_state = manager.deinit();
         final_state.deinit(); // Clean up the final grid and mesh cache
