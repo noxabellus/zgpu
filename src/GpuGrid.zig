@@ -777,6 +777,8 @@ pub fn init(allocator: std.mem.Allocator) !*Grid {
 
     try self.materials.ensureTotalCapacity(allocator, max_materials); // ~32kb
     errdefer self.materials.deinit(allocator);
+    @memset(self.materials.items(.color), MaterialData.none.color);
+    @memset(self.materials.items(.flags), MaterialData.none.flags);
 
     try self.page_free_list.ensureTotalCapacity(allocator, 1024); // ~4kb
     errdefer self.page_free_list.deinit(allocator);
@@ -889,38 +891,39 @@ pub fn registerMaterial(self: *Grid, properties: MaterialData) !MaterialId {
         return error.OutOfMaterials;
     }
 
-    try self.materials.append(self.allocator, properties);
+    self.materials.appendAssumeCapacity(properties);
 
     return @enumFromInt(index);
 }
 
 /// Get the properties for a material type by its MaterialId.
-pub fn getMaterial(self: *const Grid, id: MaterialId) *const MaterialData {
+pub fn getMaterial(self: *const Grid, id: MaterialId) MaterialData {
     const index = @intFromEnum(id);
-    return &self.materials.get(index);
+    return self.materials.get(index);
 }
 
 /// Get the opacity of a material by its MaterialId.
 pub fn isOpaqueMaterial(self: *const Grid, id: MaterialId) bool {
-    const mat = self.getMaterial(id);
-    return mat.flags.is_opaque;
+    const index = @intFromEnum(id);
+    return self.materials.items(.flags)[index].is_opaque;
 }
 
 /// Check if a voxel at the given global voxel coordinate is occluding.
 pub fn isOpaqueVoxel(self: *const Grid, global_voxel: vec3i) bool {
     const vox = self.getVoxel(global_voxel);
-    const mat = self.getMaterial(vox.material_id);
-    return mat.flags.is_opaque;
+    return self.isOpaqueMaterial(vox.material_id);
 }
 
 /// Get the voxel data at the given global voxel coordinate.
 /// This always returns a value; unloaded areas return `Voxel.empty`.
 /// Note that this does not return updated state for voxels that have been modified this frame.
 pub fn getVoxel(world: *const Grid, global_voxel: vec3i) Voxel {
+    std.debug.print("Getting voxel for {d}", .{global_voxel});
     // Find which Page it's in.
     const page_coord = convert.globalVoxelToPageCoord(global_voxel);
     const page_index = world.page_indirection.lookup(page_coord);
     if (page_index == PageTable.sentinel) {
+        std.debug.print("Page not found for getVoxel({d})\n", .{global_voxel});
         return .empty; // Page doesn't exist.
     }
 
@@ -2462,7 +2465,6 @@ pub const Manager = struct {
         if (!all_identical) return;
 
         if (page_voxel != Voxel.empty) {
-
             // Homogenize
             // Free all voxeme buffers
             var voxeme_1d_index_2: u32 = 0;
@@ -2559,11 +2561,13 @@ pub const Manager = struct {
             }
         }
 
+        buffers.grid.voxemes.items(.visibility)[voxeme_index] = new_voxeme_vis;
+
         const buffer_handle = buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index];
         if (buffer_handle != BufferData.sentinel) {
+            // Recalculate visibility for all voxels in the buffer
             const buffer_data = &buffers.grid.voxels.items(.visibility)[buffer_handle];
 
-            // Recalculate visibility for all voxels in the buffer
             // TODO: this could be split up to better utilize thread pool
             for (0..voxels_per_voxeme) |voxel_1d_index| {
                 const local_voxel_coord = convert.indexToLocalVoxelCoord(@intCast(voxel_1d_index));
@@ -2580,7 +2584,7 @@ pub const Manager = struct {
                     }
                 }
 
-                std.debug.print("computed visibility for voxel {d}: {any}", .{ global_voxel_coord, new_vis });
+                std.debug.print("computed visibility for voxel {d}: {any}\n", .{ global_voxel_coord, new_vis });
                 buffer_data[voxel_1d_index] = new_vis;
             }
         }
@@ -2614,6 +2618,8 @@ pub const Manager = struct {
                 });
             }
         }
+
+        buffers.grid.pages.items(.visibility)[page_index] = new_page_vis;
     }
 
     /// Generates a mesh for a dirty page using a simple "naive cubes" algorithm.
