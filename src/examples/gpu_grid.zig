@@ -158,7 +158,10 @@ const shader_text =
 pub fn main() !void {
     // var timer = try std.time.Timer.start();
 
-    const gpa = std.heap.page_allocator;
+    var tsa = std.heap.ThreadSafeAllocator{
+        .child_allocator = std.heap.page_allocator,
+    };
+    const gpa = tsa.allocator();
 
     if (comptime builtin.os.tag != .windows) {
         glfw.initHint(.{ .platform = .x11 });
