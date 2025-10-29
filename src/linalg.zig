@@ -131,10 +131,10 @@ pub fn mat4_identity() mat4 {
 /// Multiplies two 4x4 matrices (self * other).
 pub fn mat4_mul(m1: mat4, m2: mat4) mat4 {
     var out: mat4 = @splat(@splat(0.0));
-    var c: usize = 0;
-    while (c < 4) : (c += 1) {
-        var r: usize = 0;
-        while (r < 4) : (r += 1) {
+    comptime var c: usize = 0;
+    inline while (c < 4) : (c += 1) {
+        comptime var r: usize = 0;
+        inline while (r < 4) : (r += 1) {
             // zig fmt: off
             out[c][r] 
                 = m1[0][r] * m2[c][0]

@@ -106,7 +106,7 @@ pub fn deinit(self: *AssetCache) void {
 pub fn loadFont(self: *AssetCache, path: []const u8) !FontId {
     std.debug.assert(self.fonts.items.len < std.math.maxInt(FontId));
 
-    const font_data = try std.fs.cwd().readFileAlloc(self.allocator, path, 10 * 1024 * 1024);
+    const font_data = try std.fs.cwd().readFileAlloc(path, self.allocator, .limited(10 * 1024 * 1024));
     errdefer self.allocator.free(font_data);
 
     var font_info = stbtt.FontInfo{};
@@ -126,7 +126,7 @@ pub fn loadImage(self: *AssetCache, path: []const u8, generate_mips: bool) !Imag
         return existing_id;
     }
 
-    const file_data = try std.fs.cwd().readFileAlloc(self.allocator, path, 10 * 1024 * 1024); // 10MB max
+    const file_data = try std.fs.cwd().readFileAlloc(path, self.allocator, .limited(10 * 1024 * 1024)); // 10MB max
     defer self.allocator.free(file_data);
 
     var image = try stbi.Image.loadFromMemory(file_data, 4);

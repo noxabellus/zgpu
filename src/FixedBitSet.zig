@@ -18,7 +18,7 @@ pub fn new(comptime N: comptime_int) type {
             std.debug.assert(index < N);
             const word_index = index / word_bits;
             const bit_index = index % word_bits;
-            self.words[word_index] |= (@as(Word, 1) << @intCast(bit_index));
+            self.words[0..][word_index] |= (@as(Word, 1) << @intCast(bit_index));
         }
 
         /// Sets the bit at the given index to 0.
@@ -26,7 +26,7 @@ pub fn new(comptime N: comptime_int) type {
             std.debug.assert(index < N);
             const word_index = index / word_bits;
             const bit_index = index % word_bits;
-            self.words[word_index] &= ~(@as(Word, 1) << @intCast(bit_index));
+            self.words[0..][word_index] &= ~(@as(Word, 1) << @intCast(bit_index));
         }
 
         /// Returns true if the bit at the given index is 1.
@@ -34,7 +34,7 @@ pub fn new(comptime N: comptime_int) type {
             std.debug.assert(index < N);
             const word_index = index / word_bits;
             const bit_index = index % word_bits;
-            return (self.words[word_index] & (@as(Word, 1) << @intCast(bit_index))) != 0;
+            return (self.words[0..][word_index] & (@as(Word, 1) << @intCast(bit_index))) != 0;
         }
 
         /// Sets all bits to 1.
@@ -86,7 +86,7 @@ pub fn new(comptime N: comptime_int) type {
 
         /// Returns an iterator over the set bits.
         pub fn iterator(self: *const Self) Iterator {
-            return .{ .words = &self.words };
+            return .{ .words = self.words[0..] };
         }
     };
 }

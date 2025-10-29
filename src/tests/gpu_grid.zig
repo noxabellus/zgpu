@@ -194,21 +194,20 @@ test "setVoxel in empty world creates all structures" {
 
     // Assert Page was created and linked
     const page_coord = convert.globalVoxelToPageCoord(global_voxel);
-    const page_hash_index = grid.page_indirection.lookup(page_coord);
-    try std.testing.expect(page_hash_index != PageTable.sentinel);
-    const page_index = grid.page_indirection.indices[page_hash_index];
+    const page_index = grid.page_indirection.lookup(page_coord);
+    try std.testing.expect(page_index != Grid.sentinel_index);
     try std.testing.expectEqual(@as(u32, 0), page_index);
 
     // Assert Voxeme was created and linked
     const local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(global_voxel);
     const voxeme_table = &grid.pages.items(.voxeme_indirection)[page_index];
     const voxeme_index = voxeme_table.lookup(local_voxeme_coord);
-    try std.testing.expect(voxeme_index != VoxemeTable.sentinel);
+    try std.testing.expect(voxeme_index != Grid.sentinel_index);
     try std.testing.expectEqual(@as(u16, 0), voxeme_index);
 
     // Assert Buffer was created and linked
     const buffer_handle = grid.voxemes.items(.buffer_indirection)[voxeme_index];
-    try std.testing.expect(buffer_handle != Grid.BufferData.sentinel);
+    try std.testing.expect(buffer_handle != Grid.sentinel_index);
     try std.testing.expectEqual(@as(u32, 0), buffer_handle);
 
     // Assert the Voxel data is correct
@@ -253,7 +252,7 @@ test "setVoxel breaks homogeneous voxeme" {
 
     // Manually "homogenize" the voxeme to be solid stone.
     grid.voxemes.items(.voxel)[0] = Voxel{ .material_id = stone_mat, .state = 0 };
-    grid.voxemes.items(.buffer_indirection)[0] = Grid.BufferData.sentinel;
+    grid.voxemes.items(.buffer_indirection)[0] = Grid.sentinel_index;
     grid.voxels.clearRetainingCapacity(); // Clear the old buffer
     grid.dirty_page_set.unset(0); // Clear dirty flag
 
@@ -271,7 +270,7 @@ test "setVoxel breaks homogeneous voxeme" {
     try std.testing.expectEqual(@as(usize, 1), grid.bufferCount()); // A new buffer was created
 
     const buffer_handle = grid.voxemes.items(.buffer_indirection)[0];
-    try std.testing.expect(buffer_handle != Grid.BufferData.sentinel);
+    try std.testing.expect(buffer_handle != Grid.sentinel_index);
 
     const buffer = &grid.voxels.items(.voxel)[buffer_handle];
 
@@ -417,7 +416,7 @@ test "setVoxel dirties neighbors across page boundary" {
     // --- Get indices for the primary voxel's containers ---
     const primary_page_coord = convert.globalVoxelToPageCoord(primary_coord);
     const primary_page_index = grid.page_indirection.lookup(primary_page_coord);
-    try std.testing.expect(primary_page_index != PageTable.sentinel);
+    try std.testing.expect(primary_page_index != Grid.sentinel_index);
 
     const primary_local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(primary_coord);
     const primary_dirty_voxeme_idx = convert.localVoxemeCoordToIndex(primary_local_voxeme_coord);
@@ -425,7 +424,7 @@ test "setVoxel dirties neighbors across page boundary" {
     // --- Get indices for the neighbor voxel's containers ---
     const neighbor_page_coord = convert.globalVoxelToPageCoord(neighbor_coord);
     const neighbor_page_index = grid.page_indirection.lookup(neighbor_page_coord);
-    try std.testing.expect(neighbor_page_index != PageTable.sentinel);
+    try std.testing.expect(neighbor_page_index != Grid.sentinel_index);
     try std.testing.expect(primary_page_index != neighbor_page_index); // Ensure they are in different pages
 
     const neighbor_local_voxeme_coord = convert.globalVoxelToLocalVoxemeCoord(neighbor_coord);

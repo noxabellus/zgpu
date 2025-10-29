@@ -2116,7 +2116,7 @@ pub const renderPassEncoderWriteTimestamp = @extern(*const fn (RenderPassEncoder
 
 /// Loads a WGSL shader from a file.
 pub fn loadShader(device: Device, path: []const u8) !ShaderModule {
-    const buf = std.fs.cwd().readFileAlloc(std.heap.page_allocator, path, 8192) catch {
+    const buf = std.fs.cwd().readFileAlloc(path, std.heap.page_allocator, .unlimited) catch {
         return error.FailedToLoadShader;
     };
     defer std.heap.page_allocator.free(buf);

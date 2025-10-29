@@ -14,7 +14,6 @@ pub const Batch2D = @import("Batch2D.zig");
 pub const BindingState = @import("BindingState.zig");
 pub const debug = @import("debug.zig");
 pub const GpuGrid = @import("GpuGrid.zig");
-pub const Grid = @import("Grid.zig");
 pub const InputState = @import("InputState.zig");
 pub const linalg = @import("linalg.zig");
 pub const Ui = @import("Ui.zig");
