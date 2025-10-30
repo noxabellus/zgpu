@@ -449,7 +449,7 @@ pub fn main() !void {
     // Placing the center at (256, 256, 128) will make it perfectly intersect the corner
     // of pages (0,0,0), (1,0,0), (0,1,0), and (1,1,0).
     const center_voxel = vec3i{ 256, 256, 128 };
-    const radius = 10;
+    const radius = 32;
     const radius_sq = radius * radius;
 
     const min_bound = center_voxel - @as(vec3i, @splat(radius));

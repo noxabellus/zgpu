@@ -2222,34 +2222,34 @@ pub const Manager = struct {
         const page_coord = buffers.grid.pages.items(.coord)[page_index];
         const voxeme_coord = convert.indexToLocalVoxemeCoord(local_voxeme_1d_index);
         const voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[page_index].lookup(voxeme_coord);
-        if (voxeme_index == sentinel_index) return; // TODO: cache implicit voxeme visibility in the case of homogeneous page
+        if (voxeme_index == sentinel_index) return;
 
-        // recalculate gross visibility based on neighbor voxeme homogeny
         var new_voxeme_vis = Visibility.all;
 
         inline for (AxisDir.values) |axis_dir| {
-            const component_index = comptime axis_dir.toComponentIndex();
             const offset_index = comptime axis_dir.toIndex();
             const offset = comptime offsets[offset_index];
 
-            const neighbor_page_index = check_same_page: {
-                // zig fmt: off
-                if ((voxeme_coord[component_index] == 0 and !axis_dir.positive)
-                or  (voxeme_coord[component_index] == voxeme_axis_divisor - 1 and axis_dir.positive)) {
-                // zig fmt: on
-                    // neighbor is in a different page
-                    const neighbor_page_coord = page_coord + offset;
-                    break :check_same_page buffers.grid.page_indirection.lookup(neighbor_page_coord);
-                } else {
-                    // neighbor is in the same page
-                    break :check_same_page page_index;
-                }
-            };
+            // Check if neighbor is in different page
+            const neighbor_coord = voxeme_coord + offset;
+            const neighbor_page_offset = vec3i{
+                @intFromBool(neighbor_coord[0] < 0 or neighbor_coord[0] >= page_axis_divisor),
+                @intFromBool(neighbor_coord[1] < 0 or neighbor_coord[1] >= page_axis_divisor),
+                @intFromBool(neighbor_coord[2] < 0 or neighbor_coord[2] >= page_axis_divisor),
+            } * offset;
+
+            const neighbor_page_index = if (neighbor_page_offset[0] != 0 or neighbor_page_offset[1] != 0 or neighbor_page_offset[2] != 0)
+                buffers.grid.page_indirection.lookup(page_coord + neighbor_page_offset)
+            else
+                page_index;
 
             const neighbor_is_opaque = check_opacity: {
                 if (neighbor_page_index != sentinel_index) {
-                    var neighbor_voxeme_coord = voxeme_coord;
-                    neighbor_voxeme_coord[component_index] = if (axis_dir.positive) 0 else voxeme_axis_divisor - 1;
+                    const neighbor_voxeme_coord = vec3i{
+                        @mod(neighbor_coord[0], page_axis_divisor),
+                        @mod(neighbor_coord[1], page_axis_divisor),
+                        @mod(neighbor_coord[2], page_axis_divisor),
+                    };
 
                     const neighbor_voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[neighbor_page_index].lookup(neighbor_voxeme_coord);
 
@@ -2259,7 +2259,19 @@ pub const Manager = struct {
                             const neighbor_homo_voxel = buffers.grid.voxemes.items(.voxel)[neighbor_voxeme_index];
                             break :check_opacity buffers.grid.isOpaqueMaterial(neighbor_homo_voxel.material_id);
                         } else {
-                            break :check_opacity false;
+                            // For heterogeneous voxemes, check each voxel on the shared face
+                            const buffer = buffers.grid.voxels.items(.voxel)[neighbor_buffer_handle];
+                            const face_index = offset_index ^ 1; // Get opposite face index
+
+                            // Iterate through all voxels on the shared face
+                            for (voxeme_face_voxel_coords[face_index]) |face_coord| {
+                                const voxel_index = convert.localVoxelCoordToIndex(face_coord);
+                                const voxel = buffer[voxel_index];
+                                if (!buffers.grid.isOpaqueMaterial(voxel.material_id)) {
+                                    break :check_opacity false;
+                                }
+                            }
+                            break :check_opacity true;
                         }
                     } else {
                         const neighbor_homo_voxel = buffers.grid.pages.items(.voxel)[neighbor_page_index];
@@ -2557,11 +2569,82 @@ pub fn pageMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_coord: vec3
 }
 
 pub fn implicitVoxemeMeshBasic(self: *const Grid, gpa: std.mem.Allocator, page_coord: vec3i, local_voxeme_coord: vec3i, vertices: *std.MultiArrayList(MeshCache.VertexData), indices: *std.ArrayList(u32)) !void {
-    _ = self;
-    _ = gpa;
-    _ = page_coord;
-    _ = local_voxeme_coord;
-    _ = vertices;
-    _ = indices;
-    log.err("TODO: Skipping implicit voxeme", .{});
+    // we do not have visibility data for implicit voxeme; we need to derive it
+    const page_index = self.page_indirection.lookup(page_coord);
+    if (page_index == sentinel_index) return;
+
+    const page_voxel = self.pages.items(.voxel)[page_index];
+    if (page_voxel == Voxel.empty) return;
+
+    inline for (AxisDir.values) |axis_dir| {
+        const offset_index = comptime axis_dir.toIndex();
+        const offset = comptime offsets[offset_index];
+
+        // Check if neighbor is in different page
+        const neighbor_coord = local_voxeme_coord + offset;
+        const neighbor_page_offset = vec3i{
+            @intFromBool(neighbor_coord[0] < 0 or neighbor_coord[0] >= page_axis_divisor),
+            @intFromBool(neighbor_coord[1] < 0 or neighbor_coord[1] >= page_axis_divisor),
+            @intFromBool(neighbor_coord[2] < 0 or neighbor_coord[2] >= page_axis_divisor),
+        } * offset;
+
+        const neighbor_page_index = if (neighbor_page_offset[0] != 0 or neighbor_page_offset[1] != 0 or neighbor_page_offset[2] != 0)
+            self.page_indirection.lookup(page_coord + neighbor_page_offset)
+        else
+            page_index;
+
+        const neighbor_is_opaque = check_opacity: {
+            if (neighbor_page_index != sentinel_index) {
+                const neighbor_voxeme_coord = vec3i{
+                    @mod(neighbor_coord[0], page_axis_divisor),
+                    @mod(neighbor_coord[1], page_axis_divisor),
+                    @mod(neighbor_coord[2], page_axis_divisor),
+                };
+
+                const neighbor_voxeme_index = self.pages.items(.voxeme_indirection)[neighbor_page_index].lookup(neighbor_voxeme_coord);
+
+                if (neighbor_voxeme_index != sentinel_index) {
+                    const neighbor_buffer_handle = self.voxemes.items(.buffer_indirection)[neighbor_voxeme_index];
+                    if (neighbor_buffer_handle == sentinel_index) {
+                        const neighbor_homo_voxel = self.voxemes.items(.voxel)[neighbor_voxeme_index];
+                        break :check_opacity self.isOpaqueMaterial(neighbor_homo_voxel.material_id);
+                    } else {
+                        // For heterogeneous voxemes, check each voxel on the shared face
+                        const buffer = self.voxels.items(.voxel)[neighbor_buffer_handle];
+                        const face_index = offset_index ^ 1; // Get opposite face index
+
+                        // Iterate through all voxels on the shared face
+                        for (voxeme_face_voxel_coords[face_index]) |face_coord| {
+                            const voxel_index = convert.localVoxelCoordToIndex(face_coord);
+                            const voxel = buffer[voxel_index];
+                            if (!self.isOpaqueMaterial(voxel.material_id)) {
+                                break :check_opacity false;
+                            }
+                        }
+                        break :check_opacity true;
+                    }
+                } else {
+                    const neighbor_homo_voxel = self.pages.items(.voxel)[neighbor_page_index];
+                    break :check_opacity self.isOpaqueMaterial(neighbor_homo_voxel.material_id);
+                }
+            } else {
+                break :check_opacity false;
+            }
+        };
+
+        if (!neighbor_is_opaque) {
+            const local_voxeme_origin = convert.partsToGlobalVoxel(page_coord, local_voxeme_coord, .{ 0, 0, 0 });
+            const world_voxeme_origin = convert.globalVoxelToWorld(local_voxeme_origin);
+
+            try addFace(
+                gpa,
+                vertices,
+                indices,
+                axis_dir,
+                world_voxeme_origin,
+                voxeme_scale,
+                page_voxel.material_id,
+            );
+        }
+    }
 }
