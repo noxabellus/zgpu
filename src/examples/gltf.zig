@@ -6,12 +6,13 @@ const path = std.fs.path;
 const wgpu = @import("wgpu");
 const glfw = @import("glfw");
 const gltf = @import("gltf");
+const stbi = @import("stbi"); // NEW: Import STB Image library
 
 const debug = @import("../debug.zig");
 const linalg = @import("../linalg.zig");
-const vec2 = linalg.vec2;
+const vec2 = linalg.vec2; // NEW: Import vec2 for texture coordinates
 const vec3 = linalg.vec3;
-const vec4 = linalg.vec4; // Import vec4 for colors
+const vec4 = linalg.vec4;
 const mat4 = linalg.mat4;
 
 pub const std_options = std.Options{
@@ -23,7 +24,6 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-// Define a depth format that we'll use for our depth texture.
 const DEPTH_FORMAT = wgpu.TextureFormat.depth32_float;
 
 const Demo = struct {
@@ -31,29 +31,31 @@ const Demo = struct {
     surface: wgpu.Surface = null,
     adapter: wgpu.Adapter = null,
     device: wgpu.Device = null,
-    // We need to store the depth texture and its view.
     depth_texture: wgpu.Texture = null,
     depth_view: wgpu.TextureView = null,
     config: wgpu.SurfaceConfiguration = .{},
 };
 
-// A struct to define our vertex data, matching the data we'll load from glTF.
-// Now includes normals for lighting and colors.
+// NEW: Vertex struct now includes texture coordinates.
 const Vertex = extern struct {
     position: vec3,
     normal: vec3,
     color: vec4,
+    tex_coord: vec2,
 };
 
-// A struct to hold the WGPU resources for a single drawable part of a model.
+// NEW: MeshPrimitive now holds all its required rendering resources, including textures.
 const MeshPrimitive = struct {
     vertex_buffer: wgpu.Buffer,
     index_buffer: wgpu.Buffer,
     index_count: u32,
     index_format: wgpu.IndexFormat,
+    texture: wgpu.Texture,
+    texture_view: wgpu.TextureView,
+    sampler: wgpu.Sampler,
+    texture_bind_group: wgpu.BindGroup,
 };
 
-// A struct to represent our loaded model.
 const Model = struct {
     primitives: []MeshPrimitive,
     allocator: std.mem.Allocator,
@@ -62,18 +64,21 @@ const Model = struct {
         for (self.primitives) |p| {
             wgpu.bufferRelease(p.vertex_buffer);
             wgpu.bufferRelease(p.index_buffer);
+            // NEW: Release texture-related resources
+            wgpu.bindGroupRelease(p.texture_bind_group);
+            wgpu.samplerRelease(p.sampler);
+            wgpu.textureViewRelease(p.texture_view);
+            wgpu.textureRelease(p.texture);
         }
         self.allocator.free(self.primitives);
     }
 };
 
-// A struct for our camera's view-projection matrix uniform.
 const CameraUniform = extern struct {
     view_proj: mat4,
 };
 
-// The WGSL shader source code.
-// Updated to include normals for lighting and vertex colors.
+// NEW: Updated shader with texture coordinates and sampling.
 const shader_text =
     \\struct CameraUniform {
     \\    view_proj: mat4x4<f32>,
@@ -81,16 +86,24 @@ const shader_text =
     \\@group(0) @binding(0)
     \\var<uniform> u_camera: CameraUniform;
     \\
+    \\// NEW: Bindings for the texture and sampler at group 1.
+    \\@group(1) @binding(0)
+    \\var t_diffuse: texture_2d<f32>;
+    \\@group(1) @binding(1)
+    \\var s_diffuse: sampler;
+    \\
     \\struct VertexInput {
     \\    @location(0) position: vec3<f32>,
     \\    @location(1) normal: vec3<f32>,
     \\    @location(2) color: vec4<f32>,
+    \\    @location(3) tex_coord: vec2<f32>, // NEW: tex_coord input
     \\};
     \\
     \\struct VertexOutput {
     \\    @builtin(position) clip_position: vec4<f32>,
     \\    @location(0) normal: vec3<f32>,
     \\    @location(1) color: vec4<f32>,
+    \\    @location(2) tex_coord: vec2<f32>, // NEW: pass tex_coord to fragment
     \\};
     \\
     \\@vertex
@@ -99,6 +112,7 @@ const shader_text =
     \\    out.clip_position = u_camera.view_proj * vec4<f32>(model.position, 1.0);
     \\    out.normal = model.normal;
     \\    out.color = model.color;
+    \\    out.tex_coord = model.tex_coord; // NEW
     \\    return out;
     \\}
     \\
@@ -106,27 +120,35 @@ const shader_text =
     \\fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     \\    // A simple, hardcoded directional light to see the model's form.
     \\    let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.75));
+    \\    // Let's also give our light a color and intensity
+    \\    let light_color = vec3<f32>(1.0, 1.0, 1.0);
+    \\    let light_intensity = 1.0;
+    \\
+    \\    // Sample the texture to get the material's base color (albedo)
+    \\    // This is already converted from sRGB to linear by the sampler.
+    \\    let texture_color = textureSample(t_diffuse, s_diffuse, in.tex_coord);
+    \\    let base_color = texture_color.rgb * in.color.rgb; // Combine with vertex color
+    \\
+    \\    // Normalize the interpolated normal from the vertex shader.
     \\    let normal = normalize(in.normal);
     \\
-    \\    // Lambertian diffuse lighting.
-    \\    let diffuse_intensity = max(dot(normal, light_dir), 0.0);
+    \\    // Lambertian diffuse lighting calculation.
+    \\    let diffuse_strength = max(dot(normal, light_dir), 0.0);
+    \\    let diffuse_contribution = base_color * light_color * light_intensity * diffuse_strength;
     \\
     \\    // Add some ambient light so the dark side isn't completely black.
-    \\    let ambient_intensity = 0.2;
+    \\    let ambient_color = vec3<f32>(0.1, 0.1, 0.1); // A dim ambient light
+    \\    let ambient_contribution = base_color * ambient_color;
     \\
-    \\    let total_intensity = ambient_intensity + diffuse_intensity;
+    \\    // The final lit color is the sum of all light contributions.
+    \\    let final_color = ambient_contribution + diffuse_contribution;
     \\
-    \\    // Combine light with vertex color.
-    \\    let final_color = in.color.rgb * total_intensity;
-    \\
-    \\    return vec4<f32>(final_color, in.color.a);
+    \\    // Use the texture's alpha channel.
+    \\    return vec4<f32>(final_color, texture_color.a);
     \\}
 ;
 
-// This function creates the depth texture and its view.
-// It will be called on startup and whenever the window is resized.
 fn createDepthTexture(d: *Demo) void {
-    // If old resources exist, release them first.
     if (d.depth_view) |v| wgpu.textureViewRelease(v);
     if (d.depth_texture) |t| wgpu.textureRelease(t);
 
@@ -151,17 +173,18 @@ fn loadGltfModel(
     device: wgpu.Device,
     queue: wgpu.Queue,
     model_path: []const u8,
+    // NEW: Pass in the bind group layout for textures.
+    texture_bind_group_layout: wgpu.BindGroupLayout,
 ) !Model {
-    // Read the main glTF file (JSON).
+    stbi.setFlipVerticallyOnLoad(false);
+
     const gltf_file_buffer = try std.fs.cwd().readFileAllocOptions(model_path, allocator, .unlimited, .@"4", null);
     defer allocator.free(gltf_file_buffer);
 
-    // Initialize the gltf parser and parse the file.
     var gltf_data = gltf.init(allocator);
     defer gltf_data.deinit();
     try gltf_data.parse(gltf_file_buffer);
 
-    // Load the binary data (.bin files) associated with the glTF.
     var binary_buffers = std.ArrayList([]align(4) const u8).empty;
     defer {
         for (binary_buffers.items) |b| allocator.free(b);
@@ -169,12 +192,10 @@ fn loadGltfModel(
     }
 
     if (gltf_data.glb_binary) |bin| {
-        // For .glb files, the binary data is already in memory.
         const owned_bin = try allocator.alignedAlloc(u8, .@"4", bin.len);
         @memcpy(owned_bin, bin);
         try binary_buffers.append(allocator, owned_bin);
     } else {
-        // For .gltf files, we need to load the referenced .bin files.
         const model_dir = path.dirname(model_path).?;
         for (gltf_data.data.buffers) |buffer_info| {
             const bin_path = try path.join(allocator, &.{ model_dir, buffer_info.uri.? });
@@ -187,32 +208,31 @@ fn loadGltfModel(
     var primitive_list = std.ArrayList(MeshPrimitive).empty;
     errdefer primitive_list.deinit(allocator);
 
-    // A union to hold an iterator for any of the supported color formats.
     const ColorIterator = union(enum) {
         none,
         float: gltf.AccessorIterator(f32),
         u16: gltf.AccessorIterator(u16),
-        // u8 is also a common format, so we'll support it too.
         u8: gltf.AccessorIterator(u8),
     };
 
-    // Process all meshes in the glTF file.
     for (gltf_data.data.meshes) |mesh| {
         for (mesh.primitives) |primitive| {
-            // --- Extract Vertex Attributes ---
             var positions_accessor_idx: ?gltf.Index = null;
             var normals_accessor_idx: ?gltf.Index = null;
             var colors_accessor_idx: ?gltf.Index = null;
+            var texcoords_accessor_idx: ?gltf.Index = null; // NEW
+
             for (primitive.attributes) |attr| {
                 switch (attr) {
                     .position => |idx| positions_accessor_idx = idx,
                     .normal => |idx| normals_accessor_idx = idx,
-                    .color => |idx| colors_accessor_idx = idx, // Note: This now works due to the library fix
+                    .color => |idx| colors_accessor_idx = idx,
+                    // NEW: Check for the first texture coordinate set (TEXCOORD_0).
+                    .texcoord => |idx| texcoords_accessor_idx = idx,
                     else => {},
                 }
             }
 
-            // We need at least positions and normals for this demo.
             if (positions_accessor_idx == null or normals_accessor_idx == null) {
                 log.warn("Primitive in mesh '{s}' is missing positions or normals. Skipping.", .{mesh.name orelse "unnamed"});
                 continue;
@@ -220,7 +240,7 @@ fn loadGltfModel(
 
             const pos_acc = gltf_data.data.accessors[positions_accessor_idx.?];
             const norm_acc = gltf_data.data.accessors[normals_accessor_idx.?];
-            std.debug.assert(pos_acc.count == norm_acc.count); // Ensure attributes have same vertex count
+            std.debug.assert(pos_acc.count == norm_acc.count);
 
             const pos_buffer_view = gltf_data.data.buffer_views[pos_acc.buffer_view.?];
             const pos_binary_data = binary_buffers.items[pos_buffer_view.buffer];
@@ -234,7 +254,6 @@ fn loadGltfModel(
             var pos_iter = pos_acc.iterator(f32, &gltf_data, pos_binary_data);
             var norm_iter = norm_acc.iterator(f32, &gltf_data, norm_binary_data);
 
-            // Create the correct color iterator based on the accessor's component type.
             var color_iter: ColorIterator = .none;
             if (colors_accessor_idx) |color_idx| {
                 const color_acc = gltf_data.data.accessors[color_idx];
@@ -249,44 +268,50 @@ fn loadGltfModel(
                 }
             }
 
+            // NEW: Create an iterator for texture coordinates if they exist.
+            var maybe_uv_iter: ?gltf.AccessorIterator(f32) = null;
+            if (texcoords_accessor_idx) |uv_idx| {
+                const uv_acc = gltf_data.data.accessors[uv_idx];
+                const uv_buffer_view = gltf_data.data.buffer_views[uv_acc.buffer_view.?];
+                const uv_binary_data = binary_buffers.items[uv_buffer_view.buffer];
+                maybe_uv_iter = uv_acc.iterator(f32, &gltf_data, uv_binary_data);
+            }
+
             while (pos_iter.next()) |pos_slice| {
                 const norm_slice = norm_iter.next().?;
 
                 const pos_vec: vec3 = .{ pos_slice[0], pos_slice[1], pos_slice[2] };
                 const norm_vec: vec3 = .{ norm_slice[0], norm_slice[1], norm_slice[2] };
 
-                // Get the next color, normalizing if necessary.
                 const color_vec: vec4 = switch (color_iter) {
-                    .none => .{ 1.0, 1.0, 1.0, 1.0 }, // Default to white
+                    .none => .{ 1.0, 1.0, 1.0, 1.0 },
                     .float => |*iter| blk: {
-                        const color_slice = iter.next().?;
-                        break :blk if (color_slice.len == 3)
-                            .{ color_slice[0], color_slice[1], color_slice[2], 1.0 }
-                        else
-                            .{ color_slice[0], color_slice[1], color_slice[2], color_slice[3] };
+                        const s = iter.next().?;
+                        break :blk if (s.len == 3) .{ s[0], s[1], s[2], 1.0 } else .{ s[0], s[1], s[2], s[3] };
                     },
                     .u16 => |*iter| blk: {
-                        const color_slice = iter.next().?;
-                        const norm: f32 = 1.0 / 65535.0;
-                        break :blk if (color_slice.len == 3)
-                            .{ @as(f32, @floatFromInt(color_slice[0])) * norm, @as(f32, @floatFromInt(color_slice[1])) * norm, @as(f32, @floatFromInt(color_slice[2])) * norm, 1.0 }
-                        else
-                            .{ @as(f32, @floatFromInt(color_slice[0])) * norm, @as(f32, @floatFromInt(color_slice[1])) * norm, @as(f32, @floatFromInt(color_slice[2])) * norm, @as(f32, @floatFromInt(color_slice[3])) * norm };
+                        const s = iter.next().?;
+                        const n: f32 = 1.0 / 65535.0;
+                        break :blk if (s.len == 3) .{ @as(f32, @floatFromInt(s[0])) * n, @as(f32, @floatFromInt(s[1])) * n, @as(f32, @floatFromInt(s[2])) * n, 1.0 } else .{ @as(f32, @floatFromInt(s[0])) * n, @as(f32, @floatFromInt(s[1])) * n, @as(f32, @floatFromInt(s[2])) * n, @as(f32, @floatFromInt(s[3])) * n };
                     },
                     .u8 => |*iter| blk: {
-                        const color_slice = iter.next().?;
-                        const norm: f32 = 1.0 / 255.0;
-                        break :blk if (color_slice.len == 3)
-                            .{ @as(f32, @floatFromInt(color_slice[0])) * norm, @as(f32, @floatFromInt(color_slice[1])) * norm, @as(f32, @floatFromInt(color_slice[2])) * norm, 1.0 }
-                        else
-                            .{ @as(f32, @floatFromInt(color_slice[0])) * norm, @as(f32, @floatFromInt(color_slice[1])) * norm, @as(f32, @floatFromInt(color_slice[2])) * norm, @as(f32, @floatFromInt(color_slice[3])) * norm };
+                        const s = iter.next().?;
+                        const n: f32 = 1.0 / 255.0;
+                        break :blk if (s.len == 3) .{ @as(f32, @floatFromInt(s[0])) * n, @as(f32, @floatFromInt(s[1])) * n, @as(f32, @floatFromInt(s[2])) * n, 1.0 } else .{ @as(f32, @floatFromInt(s[0])) * n, @as(f32, @floatFromInt(s[1])) * n, @as(f32, @floatFromInt(s[2])) * n, @as(f32, @floatFromInt(s[3])) * n };
                     },
                 };
+
+                // NEW: Get texture coordinates, or use a default if they don't exist.
+                const uv_vec: vec2 = if (maybe_uv_iter) |*uv_iter| blk: {
+                    const uv_slice = uv_iter.next().?;
+                    break :blk .{ uv_slice[0], uv_slice[1] };
+                } else .{ 0.0, 0.0 };
 
                 vertices.appendAssumeCapacity(.{
                     .position = pos_vec,
                     .normal = norm_vec,
                     .color = color_vec,
+                    .tex_coord = uv_vec,
                 });
             }
 
@@ -295,12 +320,9 @@ fn loadGltfModel(
                 .label = wgpu.StringView.fromSlice(mesh.name orelse "anonymous_mesh"),
                 .usage = .{ .vertex = true, .copy_dst = true },
                 .size = vertex_buffer_bytes.len,
-                .mapped_at_creation = .False,
             });
             wgpu.queueWriteBuffer(queue, vbo, 0, vertex_buffer_bytes.ptr, vertex_buffer_bytes.len);
 
-            // --- Extract Indices ---
-            // ... (rest of the function is unchanged) ...
             const idx_acc = gltf_data.data.accessors[primitive.indices.?];
             const idx_buffer_view = gltf_data.data.buffer_views[idx_acc.buffer_view.?];
             const idx_binary_data = binary_buffers.items[idx_buffer_view.buffer];
@@ -315,17 +337,13 @@ fn loadGltfModel(
                     var indices = std.ArrayList(u16).empty;
                     defer indices.deinit(allocator);
                     try indices.ensureTotalCapacity(allocator, idx_acc.count);
-
                     var idx_iter = idx_acc.iterator(u16, &gltf_data, idx_binary_data);
-                    while (idx_iter.next()) |idx_slice| {
-                        for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
-                    }
+                    while (idx_iter.next()) |idx_slice| for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
                     const index_buffer_bytes = std.mem.sliceAsBytes(indices.items);
                     ibo = wgpu.deviceCreateBuffer(device, &.{
                         .label = .fromSlice("index_buffer_u16"),
                         .usage = .{ .index = true, .copy_dst = true },
                         .size = index_buffer_bytes.len,
-                        .mapped_at_creation = .False,
                     });
                     wgpu.queueWriteBuffer(queue, ibo, 0, index_buffer_bytes.ptr, index_buffer_bytes.len);
                 },
@@ -334,28 +352,112 @@ fn loadGltfModel(
                     var indices = std.ArrayList(u32).empty;
                     defer indices.deinit(allocator);
                     try indices.ensureTotalCapacity(allocator, idx_acc.count);
-
                     var idx_iter = idx_acc.iterator(u32, &gltf_data, idx_binary_data);
-                    while (idx_iter.next()) |idx_slice| {
-                        for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
-                    }
+                    while (idx_iter.next()) |idx_slice| for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
                     const index_buffer_bytes = std.mem.sliceAsBytes(indices.items);
                     ibo = wgpu.deviceCreateBuffer(device, &.{
                         .label = .fromSlice("index_buffer_u32"),
                         .usage = .{ .index = true, .copy_dst = true },
                         .size = index_buffer_bytes.len,
-                        .mapped_at_creation = .False,
                     });
                     wgpu.queueWriteBuffer(queue, ibo, 0, index_buffer_bytes.ptr, index_buffer_bytes.len);
                 },
                 else => return error.UnsupportedIndexFormat,
             }
 
+            // --- NEW: Load Texture ---
+            var prim_texture: wgpu.Texture = undefined;
+            var prim_texture_view: wgpu.TextureView = undefined;
+
+            var maybe_image: ?stbi.Image = null;
+            defer if (maybe_image) |*img| img.deinit();
+
+            if (primitive.material) |mat_idx| {
+                const material = gltf_data.data.materials[mat_idx];
+                if (material.metallic_roughness.base_color_texture) |tex_info| {
+                    const texture_def = gltf_data.data.textures[tex_info.index];
+                    if (texture_def.source) |img_idx| {
+                        const image_def = gltf_data.data.images[img_idx];
+                        if (image_def.buffer_view) |bv_idx| {
+                            const buffer_view = gltf_data.data.buffer_views[bv_idx];
+                            const image_binary_data = binary_buffers.items[buffer_view.buffer];
+                            const image_slice = image_binary_data[buffer_view.byte_offset..][0..buffer_view.byte_length];
+                            maybe_image = try stbi.Image.loadFromMemory(image_slice, 4); // force 4 components (RGBA)
+                        }
+                    }
+                }
+            }
+
+            if (maybe_image) |image| {
+                const texture_descriptor = wgpu.TextureDescriptor{
+                    .label = .fromSlice("gltf_texture"),
+                    .size = .{ .width = image.width, .height = image.height, .depth_or_array_layers = 1 },
+                    .mip_level_count = 1,
+                    .sample_count = 1,
+                    .dimension = .@"2d",
+                    .format = .rgba8_unorm_srgb,
+                    .usage = .{ .texture_binding = true, .copy_dst = true },
+                };
+                prim_texture = wgpu.deviceCreateTexture(device, &texture_descriptor);
+                prim_texture_view = wgpu.textureCreateView(prim_texture, null);
+
+                wgpu.queueWriteTexture(
+                    queue,
+                    &.{ .texture = prim_texture },
+                    image.data.ptr,
+                    image.data.len,
+                    &.{ .bytes_per_row = image.bytes_per_row, .rows_per_image = image.height },
+                    &.{ .width = image.width, .height = image.height, .depth_or_array_layers = 1 },
+                );
+            } else {
+                // Create a 1x1 white fallback texture
+                const texture_descriptor = wgpu.TextureDescriptor{
+                    .label = .fromSlice("fallback_texture"),
+                    .size = .{ .width = 1, .height = 1, .depth_or_array_layers = 1 },
+                    .mip_level_count = 1,
+                    .sample_count = 1,
+                    .dimension = .@"2d",
+                    .format = .rgba8_unorm_srgb,
+                    .usage = .{ .texture_binding = true, .copy_dst = true },
+                };
+                prim_texture = wgpu.deviceCreateTexture(device, &texture_descriptor);
+                prim_texture_view = wgpu.textureCreateView(prim_texture, null);
+                const white_pixel: u32 = 0xFFFFFFFF;
+                wgpu.queueWriteTexture(
+                    queue,
+                    &.{ .texture = prim_texture },
+                    &white_pixel,
+                    4,
+                    &.{ .bytes_per_row = 4, .rows_per_image = 1 },
+                    &.{ .width = 1, .height = 1, .depth_or_array_layers = 1 },
+                );
+            }
+
+            const prim_sampler = wgpu.deviceCreateSampler(device, &.{
+                .address_mode_u = .repeat,
+                .address_mode_v = .repeat,
+                .mag_filter = .linear,
+                .min_filter = .linear,
+            });
+
+            const prim_bind_group = wgpu.deviceCreateBindGroup(device, &.{
+                .layout = texture_bind_group_layout,
+                .entry_count = 2,
+                .entries = &.{
+                    .{ .binding = 0, .texture_view = prim_texture_view },
+                    .{ .binding = 1, .sampler = prim_sampler },
+                },
+            });
+
             try primitive_list.append(allocator, .{
                 .vertex_buffer = vbo,
                 .index_buffer = ibo,
                 .index_count = index_count,
                 .index_format = index_format,
+                .texture = prim_texture,
+                .texture_view = prim_texture_view,
+                .sampler = prim_sampler,
+                .texture_bind_group = prim_bind_group,
             });
         }
     }
@@ -368,20 +470,23 @@ fn loadGltfModel(
 
 pub fn main() !void {
     var timer = try std.time.Timer.start();
-
     const gpa = std.heap.page_allocator;
+
+    // NEW: Init stbi
+    stbi.init(gpa);
+    defer stbi.deinit();
 
     if (comptime builtin.os.tag != .windows) {
         glfw.initHint(.{ .platform = .x11 });
     } else {
         glfw.initHint(.{ .platform = .win32 });
     }
-
     try glfw.init();
     defer glfw.deinit();
 
     var demo = Demo{};
 
+    // ... (glfw, wgpu instance, surface, adapter, device setup remains the same)
     const instance_extras = wgpu.InstanceExtras{ .chain = .{ .s_type = .instance_extras }, .backends = switch (builtin.os.tag) {
         .windows => if (glfw.isRunningInWine()) wgpu.InstanceBackend.vulkanBackend else wgpu.InstanceBackend.dx12Backend,
         else => wgpu.InstanceBackend.vulkanBackend,
@@ -389,7 +494,6 @@ pub fn main() !void {
     wgpu.setLogCallback(&struct {
         pub fn wgpu_logger(level: wgpu.LogLevel, message: wgpu.StringView, _: ?*anyopaque) callconv(.c) void {
             const msg = message.toSlice();
-
             const prefix = switch (level) {
                 .@"error" => "wgpu error: ",
                 .warn => "wgpu warn: ",
@@ -398,11 +502,10 @@ pub fn main() !void {
                 .trace => "wgpu trace: ",
                 else => "wgpu unknown: ",
             };
-
             std.debug.print("{s}{s}\n", .{ prefix, msg });
         }
     }.wgpu_logger, null);
-    wgpu.setLogLevel(.info);
+    wgpu.setLogLevel(.warn);
     demo.instance = wgpu.createInstance(&wgpu.InstanceDescriptor{ .next_in_chain = @ptrCast(&instance_extras) });
     std.debug.assert(demo.instance != null);
     defer wgpu.instanceRelease(demo.instance);
@@ -475,15 +578,22 @@ pub fn main() !void {
     _ = wgpu.surfaceGetCapabilities(demo.surface, demo.adapter, &surface_capabilities);
     defer wgpu.surfaceCapabilitiesFreeMembers(surface_capabilities);
 
-    const surface_format = surface_capabilities.formats.?[0];
+    const surface_format: wgpu.TextureFormat = .bgra8_unorm_srgb;
+
+    demo.config = .{
+        .device = demo.device,
+        .usage = .renderAttachmentUsage,
+        .format = .rgba32_float, // Use the selected sRGB format
+        .present_mode = .fifo,
+        .alpha_mode = surface_capabilities.alpha_modes.?[0],
+    };
     demo.config = .{
         .device = demo.device,
         .usage = .renderAttachmentUsage,
         .format = surface_format,
-        .present_mode = .immediate,
+        .present_mode = .fifo, // Fifo is often a better default than immediate.
         .alpha_mode = surface_capabilities.alpha_modes.?[0],
     };
-
     {
         var width: i32 = 0;
         var height: i32 = 0;
@@ -494,16 +604,11 @@ pub fn main() !void {
     wgpu.surfaceConfigure(demo.surface, &demo.config);
     createDepthTexture(&demo);
 
-    // --- LOAD THE MODEL ---
-    var model = try loadGltfModel(gpa, demo.device, queue, "assets/models/vertex-colors.glb");
-    defer model.deinit();
-
-    // --- CREATE UNIFORM BUFFER & BIND GROUP ---
+    // --- CREATE BIND GROUP LAYOUTS ---
     const camera_buffer = wgpu.deviceCreateBuffer(demo.device, &.{
         .label = .fromSlice("camera_buffer"),
         .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
         .size = @sizeOf(CameraUniform),
-        .mapped_at_creation = .False,
     });
     defer wgpu.bufferRelease(camera_buffer);
 
@@ -514,11 +619,30 @@ pub fn main() !void {
             .{
                 .binding = 0,
                 .visibility = wgpu.ShaderStage.vertexStage,
-                .buffer = .{ .type = .uniform, .has_dynamic_offset = .False, .min_binding_size = 0 },
+                .buffer = .{ .type = .uniform },
             },
         },
     });
     defer wgpu.bindGroupLayoutRelease(camera_bind_group_layout);
+
+    // NEW: Create a bind group layout for our texture and sampler.
+    const texture_bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &.{
+        .label = .fromSlice("texture_bind_group_layout"),
+        .entry_count = 2,
+        .entries = &.{
+            .{
+                .binding = 0,
+                .visibility = wgpu.ShaderStage.fragmentStage,
+                .texture = .{ .sample_type = .float, .view_dimension = .@"2d" },
+            },
+            .{
+                .binding = 1,
+                .visibility = wgpu.ShaderStage.fragmentStage,
+                .sampler = .{ .type = .filtering },
+            },
+        },
+    });
+    defer wgpu.bindGroupLayoutRelease(texture_bind_group_layout);
 
     const camera_bind_group = wgpu.deviceCreateBindGroup(demo.device, &.{
         .label = .fromSlice("camera_bind_group"),
@@ -533,21 +657,29 @@ pub fn main() !void {
     });
     defer wgpu.bindGroupRelease(camera_bind_group);
 
+    // --- LOAD THE MODEL ---
+    // NEW: Load greenman model and pass the texture BGL.
+    var model = try loadGltfModel(gpa, demo.device, queue, "assets/models/greenman.glb", texture_bind_group_layout);
+    defer model.deinit();
+
     // --- Create Render Pipeline ---
     const shader_module = try wgpu.loadShaderText(demo.device, "gltf_shader.wgsl", shader_text);
     defer wgpu.shaderModuleRelease(shader_module);
 
+    // NEW: The pipeline layout now expects two bind group layouts.
     const pipeline_layout = wgpu.deviceCreatePipelineLayout(demo.device, &.{
         .label = .fromSlice("pipeline_layout"),
-        .bind_group_layout_count = 1,
-        .bind_group_layouts = &.{camera_bind_group_layout},
+        .bind_group_layout_count = 2,
+        .bind_group_layouts = &.{ camera_bind_group_layout, texture_bind_group_layout },
     });
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
 
+    // NEW: Define vertex attributes including the new tex_coord.
     const vertex_attributes = [_]wgpu.VertexAttribute{
         .{ .shaderLocation = 0, .offset = @offsetOf(Vertex, "position"), .format = .float32x3 },
         .{ .shaderLocation = 1, .offset = @offsetOf(Vertex, "normal"), .format = .float32x3 },
         .{ .shaderLocation = 2, .offset = @offsetOf(Vertex, "color"), .format = .float32x4 },
+        .{ .shaderLocation = 3, .offset = @offsetOf(Vertex, "tex_coord"), .format = .float32x2 },
     };
 
     const vertex_buffer_layout = wgpu.VertexBufferLayout{
@@ -612,7 +744,6 @@ pub fn main() !void {
     defer arena_state.deinit();
 
     const startup_ms = debug.start(&timer);
-
     log.info("startup completed in {d} ms", .{startup_ms});
 
     // --- Main Loop ---
@@ -629,11 +760,10 @@ pub fn main() !void {
 
             const proj = linalg.mat4_perspective(linalg.deg_to_rad * 45.0, aspect, 0.1, 100.0);
             const view = linalg.mat4_look_at(
-                .{ 8.0, 0.0, 8.0 }, // Eye position
-                .{ 0.0, 0.0, 0.0 }, // Target (raised slightly)
+                .{ 4.0, 2.0, 4.0 }, // Eye position
+                .{ 0.0, 0.5, 0.0 }, // Target (raised slightly)
                 .{ 0.0, 1.0, 0.0 }, // Up vector
             );
-
             camera_uniform.view_proj = linalg.mat4_mul(proj, view);
         }
         wgpu.queueWriteBuffer(queue, camera_buffer, 0, &camera_uniform, @sizeOf(CameraUniform));
@@ -695,6 +825,8 @@ pub fn main() !void {
 
         // --- RENDER THE LOADED MODEL ---
         for (model.primitives) |primitive| {
+            // NEW: Set the texture bind group for this specific primitive.
+            wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
             wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
             wgpu.renderPassEncoderSetIndexBuffer(render_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
             wgpu.renderPassEncoderDrawIndexed(render_pass, primitive.index_count, 1, 0, 0, 0);
@@ -707,9 +839,7 @@ pub fn main() !void {
         defer wgpu.commandBufferRelease(cmd);
 
         wgpu.queueSubmit(queue, 1, &.{cmd});
-
         _ = wgpu.surfacePresent(demo.surface);
-
         debug.lap();
     }
 }
