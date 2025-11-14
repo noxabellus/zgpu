@@ -11,6 +11,7 @@ const debug = @import("../debug.zig");
 const linalg = @import("../linalg.zig");
 const vec2 = linalg.vec2;
 const vec3 = linalg.vec3;
+const vec4 = linalg.vec4; // Import vec4 for colors
 const mat4 = linalg.mat4;
 
 pub const std_options = std.Options{
@@ -37,9 +38,11 @@ const Demo = struct {
 };
 
 // A struct to define our vertex data, matching the data we'll load from glTF.
-// For now, we only care about the position.
+// Now includes normals for lighting and colors.
 const Vertex = extern struct {
     position: vec3,
+    normal: vec3,
+    color: vec4,
 };
 
 // A struct to hold the WGPU resources for a single drawable part of a model.
@@ -70,7 +73,7 @@ const CameraUniform = extern struct {
 };
 
 // The WGSL shader source code.
-// It's been simplified to only take a vertex position and output a hardcoded color.
+// Updated to include normals for lighting and vertex colors.
 const shader_text =
     \\struct CameraUniform {
     \\    view_proj: mat4x4<f32>,
@@ -80,26 +83,43 @@ const shader_text =
     \\
     \\struct VertexInput {
     \\    @location(0) position: vec3<f32>,
+    \\    @location(1) normal: vec3<f32>,
+    \\    @location(2) color: vec4<f32>,
     \\};
     \\
     \\struct VertexOutput {
     \\    @builtin(position) clip_position: vec4<f32>,
+    \\    @location(0) normal: vec3<f32>,
+    \\    @location(1) color: vec4<f32>,
     \\};
     \\
     \\@vertex
-    \\fn vs_main(
-    \\    model: VertexInput,
-    \\) -> VertexOutput {
+    \\fn vs_main(model: VertexInput) -> VertexOutput {
     \\    var out: VertexOutput;
-    \\    // Transform the 3D vertex position by the view-projection matrix
     \\    out.clip_position = u_camera.view_proj * vec4<f32>(model.position, 1.0);
+    \\    out.normal = model.normal;
+    \\    out.color = model.color;
     \\    return out;
     \\}
     \\
     \\@fragment
     \\fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    \\    // Output a constant white color since we're not loading materials yet.
-    \\    return vec4<f32>(0.8, 0.8, 0.8, 1.0);
+    \\    // A simple, hardcoded directional light to see the model's form.
+    \\    let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.75));
+    \\    let normal = normalize(in.normal);
+    \\
+    \\    // Lambertian diffuse lighting.
+    \\    let diffuse_intensity = max(dot(normal, light_dir), 0.0);
+    \\
+    \\    // Add some ambient light so the dark side isn't completely black.
+    \\    let ambient_intensity = 0.2;
+    \\
+    \\    let total_intensity = ambient_intensity + diffuse_intensity;
+    \\
+    \\    // Combine light with vertex color.
+    \\    let final_color = in.color.rgb * total_intensity;
+    \\
+    \\    return vec4<f32>(final_color, in.color.a);
     \\}
 ;
 
@@ -150,7 +170,6 @@ fn loadGltfModel(
 
     if (gltf_data.glb_binary) |bin| {
         // For .glb files, the binary data is already in memory.
-        // We need to copy it since the parser owns the memory.
         const owned_bin = try allocator.alignedAlloc(u8, .@"4", bin.len);
         @memcpy(owned_bin, bin);
         try binary_buffers.append(allocator, owned_bin);
@@ -168,47 +187,120 @@ fn loadGltfModel(
     var primitive_list = std.ArrayList(MeshPrimitive).empty;
     errdefer primitive_list.deinit(allocator);
 
+    // A union to hold an iterator for any of the supported color formats.
+    const ColorIterator = union(enum) {
+        none,
+        float: gltf.AccessorIterator(f32),
+        u16: gltf.AccessorIterator(u16),
+        // u8 is also a common format, so we'll support it too.
+        u8: gltf.AccessorIterator(u8),
+    };
+
     // Process all meshes in the glTF file.
     for (gltf_data.data.meshes) |mesh| {
         for (mesh.primitives) |primitive| {
-            // --- Extract Vertex Positions ---
+            // --- Extract Vertex Attributes ---
             var positions_accessor_idx: ?gltf.Index = null;
+            var normals_accessor_idx: ?gltf.Index = null;
+            var colors_accessor_idx: ?gltf.Index = null;
             for (primitive.attributes) |attr| {
-                if (attr == .position) {
-                    positions_accessor_idx = attr.position;
-                    break;
+                switch (attr) {
+                    .position => |idx| positions_accessor_idx = idx,
+                    .normal => |idx| normals_accessor_idx = idx,
+                    .color => |idx| colors_accessor_idx = idx, // Note: This now works due to the library fix
+                    else => {},
                 }
             }
-            // Skip primitives that don't have position data.
-            if (positions_accessor_idx == null) continue;
+
+            // We need at least positions and normals for this demo.
+            if (positions_accessor_idx == null or normals_accessor_idx == null) {
+                log.warn("Primitive in mesh '{s}' is missing positions or normals. Skipping.", .{mesh.name orelse "unnamed"});
+                continue;
+            }
 
             const pos_acc = gltf_data.data.accessors[positions_accessor_idx.?];
+            const norm_acc = gltf_data.data.accessors[normals_accessor_idx.?];
+            std.debug.assert(pos_acc.count == norm_acc.count); // Ensure attributes have same vertex count
+
             const pos_buffer_view = gltf_data.data.buffer_views[pos_acc.buffer_view.?];
             const pos_binary_data = binary_buffers.items[pos_buffer_view.buffer];
+            const norm_buffer_view = gltf_data.data.buffer_views[norm_acc.buffer_view.?];
+            const norm_binary_data = binary_buffers.items[norm_buffer_view.buffer];
 
             var vertices = std.ArrayList(Vertex).empty;
             defer vertices.deinit(allocator);
             try vertices.ensureTotalCapacity(allocator, pos_acc.count);
 
             var pos_iter = pos_acc.iterator(f32, &gltf_data, pos_binary_data);
+            var norm_iter = norm_acc.iterator(f32, &gltf_data, norm_binary_data);
+
+            // Create the correct color iterator based on the accessor's component type.
+            var color_iter: ColorIterator = .none;
+            if (colors_accessor_idx) |color_idx| {
+                const color_acc = gltf_data.data.accessors[color_idx];
+                const color_buffer_view = gltf_data.data.buffer_views[color_acc.buffer_view.?];
+                const color_binary_data = binary_buffers.items[color_buffer_view.buffer];
+
+                switch (color_acc.component_type) {
+                    .float => color_iter = .{ .float = color_acc.iterator(f32, &gltf_data, color_binary_data) },
+                    .unsigned_short => color_iter = .{ .u16 = color_acc.iterator(u16, &gltf_data, color_binary_data) },
+                    .unsigned_byte => color_iter = .{ .u8 = color_acc.iterator(u8, &gltf_data, color_binary_data) },
+                    else => log.warn("Unsupported vertex color format: {any}", .{color_acc.component_type}),
+                }
+            }
+
             while (pos_iter.next()) |pos_slice| {
+                const norm_slice = norm_iter.next().?;
+
                 const pos_vec: vec3 = .{ pos_slice[0], pos_slice[1], pos_slice[2] };
-                vertices.appendAssumeCapacity(.{ .position = pos_vec });
+                const norm_vec: vec3 = .{ norm_slice[0], norm_slice[1], norm_slice[2] };
+
+                // Get the next color, normalizing if necessary.
+                const color_vec: vec4 = switch (color_iter) {
+                    .none => .{ 1.0, 1.0, 1.0, 1.0 }, // Default to white
+                    .float => |*iter| blk: {
+                        const color_slice = iter.next().?;
+                        break :blk if (color_slice.len == 3)
+                            .{ color_slice[0], color_slice[1], color_slice[2], 1.0 }
+                        else
+                            .{ color_slice[0], color_slice[1], color_slice[2], color_slice[3] };
+                    },
+                    .u16 => |*iter| blk: {
+                        const color_slice = iter.next().?;
+                        const norm: f32 = 1.0 / 65535.0;
+                        break :blk if (color_slice.len == 3)
+                            .{ @as(f32, @floatFromInt(color_slice[0])) * norm, @as(f32, @floatFromInt(color_slice[1])) * norm, @as(f32, @floatFromInt(color_slice[2])) * norm, 1.0 }
+                        else
+                            .{ @as(f32, @floatFromInt(color_slice[0])) * norm, @as(f32, @floatFromInt(color_slice[1])) * norm, @as(f32, @floatFromInt(color_slice[2])) * norm, @as(f32, @floatFromInt(color_slice[3])) * norm };
+                    },
+                    .u8 => |*iter| blk: {
+                        const color_slice = iter.next().?;
+                        const norm: f32 = 1.0 / 255.0;
+                        break :blk if (color_slice.len == 3)
+                            .{ @as(f32, @floatFromInt(color_slice[0])) * norm, @as(f32, @floatFromInt(color_slice[1])) * norm, @as(f32, @floatFromInt(color_slice[2])) * norm, 1.0 }
+                        else
+                            .{ @as(f32, @floatFromInt(color_slice[0])) * norm, @as(f32, @floatFromInt(color_slice[1])) * norm, @as(f32, @floatFromInt(color_slice[2])) * norm, @as(f32, @floatFromInt(color_slice[3])) * norm };
+                    },
+                };
+
+                vertices.appendAssumeCapacity(.{
+                    .position = pos_vec,
+                    .normal = norm_vec,
+                    .color = color_vec,
+                });
             }
 
             const vertex_buffer_bytes = std.mem.sliceAsBytes(vertices.items);
             const vbo = wgpu.deviceCreateBuffer(device, &.{
                 .label = wgpu.StringView.fromSlice(mesh.name orelse "anonymous_mesh"),
-                .usage = .{
-                    .vertex = true,
-                    .copy_dst = true,
-                },
+                .usage = .{ .vertex = true, .copy_dst = true },
                 .size = vertex_buffer_bytes.len,
                 .mapped_at_creation = .False,
             });
             wgpu.queueWriteBuffer(queue, vbo, 0, vertex_buffer_bytes.ptr, vertex_buffer_bytes.len);
 
             // --- Extract Indices ---
+            // ... (rest of the function is unchanged) ...
             const idx_acc = gltf_data.data.accessors[primitive.indices.?];
             const idx_buffer_view = gltf_data.data.buffer_views[idx_acc.buffer_view.?];
             const idx_binary_data = binary_buffers.items[idx_buffer_view.buffer];
@@ -403,7 +495,7 @@ pub fn main() !void {
     createDepthTexture(&demo);
 
     // --- LOAD THE MODEL ---
-    var model = try loadGltfModel(gpa, demo.device, queue, "assets/models/greenman.glb");
+    var model = try loadGltfModel(gpa, demo.device, queue, "assets/models/vertex-colors.glb");
     defer model.deinit();
 
     // --- CREATE UNIFORM BUFFER & BIND GROUP ---
@@ -454,6 +546,8 @@ pub fn main() !void {
 
     const vertex_attributes = [_]wgpu.VertexAttribute{
         .{ .shaderLocation = 0, .offset = @offsetOf(Vertex, "position"), .format = .float32x3 },
+        .{ .shaderLocation = 1, .offset = @offsetOf(Vertex, "normal"), .format = .float32x3 },
+        .{ .shaderLocation = 2, .offset = @offsetOf(Vertex, "color"), .format = .float32x4 },
     };
 
     const vertex_buffer_layout = wgpu.VertexBufferLayout{
