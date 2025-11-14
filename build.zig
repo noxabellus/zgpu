@@ -195,6 +195,13 @@ pub fn build(b: *std.Build) void {
         .root = glfw_dep.path("src"),
     });
 
+    // --- Gltf loader module ---
+    const gltf_mod = b.createModule(.{
+        .root_source_file = b.path("libs/gltf.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // --- Main Executable ---
     const exe_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -217,6 +224,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("stbrp", stbrp_mod);
     exe_mod.addImport("clay", clay_mod);
     exe_mod.addImport("glfw", glfw_mod);
+    exe_mod.addImport("gltf", gltf_mod);
     exe_mod.addAnonymousImport("shaders/Renderer.wgsl", .{
         .root_source_file = b.path("static/shaders/Renderer.wgsl"),
     });

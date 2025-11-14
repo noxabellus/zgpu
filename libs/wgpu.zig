@@ -25,6 +25,7 @@ pub const BigBool = enum(i32) {
 };
 
 pub const undefined_depth_slice = std.math.maxInt(u32);
+pub const whole_size = std.math.maxInt(u32);
 
 pub const BufferUsage = packed struct(u64) {
     map_read: bool = false,
