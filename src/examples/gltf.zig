@@ -6,14 +6,16 @@ const path = std.fs.path;
 const wgpu = @import("wgpu");
 const glfw = @import("glfw");
 const gltf = @import("gltf");
-const stbi = @import("stbi"); // NEW: Import STB Image library
+const stbi = @import("stbi");
 
 const debug = @import("../debug.zig");
 const linalg = @import("../linalg.zig");
-const vec2 = linalg.vec2; // NEW: Import vec2 for texture coordinates
+const vec2 = linalg.vec2;
 const vec3 = linalg.vec3;
 const vec4 = linalg.vec4;
 const mat4 = linalg.mat4;
+// NEW: Import vec4u for joint indices
+const vec4u = linalg.vec4u;
 
 pub const std_options = std.Options{
     .log_level = .info,
@@ -25,6 +27,8 @@ test {
 }
 
 const DEPTH_FORMAT = wgpu.TextureFormat.depth32_float;
+// NEW: A reasonable limit for the number of joints in a single skin.
+const MAX_JOINTS = 128;
 
 const Demo = struct {
     instance: wgpu.Instance = null,
@@ -36,15 +40,17 @@ const Demo = struct {
     config: wgpu.SurfaceConfiguration = .{},
 };
 
-// NEW: Vertex struct now includes texture coordinates.
+// NEW: Vertex struct now includes joint indices and weights for skinning.
 const Vertex = extern struct {
     position: vec3,
     normal: vec3,
     color: vec4,
     tex_coord: vec2,
+    joint_indices: vec4u, // u32 vector
+    joint_weights: vec4,
 };
 
-// NEW: MeshPrimitive now holds all its required rendering resources, including textures.
+// NEW: MeshPrimitive now knows which skin it belongs to, if any.
 const MeshPrimitive = struct {
     vertex_buffer: wgpu.Buffer,
     index_buffer: wgpu.Buffer,
@@ -54,23 +60,65 @@ const MeshPrimitive = struct {
     texture_view: wgpu.TextureView,
     sampler: wgpu.Sampler,
     texture_bind_group: wgpu.BindGroup,
+    skin_index: ?u32, // Index into the model's skins array
+};
+
+// --- NEW: Animation Data Structures ---
+
+const Skin = struct {
+    inverse_bind_matrices: []mat4,
+    joints: []gltf.Index, // Node indices for each joint
+};
+
+const AnimationSampler = struct {
+    input: []f32, // Keyframe times
+    output: []vec4, // Keyframe values (translation, rotation, or scale)
+    interpolation: gltf.Interpolation,
+};
+
+const AnimationChannel = struct {
+    sampler_index: u32,
+    target_node: u32,
+    target_path: gltf.TargetProperty,
+};
+
+const Animation = struct {
+    name: ?[]const u8,
+    samplers: []AnimationSampler,
+    channels: []AnimationChannel,
 };
 
 const Model = struct {
     primitives: []MeshPrimitive,
     allocator: std.mem.Allocator,
+    // NEW: Store nodes, skins, and animations from the glTF file.
+    nodes: []gltf.Node,
+    skins: []Skin,
+    animations: []Animation,
 
     pub fn deinit(self: *Model) void {
         for (self.primitives) |p| {
             wgpu.bufferRelease(p.vertex_buffer);
             wgpu.bufferRelease(p.index_buffer);
-            // NEW: Release texture-related resources
             wgpu.bindGroupRelease(p.texture_bind_group);
             wgpu.samplerRelease(p.sampler);
             wgpu.textureViewRelease(p.texture_view);
             wgpu.textureRelease(p.texture);
         }
         self.allocator.free(self.primitives);
+        // NEW: Deinit skin and animation data
+        for (self.skins) |s| self.allocator.free(s.inverse_bind_matrices);
+        self.allocator.free(self.skins);
+        for (self.animations) |a| {
+            for (a.samplers) |s| {
+                self.allocator.free(s.input);
+                self.allocator.free(s.output);
+            }
+            self.allocator.free(a.samplers);
+            self.allocator.free(a.channels);
+        }
+        self.allocator.free(self.animations);
+        self.allocator.free(self.nodes);
     }
 };
 
@@ -78,7 +126,12 @@ const CameraUniform = extern struct {
     view_proj: mat4,
 };
 
-// NEW: Updated shader with texture coordinates and sampling.
+// NEW: Uniform buffer for skinning data.
+const SkinUniforms = extern struct {
+    joint_matrices: [MAX_JOINTS]mat4,
+};
+
+// NEW: Updated shader with skinning logic.
 const shader_text =
     \\struct CameraUniform {
     \\    view_proj: mat4x4<f32>,
@@ -86,83 +139,109 @@ const shader_text =
     \\@group(0) @binding(0)
     \\var<uniform> u_camera: CameraUniform;
     \\
-    \\// NEW: Bindings for the texture and sampler at group 1.
     \\@group(1) @binding(0)
     \\var t_diffuse: texture_2d<f32>;
     \\@group(1) @binding(1)
     \\var s_diffuse: sampler;
     \\
+    \\// NEW: Uniforms for skinning
+    \\struct SkinUniforms {
+    \\    joint_matrices: array<mat4x4<f32>, 128>, // Must match MAX_JOINTS
+    \\};
+    \\@group(2) @binding(0)
+    \\var<uniform> u_skin: SkinUniforms;
+    \\
     \\struct VertexInput {
     \\    @location(0) position: vec3<f32>,
     \\    @location(1) normal: vec3<f32>,
     \\    @location(2) color: vec4<f32>,
-    \\    @location(3) tex_coord: vec2<f32>, // NEW: tex_coord input
+    \\    @location(3) tex_coord: vec2<f32>,
+    \\    // NEW: Skinning attributes from the vertex buffer.
+    \\    @location(4) joint_indices: vec4<u32>,
+    \\    @location(5) joint_weights: vec4<f32>,
     \\};
     \\
     \\struct VertexOutput {
     \\    @builtin(position) clip_position: vec4<f32>,
     \\    @location(0) normal: vec3<f32>,
     \\    @location(1) color: vec4<f32>,
-    \\    @location(2) tex_coord: vec2<f32>, // NEW: pass tex_coord to fragment
+    \\    @location(2) tex_coord: vec2<f32>,
     \\};
     \\
     \\@vertex
     \\fn vs_main(model: VertexInput) -> VertexOutput {
     \\    var out: VertexOutput;
-    \\    out.clip_position = u_camera.view_proj * vec4<f32>(model.position, 1.0);
-    \\    out.normal = model.normal;
+    \\
+    \\    // NEW: Skinning Calculation
+    \\    // Start with a zero matrix.
+    \\    var skin_matrix = mat4x4<f32>(
+    \\        vec4<f32>(0.0, 0.0, 0.0, 0.0),
+    \\        vec4<f32>(0.0, 0.0, 0.0, 0.0),
+    \\        vec4<f32>(0.0, 0.0, 0.0, 0.0),
+    \\        vec4<f32>(0.0, 0.0, 0.0, 0.0),
+    \\    );
+    \\    
+    \\    // Add the influence of each of the 4 joints.
+    \\    // Note: This assumes joint_weights sum to 1.0, which they should.
+    \\    // If a primitive is not skinned, joint_indices will be 0 and weights will be (1,0,0,0),
+    \\    // effectively using the matrix of the root joint (which will be the node's world transform).
+    \\    let i0 = model.joint_indices[0];
+    \\    let i1 = model.joint_indices[1];
+    \\    let i2 = model.joint_indices[2];
+    \\    let i3 = model.joint_indices[3];
+    \\
+    \\    let w0 = model.joint_weights[0];
+    \\    let w1 = model.joint_weights[1];
+    \\    let w2 = model.joint_weights[2];
+    \\    let w3 = model.joint_weights[3];
+    \\
+    \\    skin_matrix += w0 * u_skin.joint_matrices[i0];
+    \\    skin_matrix += w1 * u_skin.joint_matrices[i1];
+    \\    skin_matrix += w2 * u_skin.joint_matrices[i2];
+    \\    skin_matrix += w3 * u_skin.joint_matrices[i3];
+    \\    
+    \\    // Transform position and normal by the final skin matrix.
+    \\    let world_position = skin_matrix * vec4<f32>(model.position, 1.0);
+    \\    out.clip_position = u_camera.view_proj * world_position;
+    \\    
+    \\    // Normals need to be transformed by the inverse transpose of the
+    \\    // upper 3x3 of the skin matrix to handle non-uniform scaling correctly.
+    \\    // For simplicity here, we assume uniform scaling and just use the 3x3.
+    \\    let normal_matrix = mat3x3<f32>(
+    \\        skin_matrix[0].xyz,
+    \\        skin_matrix[1].xyz,
+    \\        skin_matrix[2].xyz
+    \\    );
+    \\    out.normal = normalize(normal_matrix * model.normal);
+    \\
     \\    out.color = model.color;
-    \\    out.tex_coord = model.tex_coord; // NEW
+    \\    out.tex_coord = model.tex_coord;
     \\    return out;
     \\}
     \\
+    \\// Fragment shader remains the same...
     \\@fragment
     \\fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    \\    // A simple, hardcoded directional light to see the model's form.
     \\    let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.75));
-    \\    // Let's also give our light a color and intensity
     \\    let light_color = vec3<f32>(1.0, 1.0, 1.0);
     \\    let light_intensity = 1.0;
-    \\
-    \\    // Sample the texture to get the material's base color (albedo)
-    \\    // This is already converted from sRGB to linear by the sampler.
     \\    let texture_color = textureSample(t_diffuse, s_diffuse, in.tex_coord);
-    \\    let base_color = texture_color.rgb * in.color.rgb; // Combine with vertex color
-    \\
-    \\    // Normalize the interpolated normal from the vertex shader.
+    \\    let base_color = texture_color.rgb * in.color.rgb;
     \\    let normal = normalize(in.normal);
-    \\
-    \\    // Lambertian diffuse lighting calculation.
     \\    let diffuse_strength = max(dot(normal, light_dir), 0.0);
     \\    let diffuse_contribution = base_color * light_color * light_intensity * diffuse_strength;
-    \\
-    \\    // Add some ambient light so the dark side isn't completely black.
-    \\    let ambient_color = vec3<f32>(0.1, 0.1, 0.1); // A dim ambient light
+    \\    let ambient_color = vec3<f32>(0.1, 0.1, 0.1);
     \\    let ambient_contribution = base_color * ambient_color;
-    \\
-    \\    // The final lit color is the sum of all light contributions.
     \\    let final_color = ambient_contribution + diffuse_contribution;
-    \\
-    \\    // Use the texture's alpha channel.
     \\    return vec4<f32>(final_color, texture_color.a);
     \\}
 ;
 
 fn createDepthTexture(d: *Demo) void {
+    // ... (no changes here)
     if (d.depth_view) |v| wgpu.textureViewRelease(v);
     if (d.depth_texture) |t| wgpu.textureRelease(t);
-
-    const depth_texture_descriptor = wgpu.TextureDescriptor{
-        .label = .fromSlice("depth_texture"),
-        .size = .{ .width = d.config.width, .height = d.config.height, .depth_or_array_layers = 1 },
-        .mip_level_count = 1,
-        .sample_count = 1,
-        .dimension = .@"2d",
-        .format = DEPTH_FORMAT,
-        .usage = wgpu.TextureUsage.renderAttachmentUsage,
-        .view_format_count = 1,
-        .view_formats = &.{DEPTH_FORMAT},
-    };
+    const depth_texture_descriptor = wgpu.TextureDescriptor{ .label = .fromSlice("depth_texture"), .size = .{ .width = d.config.width, .height = d.config.height, .depth_or_array_layers = 1 }, .mip_level_count = 1, .sample_count = 1, .dimension = .@"2d", .format = DEPTH_FORMAT, .usage = wgpu.TextureUsage.renderAttachmentUsage, .view_format_count = 1, .view_formats = &.{DEPTH_FORMAT} };
     d.depth_texture = wgpu.deviceCreateTexture(d.device, &depth_texture_descriptor);
     d.depth_view = wgpu.textureCreateView(d.depth_texture, null);
 }
@@ -173,7 +252,6 @@ fn loadGltfModel(
     device: wgpu.Device,
     queue: wgpu.Queue,
     model_path: []const u8,
-    // NEW: Pass in the bind group layout for textures.
     texture_bind_group_layout: wgpu.BindGroupLayout,
 ) !Model {
     stbi.setFlipVerticallyOnLoad(false);
@@ -185,12 +263,12 @@ fn loadGltfModel(
     defer gltf_data.deinit();
     try gltf_data.parse(gltf_file_buffer);
 
+    // ... (binary buffer loading remains the same)
     var binary_buffers = std.ArrayList([]align(4) const u8).empty;
     defer {
         for (binary_buffers.items) |b| allocator.free(b);
         binary_buffers.deinit(allocator);
     }
-
     if (gltf_data.glb_binary) |bin| {
         const owned_bin = try allocator.alignedAlloc(u8, .@"4", bin.len);
         @memcpy(owned_bin, bin);
@@ -215,51 +293,65 @@ fn loadGltfModel(
         u8: gltf.AccessorIterator(u8),
     };
 
-    for (gltf_data.data.meshes) |mesh| {
+    // --- NEW: Map nodes to their meshes for skin lookup
+    var node_to_mesh_skin = std.AutoHashMap(gltf.Index, struct { mesh_idx: u32, skin_idx: ?u32 }).init(allocator);
+    defer node_to_mesh_skin.deinit();
+    for (gltf_data.data.nodes, 0..) |node, node_idx| {
+        if (node.mesh) |mesh_idx| {
+            try node_to_mesh_skin.put(@intCast(node_idx), .{ .mesh_idx = @intCast(mesh_idx), .skin_idx = if (node.skin) |i| @intCast(i) else null });
+        }
+    }
+
+    for (gltf_data.data.meshes, 0..) |mesh, mesh_idx| {
+        // Find which node uses this mesh to find its skin
+        var maybe_skin_index: ?u32 = null;
+        {
+            var iter = node_to_mesh_skin.iterator();
+            while (iter.next()) |entry| {
+                if (entry.value_ptr.*.mesh_idx == mesh_idx) {
+                    maybe_skin_index = entry.value_ptr.*.skin_idx;
+                    break;
+                }
+            }
+        }
+
         for (mesh.primitives) |primitive| {
             var positions_accessor_idx: ?gltf.Index = null;
             var normals_accessor_idx: ?gltf.Index = null;
             var colors_accessor_idx: ?gltf.Index = null;
-            var texcoords_accessor_idx: ?gltf.Index = null; // NEW
+            var texcoords_accessor_idx: ?gltf.Index = null;
+            var joints_accessor_idx: ?gltf.Index = null; // NEW
+            var weights_accessor_idx: ?gltf.Index = null; // NEW
 
             for (primitive.attributes) |attr| {
                 switch (attr) {
                     .position => |idx| positions_accessor_idx = idx,
                     .normal => |idx| normals_accessor_idx = idx,
                     .color => |idx| colors_accessor_idx = idx,
-                    // NEW: Check for the first texture coordinate set (TEXCOORD_0).
                     .texcoord => |idx| texcoords_accessor_idx = idx,
+                    // NEW: Check for skinning attributes.
+                    .joints => |idx| joints_accessor_idx = idx,
+                    .weights => |idx| weights_accessor_idx = idx,
                     else => {},
                 }
             }
-
+            // ... (attribute checks, accessor setup remains similar)
             if (positions_accessor_idx == null or normals_accessor_idx == null) {
                 log.warn("Primitive in mesh '{s}' is missing positions or normals. Skipping.", .{mesh.name orelse "unnamed"});
                 continue;
             }
-
             const pos_acc = gltf_data.data.accessors[positions_accessor_idx.?];
-            const norm_acc = gltf_data.data.accessors[normals_accessor_idx.?];
-            std.debug.assert(pos_acc.count == norm_acc.count);
-
-            const pos_buffer_view = gltf_data.data.buffer_views[pos_acc.buffer_view.?];
-            const pos_binary_data = binary_buffers.items[pos_buffer_view.buffer];
-            const norm_buffer_view = gltf_data.data.buffer_views[norm_acc.buffer_view.?];
-            const norm_binary_data = binary_buffers.items[norm_buffer_view.buffer];
-
             var vertices = std.ArrayList(Vertex).empty;
             defer vertices.deinit(allocator);
             try vertices.ensureTotalCapacity(allocator, pos_acc.count);
+            var pos_iter = pos_acc.iterator(f32, &gltf_data, binary_buffers.items[gltf_data.data.buffer_views[pos_acc.buffer_view.?].buffer]);
+            var norm_iter = gltf_data.data.accessors[normals_accessor_idx.?].iterator(f32, &gltf_data, binary_buffers.items[gltf_data.data.buffer_views[gltf_data.data.accessors[normals_accessor_idx.?].buffer_view.?].buffer]);
 
-            var pos_iter = pos_acc.iterator(f32, &gltf_data, pos_binary_data);
-            var norm_iter = norm_acc.iterator(f32, &gltf_data, norm_binary_data);
-
-            var color_iter: ColorIterator = .none;
+            var color_iter: ColorIterator = .none; // ... (color iterator setup same as before)
             if (colors_accessor_idx) |color_idx| {
                 const color_acc = gltf_data.data.accessors[color_idx];
                 const color_buffer_view = gltf_data.data.buffer_views[color_acc.buffer_view.?];
                 const color_binary_data = binary_buffers.items[color_buffer_view.buffer];
-
                 switch (color_acc.component_type) {
                     .float => color_iter = .{ .float = color_acc.iterator(f32, &gltf_data, color_binary_data) },
                     .unsigned_short => color_iter = .{ .u16 = color_acc.iterator(u16, &gltf_data, color_binary_data) },
@@ -268,8 +360,7 @@ fn loadGltfModel(
                 }
             }
 
-            // NEW: Create an iterator for texture coordinates if they exist.
-            var maybe_uv_iter: ?gltf.AccessorIterator(f32) = null;
+            var maybe_uv_iter: ?gltf.AccessorIterator(f32) = null; // ... (uv iterator setup same as before)
             if (texcoords_accessor_idx) |uv_idx| {
                 const uv_acc = gltf_data.data.accessors[uv_idx];
                 const uv_buffer_view = gltf_data.data.buffer_views[uv_acc.buffer_view.?];
@@ -277,12 +368,32 @@ fn loadGltfModel(
                 maybe_uv_iter = uv_acc.iterator(f32, &gltf_data, uv_binary_data);
             }
 
-            while (pos_iter.next()) |pos_slice| {
-                const norm_slice = norm_iter.next().?;
+            // --- NEW: Create iterators for joints and weights ---
+            var maybe_joint_iter_u8: ?gltf.AccessorIterator(u8) = null;
+            var maybe_joint_iter_u16: ?gltf.AccessorIterator(u16) = null;
+            if (joints_accessor_idx) |joint_idx| {
+                const j_acc = gltf_data.data.accessors[joint_idx];
+                const j_bv = gltf_data.data.buffer_views[j_acc.buffer_view.?];
+                const j_bin = binary_buffers.items[j_bv.buffer];
+                switch (j_acc.component_type) {
+                    .unsigned_byte => maybe_joint_iter_u8 = j_acc.iterator(u8, &gltf_data, j_bin),
+                    .unsigned_short => maybe_joint_iter_u16 = j_acc.iterator(u16, &gltf_data, j_bin),
+                    else => log.warn("Unsupported joint index format: {any}", .{j_acc.component_type}),
+                }
+            }
+            var maybe_weight_iter: ?gltf.AccessorIterator(f32) = null;
+            if (weights_accessor_idx) |weight_idx| {
+                const w_acc = gltf_data.data.accessors[weight_idx];
+                const w_bv = gltf_data.data.buffer_views[w_acc.buffer_view.?];
+                const w_bin = binary_buffers.items[w_bv.buffer];
+                maybe_weight_iter = w_acc.iterator(f32, &gltf_data, w_bin);
+            }
 
+            while (pos_iter.next()) |pos_slice| {
+                // ... (position, normal, color, tex_coord loading is the same)
+                const norm_slice = norm_iter.next().?;
                 const pos_vec: vec3 = .{ pos_slice[0], pos_slice[1], pos_slice[2] };
                 const norm_vec: vec3 = .{ norm_slice[0], norm_slice[1], norm_slice[2] };
-
                 const color_vec: vec4 = switch (color_iter) {
                     .none => .{ 1.0, 1.0, 1.0, 1.0 },
                     .float => |*iter| blk: {
@@ -300,78 +411,72 @@ fn loadGltfModel(
                         break :blk if (s.len == 3) .{ @as(f32, @floatFromInt(s[0])) * n, @as(f32, @floatFromInt(s[1])) * n, @as(f32, @floatFromInt(s[2])) * n, 1.0 } else .{ @as(f32, @floatFromInt(s[0])) * n, @as(f32, @floatFromInt(s[1])) * n, @as(f32, @floatFromInt(s[2])) * n, @as(f32, @floatFromInt(s[3])) * n };
                     },
                 };
-
-                // NEW: Get texture coordinates, or use a default if they don't exist.
                 const uv_vec: vec2 = if (maybe_uv_iter) |*uv_iter| blk: {
                     const uv_slice = uv_iter.next().?;
                     break :blk .{ uv_slice[0], uv_slice[1] };
                 } else .{ 0.0, 0.0 };
+
+                // --- NEW: Get joint indices and weights, with defaults ---
+                const joint_vec: vec4u = if (maybe_joint_iter_u8) |*iter| blk: {
+                    const s = iter.next().?;
+                    break :blk .{ @intCast(s[0]), @intCast(s[1]), @intCast(s[2]), @intCast(s[3]) };
+                } else if (maybe_joint_iter_u16) |*iter| blk: {
+                    const s = iter.next().?;
+                    break :blk .{ @intCast(s[0]), @intCast(s[1]), @intCast(s[2]), @intCast(s[3]) };
+                } else .{ 0, 0, 0, 0 };
+
+                const weight_vec: vec4 = if (maybe_weight_iter) |*iter| blk: {
+                    const s = iter.next().?;
+                    break :blk .{ s[0], s[1], s[2], s[3] };
+                } else .{ 1.0, 0.0, 0.0, 0.0 };
 
                 vertices.appendAssumeCapacity(.{
                     .position = pos_vec,
                     .normal = norm_vec,
                     .color = color_vec,
                     .tex_coord = uv_vec,
+                    .joint_indices = joint_vec,
+                    .joint_weights = weight_vec,
                 });
             }
 
+            // ... (vertex buffer, index buffer, and texture loading remains the same)
             const vertex_buffer_bytes = std.mem.sliceAsBytes(vertices.items);
-            const vbo = wgpu.deviceCreateBuffer(device, &.{
-                .label = wgpu.StringView.fromSlice(mesh.name orelse "anonymous_mesh"),
-                .usage = .{ .vertex = true, .copy_dst = true },
-                .size = vertex_buffer_bytes.len,
-            });
+            const vbo = wgpu.deviceCreateBuffer(device, &.{ .label = wgpu.StringView.fromSlice(mesh.name orelse "anonymous_mesh"), .usage = .{ .vertex = true, .copy_dst = true }, .size = vertex_buffer_bytes.len });
             wgpu.queueWriteBuffer(queue, vbo, 0, vertex_buffer_bytes.ptr, vertex_buffer_bytes.len);
-
             const idx_acc = gltf_data.data.accessors[primitive.indices.?];
-            const idx_buffer_view = gltf_data.data.buffer_views[idx_acc.buffer_view.?];
-            const idx_binary_data = binary_buffers.items[idx_buffer_view.buffer];
-
             var ibo: wgpu.Buffer = undefined;
             const index_count: u32 = @intCast(idx_acc.count);
             var index_format: wgpu.IndexFormat = undefined;
-
             switch (idx_acc.component_type) {
-                .unsigned_short => {
-                    index_format = .uint16;
-                    var indices = std.ArrayList(u16).empty;
-                    defer indices.deinit(allocator);
-                    try indices.ensureTotalCapacity(allocator, idx_acc.count);
-                    var idx_iter = idx_acc.iterator(u16, &gltf_data, idx_binary_data);
-                    while (idx_iter.next()) |idx_slice| for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
-                    const index_buffer_bytes = std.mem.sliceAsBytes(indices.items);
-                    ibo = wgpu.deviceCreateBuffer(device, &.{
-                        .label = .fromSlice("index_buffer_u16"),
-                        .usage = .{ .index = true, .copy_dst = true },
-                        .size = index_buffer_bytes.len,
-                    });
-                    wgpu.queueWriteBuffer(queue, ibo, 0, index_buffer_bytes.ptr, index_buffer_bytes.len);
-                },
-                .unsigned_integer => {
-                    index_format = .uint32;
-                    var indices = std.ArrayList(u32).empty;
-                    defer indices.deinit(allocator);
-                    try indices.ensureTotalCapacity(allocator, idx_acc.count);
-                    var idx_iter = idx_acc.iterator(u32, &gltf_data, idx_binary_data);
-                    while (idx_iter.next()) |idx_slice| for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
-                    const index_buffer_bytes = std.mem.sliceAsBytes(indices.items);
-                    ibo = wgpu.deviceCreateBuffer(device, &.{
-                        .label = .fromSlice("index_buffer_u32"),
-                        .usage = .{ .index = true, .copy_dst = true },
-                        .size = index_buffer_bytes.len,
-                    });
-                    wgpu.queueWriteBuffer(queue, ibo, 0, index_buffer_bytes.ptr, index_buffer_bytes.len);
+                .unsigned_short, .unsigned_integer => {
+                    index_format = if (idx_acc.component_type == .unsigned_short) .uint16 else .uint32;
+                    if (idx_acc.component_type == .unsigned_short) {
+                        var indices = std.ArrayList(u16).empty;
+                        defer indices.deinit(allocator);
+                        try indices.ensureTotalCapacity(allocator, idx_acc.count);
+                        var idx_iter = idx_acc.iterator(u16, &gltf_data, binary_buffers.items[gltf_data.data.buffer_views[idx_acc.buffer_view.?].buffer]);
+                        while (idx_iter.next()) |idx_slice| for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
+                        const index_buffer_bytes = std.mem.sliceAsBytes(indices.items);
+                        ibo = wgpu.deviceCreateBuffer(device, &.{ .label = .fromSlice("index_buffer"), .usage = .{ .index = true, .copy_dst = true }, .size = index_buffer_bytes.len });
+                        wgpu.queueWriteBuffer(queue, ibo, 0, index_buffer_bytes.ptr, index_buffer_bytes.len);
+                    } else {
+                        var indices = std.ArrayList(u32).empty;
+                        defer indices.deinit(allocator);
+                        try indices.ensureTotalCapacity(allocator, idx_acc.count);
+                        var idx_iter = idx_acc.iterator(u32, &gltf_data, binary_buffers.items[gltf_data.data.buffer_views[idx_acc.buffer_view.?].buffer]);
+                        while (idx_iter.next()) |idx_slice| for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
+                        const index_buffer_bytes = std.mem.sliceAsBytes(indices.items);
+                        ibo = wgpu.deviceCreateBuffer(device, &.{ .label = .fromSlice("index_buffer"), .usage = .{ .index = true, .copy_dst = true }, .size = index_buffer_bytes.len });
+                        wgpu.queueWriteBuffer(queue, ibo, 0, index_buffer_bytes.ptr, index_buffer_bytes.len);
+                    }
                 },
                 else => return error.UnsupportedIndexFormat,
             }
-
-            // --- NEW: Load Texture ---
             var prim_texture: wgpu.Texture = undefined;
             var prim_texture_view: wgpu.TextureView = undefined;
-
             var maybe_image: ?stbi.Image = null;
             defer if (maybe_image) |*img| img.deinit();
-
             if (primitive.material) |mat_idx| {
                 const material = gltf_data.data.materials[mat_idx];
                 if (material.metallic_roughness.base_color_texture) |tex_info| {
@@ -382,72 +487,25 @@ fn loadGltfModel(
                             const buffer_view = gltf_data.data.buffer_views[bv_idx];
                             const image_binary_data = binary_buffers.items[buffer_view.buffer];
                             const image_slice = image_binary_data[buffer_view.byte_offset..][0..buffer_view.byte_length];
-                            maybe_image = try stbi.Image.loadFromMemory(image_slice, 4); // force 4 components (RGBA)
+                            maybe_image = try stbi.Image.loadFromMemory(image_slice, 4);
                         }
                     }
                 }
             }
-
             if (maybe_image) |image| {
-                const texture_descriptor = wgpu.TextureDescriptor{
-                    .label = .fromSlice("gltf_texture"),
-                    .size = .{ .width = image.width, .height = image.height, .depth_or_array_layers = 1 },
-                    .mip_level_count = 1,
-                    .sample_count = 1,
-                    .dimension = .@"2d",
-                    .format = .rgba8_unorm_srgb,
-                    .usage = .{ .texture_binding = true, .copy_dst = true },
-                };
+                const texture_descriptor = wgpu.TextureDescriptor{ .label = .fromSlice("gltf_texture"), .size = .{ .width = image.width, .height = image.height, .depth_or_array_layers = 1 }, .mip_level_count = 1, .sample_count = 1, .dimension = .@"2d", .format = .rgba8_unorm_srgb, .usage = .{ .texture_binding = true, .copy_dst = true } };
                 prim_texture = wgpu.deviceCreateTexture(device, &texture_descriptor);
                 prim_texture_view = wgpu.textureCreateView(prim_texture, null);
-
-                wgpu.queueWriteTexture(
-                    queue,
-                    &.{ .texture = prim_texture },
-                    image.data.ptr,
-                    image.data.len,
-                    &.{ .bytes_per_row = image.bytes_per_row, .rows_per_image = image.height },
-                    &.{ .width = image.width, .height = image.height, .depth_or_array_layers = 1 },
-                );
+                wgpu.queueWriteTexture(queue, &.{ .texture = prim_texture }, image.data.ptr, image.data.len, &.{ .bytes_per_row = image.bytes_per_row, .rows_per_image = image.height }, &.{ .width = image.width, .height = image.height, .depth_or_array_layers = 1 });
             } else {
-                // Create a 1x1 white fallback texture
-                const texture_descriptor = wgpu.TextureDescriptor{
-                    .label = .fromSlice("fallback_texture"),
-                    .size = .{ .width = 1, .height = 1, .depth_or_array_layers = 1 },
-                    .mip_level_count = 1,
-                    .sample_count = 1,
-                    .dimension = .@"2d",
-                    .format = .rgba8_unorm_srgb,
-                    .usage = .{ .texture_binding = true, .copy_dst = true },
-                };
+                const texture_descriptor = wgpu.TextureDescriptor{ .label = .fromSlice("fallback_texture"), .size = .{ .width = 1, .height = 1, .depth_or_array_layers = 1 }, .mip_level_count = 1, .sample_count = 1, .dimension = .@"2d", .format = .rgba8_unorm_srgb, .usage = .{ .texture_binding = true, .copy_dst = true } };
                 prim_texture = wgpu.deviceCreateTexture(device, &texture_descriptor);
                 prim_texture_view = wgpu.textureCreateView(prim_texture, null);
                 const white_pixel: u32 = 0xFFFFFFFF;
-                wgpu.queueWriteTexture(
-                    queue,
-                    &.{ .texture = prim_texture },
-                    &white_pixel,
-                    4,
-                    &.{ .bytes_per_row = 4, .rows_per_image = 1 },
-                    &.{ .width = 1, .height = 1, .depth_or_array_layers = 1 },
-                );
+                wgpu.queueWriteTexture(queue, &.{ .texture = prim_texture }, &white_pixel, 4, &.{ .bytes_per_row = 4, .rows_per_image = 1 }, &.{ .width = 1, .height = 1, .depth_or_array_layers = 1 });
             }
-
-            const prim_sampler = wgpu.deviceCreateSampler(device, &.{
-                .address_mode_u = .repeat,
-                .address_mode_v = .repeat,
-                .mag_filter = .linear,
-                .min_filter = .linear,
-            });
-
-            const prim_bind_group = wgpu.deviceCreateBindGroup(device, &.{
-                .layout = texture_bind_group_layout,
-                .entry_count = 2,
-                .entries = &.{
-                    .{ .binding = 0, .texture_view = prim_texture_view },
-                    .{ .binding = 1, .sampler = prim_sampler },
-                },
-            });
+            const prim_sampler = wgpu.deviceCreateSampler(device, &.{ .address_mode_u = .repeat, .address_mode_v = .repeat, .mag_filter = .linear, .min_filter = .linear });
+            const prim_bind_group = wgpu.deviceCreateBindGroup(device, &.{ .layout = texture_bind_group_layout, .entry_count = 2, .entries = &.{ .{ .binding = 0, .texture_view = prim_texture_view }, .{ .binding = 1, .sampler = prim_sampler } } });
 
             try primitive_list.append(allocator, .{
                 .vertex_buffer = vbo,
@@ -458,24 +516,171 @@ fn loadGltfModel(
                 .texture_view = prim_texture_view,
                 .sampler = prim_sampler,
                 .texture_bind_group = prim_bind_group,
+                .skin_index = maybe_skin_index, // NEW: Store skin index
             });
         }
     }
 
+    // --- NEW: Load Skins ---
+    var skins = try std.ArrayList(Skin).initCapacity(allocator, gltf_data.data.skins.len);
+    for (gltf_data.data.skins) |gltf_skin| {
+        const ibm_acc = gltf_data.data.accessors[gltf_skin.inverse_bind_matrices.?];
+        const ibm_bv = gltf_data.data.buffer_views[ibm_acc.buffer_view.?];
+        const ibm_bin = binary_buffers.items[ibm_bv.buffer];
+        var ibm_iter = ibm_acc.iterator(f32, &gltf_data, ibm_bin);
+
+        var ibms = try std.ArrayList(mat4).initCapacity(allocator, ibm_acc.count);
+        while (ibm_iter.next()) |mat_slice| {
+            try ibms.append(allocator, std.mem.bytesAsValue(mat4, mat_slice[0..16]).*);
+        }
+
+        skins.appendAssumeCapacity(.{
+            .inverse_bind_matrices = try ibms.toOwnedSlice(allocator),
+            .joints = try allocator.dupe(usize, gltf_skin.joints),
+        });
+    }
+
+    // --- NEW: Load Animations ---
+    var animations = try std.ArrayList(Animation).initCapacity(allocator, gltf_data.data.animations.len);
+    for (gltf_data.data.animations) |gltf_anim| {
+        // Sampler loading remains the same as before...
+        var anim_samplers = try std.ArrayList(AnimationSampler).initCapacity(allocator, gltf_anim.samplers.len);
+        for (gltf_anim.samplers) |gltf_sampler| {
+            const time_acc = gltf_data.data.accessors[gltf_sampler.input];
+            const time_bv = gltf_data.data.buffer_views[time_acc.buffer_view.?];
+            const time_bin = binary_buffers.items[time_bv.buffer];
+            var time_iter = time_acc.iterator(f32, &gltf_data, time_bin);
+            var times = try std.ArrayList(f32).initCapacity(allocator, time_acc.count);
+            while (time_iter.next()) |s| for (s) |t| try times.append(allocator, t);
+
+            const val_acc = gltf_data.data.accessors[gltf_sampler.output];
+            const val_bv = gltf_data.data.buffer_views[val_acc.buffer_view.?];
+            const val_bin = binary_buffers.items[val_bv.buffer];
+            var val_iter = val_acc.iterator(f32, &gltf_data, val_bin);
+            var values = try std.ArrayList(vec4).initCapacity(allocator, val_acc.count);
+            while (val_iter.next()) |s| {
+                switch (s.len) {
+                    3 => try values.append(allocator, .{ s[0], s[1], s[2], 0.0 }), // vec3
+                    4 => try values.append(allocator, .{ s[0], s[1], s[2], s[3] }), // vec4/quat
+                    else => return error.UnsupportedAnimationFormat,
+                }
+            }
+
+            anim_samplers.appendAssumeCapacity(.{
+                .input = try times.toOwnedSlice(allocator),
+                .output = try values.toOwnedSlice(allocator),
+                .interpolation = gltf_sampler.interpolation,
+            });
+        }
+
+        // --- CORRECTED: Manually copy channels into our own data structures ---
+        var anim_channels = try std.ArrayList(AnimationChannel).initCapacity(allocator, gltf_anim.channels.len);
+        // We must do this because gltf_anim.channels is a slice of a different type
+        // and its memory is owned by gltf_data, which will be deinitialized.
+        for (gltf_anim.channels) |gltf_channel| {
+            try anim_channels.append(allocator, .{
+                .sampler_index = @intCast(gltf_channel.sampler),
+                .target_node = @intCast(gltf_channel.target.node),
+                .target_path = gltf_channel.target.property,
+            });
+        }
+
+        animations.appendAssumeCapacity(.{
+            .name = gltf_anim.name,
+            .samplers = try anim_samplers.toOwnedSlice(allocator),
+            .channels = try anim_channels.toOwnedSlice(allocator), // Use the new owned slice
+        });
+    }
+
+    const owned_nodes = try allocator.alloc(gltf.Node, gltf_data.data.nodes.len);
+    @memcpy(owned_nodes, gltf_data.data.nodes);
+
     return Model{
         .primitives = try primitive_list.toOwnedSlice(allocator),
         .allocator = allocator,
+        .nodes = owned_nodes,
+        .skins = try skins.toOwnedSlice(allocator),
+        .animations = try animations.toOwnedSlice(allocator),
     };
+}
+
+// --- NEW: Animation Update Logic ---
+fn updateAnimation(model: *const Model, anim_idx: u32, time: f32, out_matrices: []mat4) void {
+    const animation = model.animations[anim_idx];
+    var node_transforms = std.ArrayList(mat4).empty;
+    defer node_transforms.deinit(model.allocator);
+    node_transforms.resize(model.allocator, model.nodes.len) catch unreachable;
+
+    // Step 1: Calculate local transforms for all animated nodes at the current time
+    for (model.nodes, 0..) |node, i| {
+        var t = node.translation;
+        var r = node.rotation;
+        var s = node.scale;
+
+        for (animation.channels) |channel| {
+            if (channel.target_node != i) continue;
+
+            const sampler = animation.samplers[channel.sampler_index];
+            // Find the keyframes to interpolate between
+            var prev_key: usize = 0;
+            while (prev_key < sampler.input.len - 1 and sampler.input[prev_key + 1] < time) {
+                prev_key += 1;
+            }
+            const next_key = @min(prev_key + 1, sampler.input.len - 1);
+
+            const time_diff = sampler.input[next_key] - sampler.input[prev_key];
+            const factor = if (time_diff > 0) (time - sampler.input[prev_key]) / time_diff else 0;
+
+            const prev_val = sampler.output[prev_key];
+            const next_val = sampler.output[next_key];
+
+            switch (channel.target_path) {
+                .translation => t = linalg.lerp(linalg.xyz(prev_val), linalg.xyz(next_val), factor),
+                .rotation => r = linalg.quat_slerp(prev_val, next_val, factor),
+                .scale => s = linalg.lerp(linalg.xyz(prev_val), linalg.xyz(next_val), factor),
+                else => {},
+            }
+        }
+        const t_mat = linalg.mat4_translate(t);
+        const r_mat = linalg.mat4_from_quat(r);
+        const s_mat = linalg.mat4_scale(s);
+        node_transforms.items[i] = linalg.mat4_mul(linalg.mat4_mul(t_mat, r_mat), s_mat);
+    }
+
+    // Step 2: Calculate global transforms by walking the node hierarchy
+    var global_node_transforms = std.ArrayList(mat4).empty;
+    defer global_node_transforms.deinit(model.allocator);
+    global_node_transforms.resize(model.allocator, model.nodes.len) catch unreachable;
+
+    for (0..model.nodes.len) |i| {
+        var global = node_transforms.items[i];
+        var p = model.nodes[i].parent;
+        while (p) |parent_idx| {
+            global = linalg.mat4_mul(node_transforms.items[parent_idx], global);
+            p = model.nodes[parent_idx].parent;
+        }
+        global_node_transforms.items[i] = global;
+    }
+
+    // Step 3: Calculate final joint matrices for the GPU
+    // This assumes only one skin at index 0
+    if (model.skins.len > 0) {
+        const skin = model.skins[0];
+        for (skin.joints, 0..) |joint_node_idx, joint_idx| {
+            const global_joint_transform = global_node_transforms.items[joint_node_idx];
+            const ibm = skin.inverse_bind_matrices[joint_idx];
+            out_matrices[joint_idx] = linalg.mat4_mul(global_joint_transform, ibm);
+        }
+    }
 }
 
 pub fn main() !void {
     var timer = try std.time.Timer.start();
     const gpa = std.heap.page_allocator;
-
-    // NEW: Init stbi
     stbi.init(gpa);
     defer stbi.deinit();
 
+    // ... (GLFW/WGPU setup is identical up to creating bind group layouts)
     if (comptime builtin.os.tag != .windows) {
         glfw.initHint(.{ .platform = .x11 });
     } else {
@@ -483,10 +688,7 @@ pub fn main() !void {
     }
     try glfw.init();
     defer glfw.deinit();
-
     var demo = Demo{};
-
-    // ... (glfw, wgpu instance, surface, adapter, device setup remains the same)
     const instance_extras = wgpu.InstanceExtras{ .chain = .{ .s_type = .instance_extras }, .backends = switch (builtin.os.tag) {
         .windows => if (glfw.isRunningInWine()) wgpu.InstanceBackend.vulkanBackend else wgpu.InstanceBackend.dx12Backend,
         else => wgpu.InstanceBackend.vulkanBackend,
@@ -509,12 +711,10 @@ pub fn main() !void {
     demo.instance = wgpu.createInstance(&wgpu.InstanceDescriptor{ .next_in_chain = @ptrCast(&instance_extras) });
     std.debug.assert(demo.instance != null);
     defer wgpu.instanceRelease(demo.instance);
-
     glfw.windowHint(.{ .client_api = .none });
-    const window = try glfw.createWindow(640, 480, "zgpu glTF Loader", null, null);
+    const window = try glfw.createWindow(800, 600, "zgpu glTF Animation", null, null);
     defer glfw.destroyWindow(window);
     glfw.setWindowUserPointer(window, &demo);
-
     _ = glfw.setFramebufferSizeCallback(window, &struct {
         fn handle_glfw_framebuffer_size(w: *glfw.Window, width: i32, height: i32) callconv(.c) void {
             if (width <= 0 and height <= 0) return;
@@ -526,7 +726,6 @@ pub fn main() !void {
             createDepthTexture(d);
         }
     }.handle_glfw_framebuffer_size);
-
     if (comptime builtin.os.tag != .windows) {
         const x11_display = glfw.getX11Display();
         const x11_window = glfw.getX11Window(window);
@@ -540,7 +739,6 @@ pub fn main() !void {
     }
     std.debug.assert(demo.surface != null);
     defer wgpu.surfaceRelease(demo.surface);
-
     _ = wgpu.instanceRequestAdapter(demo.instance, &wgpu.RequestAdapterOptions{ .compatible_surface = demo.surface }, .{ .callback = &struct {
         fn handle_request_adapter(status: wgpu.RequestAdapterStatus, adapter: wgpu.Adapter, msg: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
             _ = ud2;
@@ -554,7 +752,6 @@ pub fn main() !void {
     }.handle_request_adapter, .userdata1 = &demo });
     while (demo.adapter == null) wgpu.instanceProcessEvents(demo.instance);
     defer wgpu.adapterRelease(demo.adapter);
-
     _ = wgpu.adapterRequestDevice(demo.adapter, null, .{ .callback = &struct {
         fn handle_request_device(status: wgpu.RequestDeviceStatus, device: wgpu.Device, msg: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
             _ = ud2;
@@ -568,32 +765,15 @@ pub fn main() !void {
     }.handle_request_device, .userdata1 = &demo });
     while (demo.device == null) wgpu.instanceProcessEvents(demo.instance);
     defer wgpu.deviceRelease(demo.device);
-
     defer if (demo.depth_view) |v| wgpu.textureViewRelease(v);
     defer if (demo.depth_texture) |t| wgpu.textureRelease(t);
-
     const queue = wgpu.deviceGetQueue(demo.device);
     defer wgpu.queueRelease(queue);
     var surface_capabilities: wgpu.SurfaceCapabilities = undefined;
     _ = wgpu.surfaceGetCapabilities(demo.surface, demo.adapter, &surface_capabilities);
     defer wgpu.surfaceCapabilitiesFreeMembers(surface_capabilities);
-
     const surface_format: wgpu.TextureFormat = .bgra8_unorm_srgb;
-
-    demo.config = .{
-        .device = demo.device,
-        .usage = .renderAttachmentUsage,
-        .format = .rgba32_float, // Use the selected sRGB format
-        .present_mode = .fifo,
-        .alpha_mode = surface_capabilities.alpha_modes.?[0],
-    };
-    demo.config = .{
-        .device = demo.device,
-        .usage = .renderAttachmentUsage,
-        .format = surface_format,
-        .present_mode = .fifo, // Fifo is often a better default than immediate.
-        .alpha_mode = surface_capabilities.alpha_modes.?[0],
-    };
+    demo.config = .{ .device = demo.device, .usage = .renderAttachmentUsage, .format = surface_format, .present_mode = .fifo, .alpha_mode = surface_capabilities.alpha_modes.?[0] };
     {
         var width: i32 = 0;
         var height: i32 = 0;
@@ -605,60 +785,44 @@ pub fn main() !void {
     createDepthTexture(&demo);
 
     // --- CREATE BIND GROUP LAYOUTS ---
-    const camera_buffer = wgpu.deviceCreateBuffer(demo.device, &.{
-        .label = .fromSlice("camera_buffer"),
-        .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
-        .size = @sizeOf(CameraUniform),
-    });
+    const camera_buffer = wgpu.deviceCreateBuffer(demo.device, &.{ .label = .fromSlice("camera_buffer"), .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage), .size = @sizeOf(CameraUniform) });
     defer wgpu.bufferRelease(camera_buffer);
 
-    const camera_bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &.{
-        .label = .fromSlice("camera_bind_group_layout"),
-        .entry_count = 1,
-        .entries = &.{
-            .{
-                .binding = 0,
-                .visibility = wgpu.ShaderStage.vertexStage,
-                .buffer = .{ .type = .uniform },
-            },
-        },
-    });
+    const camera_bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &.{ .label = .fromSlice("camera_bind_group_layout"), .entry_count = 1, .entries = &.{.{ .binding = 0, .visibility = wgpu.ShaderStage.vertexStage, .buffer = .{ .type = .uniform } }} });
     defer wgpu.bindGroupLayoutRelease(camera_bind_group_layout);
 
-    // NEW: Create a bind group layout for our texture and sampler.
-    const texture_bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &.{
-        .label = .fromSlice("texture_bind_group_layout"),
-        .entry_count = 2,
-        .entries = &.{
-            .{
-                .binding = 0,
-                .visibility = wgpu.ShaderStage.fragmentStage,
-                .texture = .{ .sample_type = .float, .view_dimension = .@"2d" },
-            },
-            .{
-                .binding = 1,
-                .visibility = wgpu.ShaderStage.fragmentStage,
-                .sampler = .{ .type = .filtering },
-            },
-        },
-    });
+    const texture_bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &.{ .label = .fromSlice("texture_bind_group_layout"), .entry_count = 2, .entries = &.{ .{ .binding = 0, .visibility = wgpu.ShaderStage.fragmentStage, .texture = .{ .sample_type = .float, .view_dimension = .@"2d" } }, .{ .binding = 1, .visibility = wgpu.ShaderStage.fragmentStage, .sampler = .{ .type = .filtering } } } });
     defer wgpu.bindGroupLayoutRelease(texture_bind_group_layout);
 
-    const camera_bind_group = wgpu.deviceCreateBindGroup(demo.device, &.{
-        .label = .fromSlice("camera_bind_group"),
-        .layout = camera_bind_group_layout,
-        .entry_count = 1,
-        .entries = &.{.{
-            .binding = 0,
-            .buffer = camera_buffer,
-            .offset = 0,
-            .size = @sizeOf(CameraUniform),
-        }},
+    // --- NEW: Create resources for skinning ---
+    const skin_uniform_buffer = wgpu.deviceCreateBuffer(demo.device, &.{
+        .label = .fromSlice("skin_uniform_buffer"),
+        .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
+        .size = @sizeOf(SkinUniforms),
     });
+    defer wgpu.bufferRelease(skin_uniform_buffer);
+
+    const skin_bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &.{
+        .label = .fromSlice("skin_bind_group_layout"),
+        .entry_count = 1,
+        .entries = &.{.{ .binding = 0, .visibility = wgpu.ShaderStage.vertexStage, .buffer = .{ .type = .uniform } }},
+    });
+    defer wgpu.bindGroupLayoutRelease(skin_bind_group_layout);
+
+    const skin_bind_group = wgpu.deviceCreateBindGroup(demo.device, &.{
+        .label = .fromSlice("skin_bind_group"),
+        .layout = skin_bind_group_layout,
+        .entry_count = 1,
+        .entries = &.{.{ .binding = 0, .buffer = skin_uniform_buffer, .size = @sizeOf(SkinUniforms) }},
+    });
+    defer wgpu.bindGroupRelease(skin_bind_group);
+
+    // Camera bind group setup...
+    const camera_bind_group = wgpu.deviceCreateBindGroup(demo.device, &.{ .label = .fromSlice("camera_bind_group"), .layout = camera_bind_group_layout, .entry_count = 1, .entries = &.{.{ .binding = 0, .buffer = camera_buffer, .offset = 0, .size = @sizeOf(CameraUniform) }} });
     defer wgpu.bindGroupRelease(camera_bind_group);
 
     // --- LOAD THE MODEL ---
-    // NEW: Load greenman model and pass the texture BGL.
+    // Change this to a model that has skinning and animation!
     var model = try loadGltfModel(gpa, demo.device, queue, "assets/models/greenman.glb", texture_bind_group_layout);
     defer model.deinit();
 
@@ -666,78 +830,30 @@ pub fn main() !void {
     const shader_module = try wgpu.loadShaderText(demo.device, "gltf_shader.wgsl", shader_text);
     defer wgpu.shaderModuleRelease(shader_module);
 
-    // NEW: The pipeline layout now expects two bind group layouts.
+    // NEW: The pipeline layout now expects three bind group layouts.
     const pipeline_layout = wgpu.deviceCreatePipelineLayout(demo.device, &.{
         .label = .fromSlice("pipeline_layout"),
-        .bind_group_layout_count = 2,
-        .bind_group_layouts = &.{ camera_bind_group_layout, texture_bind_group_layout },
+        .bind_group_layout_count = 3,
+        .bind_group_layouts = &.{ camera_bind_group_layout, texture_bind_group_layout, skin_bind_group_layout },
     });
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
 
-    // NEW: Define vertex attributes including the new tex_coord.
+    // NEW: Define vertex attributes including the new skinning attributes.
     const vertex_attributes = [_]wgpu.VertexAttribute{
         .{ .shaderLocation = 0, .offset = @offsetOf(Vertex, "position"), .format = .float32x3 },
         .{ .shaderLocation = 1, .offset = @offsetOf(Vertex, "normal"), .format = .float32x3 },
         .{ .shaderLocation = 2, .offset = @offsetOf(Vertex, "color"), .format = .float32x4 },
         .{ .shaderLocation = 3, .offset = @offsetOf(Vertex, "tex_coord"), .format = .float32x2 },
+        .{ .shaderLocation = 4, .offset = @offsetOf(Vertex, "joint_indices"), .format = .uint32x4 },
+        .{ .shaderLocation = 5, .offset = @offsetOf(Vertex, "joint_weights"), .format = .float32x4 },
     };
 
-    const vertex_buffer_layout = wgpu.VertexBufferLayout{
-        .array_stride = @sizeOf(Vertex),
-        .step_mode = .vertex,
-        .attribute_count = vertex_attributes.len,
-        .attributes = &vertex_attributes,
-    };
-
-    const color_target_state = wgpu.ColorTargetState{
-        .format = surface_format,
-        .blend = null,
-        .write_mask = .all,
-    };
-
-    const fragment_state = wgpu.FragmentState{
-        .module = shader_module,
-        .entry_point = .fromSlice("fs_main"),
-        .target_count = 1,
-        .targets = &.{color_target_state},
-    };
-
-    const depth_stencil_state = wgpu.DepthStencilState{
-        .format = DEPTH_FORMAT,
-        .depth_write_enabled = .true,
-        .depth_compare = .less,
-        .stencil_front = .{},
-        .stencil_back = .{},
-        .stencil_read_mask = 0,
-        .stencil_write_mask = 0,
-        .depth_bias = 0,
-        .depth_bias_slope_scale = 0.0,
-        .depth_bias_clamp = 0.0,
-    };
-
-    const render_pipeline = wgpu.deviceCreateRenderPipeline(demo.device, &wgpu.RenderPipelineDescriptor{
-        .label = .fromSlice("render_pipeline"),
-        .layout = pipeline_layout,
-        .vertex = .{
-            .module = shader_module,
-            .entry_point = .fromSlice("vs_main"),
-            .buffer_count = 1,
-            .buffers = &.{vertex_buffer_layout},
-        },
-        .primitive = .{
-            .topology = .triangle_list,
-            .strip_index_format = .undefined,
-            .cull_mode = .back,
-            .front_face = .ccw,
-        },
-        .depth_stencil = &depth_stencil_state,
-        .multisample = .{
-            .count = 1,
-            .mask = 0xFFFFFFFF,
-            .alpha_to_coverage_enabled = .False,
-        },
-        .fragment = &fragment_state,
-    });
+    // ... (rest of pipeline setup is the same)
+    const vertex_buffer_layout = wgpu.VertexBufferLayout{ .array_stride = @sizeOf(Vertex), .step_mode = .vertex, .attribute_count = vertex_attributes.len, .attributes = &vertex_attributes };
+    const color_target_state = wgpu.ColorTargetState{ .format = surface_format, .blend = null, .write_mask = .all };
+    const fragment_state = wgpu.FragmentState{ .module = shader_module, .entry_point = .fromSlice("fs_main"), .target_count = 1, .targets = &.{color_target_state} };
+    const depth_stencil_state = wgpu.DepthStencilState{ .format = DEPTH_FORMAT, .depth_write_enabled = .true, .depth_compare = .less, .stencil_front = .{}, .stencil_back = .{}, .stencil_read_mask = 0, .stencil_write_mask = 0, .depth_bias = 0, .depth_bias_slope_scale = 0.0, .depth_bias_clamp = 0.0 };
+    const render_pipeline = wgpu.deviceCreateRenderPipeline(demo.device, &wgpu.RenderPipelineDescriptor{ .label = .fromSlice("render_pipeline"), .layout = pipeline_layout, .vertex = .{ .module = shader_module, .entry_point = .fromSlice("vs_main"), .buffer_count = 1, .buffers = &.{vertex_buffer_layout} }, .primitive = .{ .topology = .triangle_list, .strip_index_format = .undefined, .cull_mode = .back, .front_face = .ccw }, .depth_stencil = &depth_stencil_state, .multisample = .{ .count = 1, .mask = 0xFFFFFFFF, .alpha_to_coverage_enabled = .False }, .fragment = &fragment_state });
     defer wgpu.renderPipelineRelease(render_pipeline);
 
     var arena_state = std.heap.ArenaAllocator.init(gpa);
@@ -747,27 +863,46 @@ pub fn main() !void {
     log.info("startup completed in {d} ms", .{startup_ms});
 
     // --- Main Loop ---
+    var animation_time: f32 = 0.0;
+    var last_frame_time = glfw.getTime();
+
     main_loop: while (!glfw.windowShouldClose(window)) {
+        const current_time = glfw.getTime();
+        const delta_time: f32 = @floatCast(current_time - last_frame_time);
+        last_frame_time = current_time;
+
         glfw.pollEvents();
         _ = arena_state.reset(.free_all);
 
+        // Update camera uniform...
         var camera_uniform: CameraUniform = undefined;
         {
             var width: i32 = 0;
             var height: i32 = 0;
             glfw.getFramebufferSize(window, &width, &height);
             const aspect = if (height == 0) 1.0 else @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(height));
-
             const proj = linalg.mat4_perspective(linalg.deg_to_rad * 45.0, aspect, 0.1, 100.0);
-            const view = linalg.mat4_look_at(
-                .{ 4.0, 2.0, 4.0 }, // Eye position
-                .{ 0.0, 0.5, 0.0 }, // Target (raised slightly)
-                .{ 0.0, 1.0, 0.0 }, // Up vector
-            );
+            const view = linalg.mat4_look_at(.{ 2.5, 2.0, 3.0 }, .{ 0.0, 1.0, 0.0 }, .{ 0.0, 1.0, 0.0 });
             camera_uniform.view_proj = linalg.mat4_mul(proj, view);
         }
         wgpu.queueWriteBuffer(queue, camera_buffer, 0, &camera_uniform, @sizeOf(CameraUniform));
 
+        // --- NEW: Update animation and upload skinning data ---
+        if (model.animations.len > 0) {
+            animation_time += delta_time;
+            const anim = model.animations[2];
+            // Loop the animation
+            const duration = anim.samplers[0].input[anim.samplers[0].input.len - 1];
+            if (animation_time > duration) {
+                animation_time -= duration;
+            }
+
+            var skin_uniforms: SkinUniforms = .{ .joint_matrices = undefined };
+            updateAnimation(&model, 2, animation_time, &skin_uniforms.joint_matrices);
+            wgpu.queueWriteBuffer(queue, skin_uniform_buffer, 0, &skin_uniforms, @sizeOf(SkinUniforms));
+        }
+
+        // ... (surface texture acquisition is the same)
         var surface_texture: wgpu.SurfaceTexture = undefined;
         wgpu.surfaceGetCurrentTexture(demo.surface, &surface_texture);
         switch (surface_texture.status) {
@@ -789,44 +924,26 @@ pub fn main() !void {
         }
         std.debug.assert(surface_texture.texture != null);
         defer wgpu.textureRelease(surface_texture.texture);
-
         const frame_view = wgpu.textureCreateView(surface_texture.texture, null);
         std.debug.assert(frame_view != null);
         defer wgpu.textureViewRelease(frame_view);
-
         const encoder = wgpu.deviceCreateCommandEncoder(demo.device, &.{ .label = .fromSlice("main_encoder") });
         defer wgpu.commandEncoderRelease(encoder);
 
-        var depth_stencil_attachment = wgpu.RenderPassDepthStencilAttachment{
-            .view = demo.depth_view,
-            .depth_load_op = .clear,
-            .depth_store_op = .store,
-            .depth_clear_value = 1.0,
-            .depth_read_only = .False,
-            .stencil_load_op = .undefined,
-            .stencil_store_op = .undefined,
-        };
-
-        const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
-            .label = .fromSlice("main_render_pass"),
-            .color_attachment_count = 1,
-            .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
-                .view = frame_view,
-                .resolve_target = null,
-                .load_op = .clear,
-                .store_op = .store,
-                .clear_value = wgpu.Color{ .r = 0.1, .g = 0.2, .b = 0.3, .a = 1 },
-            }},
-            .depth_stencil_attachment = &depth_stencil_attachment,
-        });
+        // ... (render pass setup is the same)
+        var depth_stencil_attachment = wgpu.RenderPassDepthStencilAttachment{ .view = demo.depth_view, .depth_load_op = .clear, .depth_store_op = .store, .depth_clear_value = 1.0, .depth_read_only = .False, .stencil_load_op = .undefined, .stencil_store_op = .undefined };
+        const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{ .label = .fromSlice("main_render_pass"), .color_attachment_count = 1, .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{ .view = frame_view, .resolve_target = null, .load_op = .clear, .store_op = .store, .clear_value = wgpu.Color{ .r = 0.1, .g = 0.2, .b = 0.3, .a = 1 } }}, .depth_stencil_attachment = &depth_stencil_attachment });
 
         wgpu.renderPassEncoderSetPipeline(render_pass, render_pipeline);
         wgpu.renderPassEncoderSetBindGroup(render_pass, 0, camera_bind_group, 0, null);
 
-        // --- RENDER THE LOADED MODEL ---
+        // --- RENDER THE MODEL ---
         for (model.primitives) |primitive| {
-            // NEW: Set the texture bind group for this specific primitive.
             wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
+            // NEW: If the primitive is skinned, set the skinning bind group.
+            if (primitive.skin_index != null) {
+                wgpu.renderPassEncoderSetBindGroup(render_pass, 2, skin_bind_group, 0, null);
+            }
             wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
             wgpu.renderPassEncoderSetIndexBuffer(render_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
             wgpu.renderPassEncoderDrawIndexed(render_pass, primitive.index_count, 1, 0, 0, 0);
