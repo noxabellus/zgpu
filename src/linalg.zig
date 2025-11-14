@@ -8,6 +8,7 @@ test {
     std.testing.refAllDecls(@This());
 }
 
+pub const quat = vec4;
 pub const mat4 = [4]vec4;
 pub const mat3 = [3]vec3;
 
@@ -116,6 +117,35 @@ pub fn cross(a: vec3, b: vec3) vec3 {
     };
 }
 
+pub fn lerp(a: anytype, b: @TypeOf(a), t: anytype) @TypeOf(a) {
+    const tv = if (comptime @TypeOf(t) == @TypeOf(a)) t else @as(@TypeOf(a), @splat(t));
+    return a + (b - a) * tv;
+}
+
+pub fn ExtrapolateComponent(comptime N: usize, comptime T: type) type {
+    const T_info = @typeInfo(T);
+    return @Vector(N, if (T_info == .vector) T_info.vector.child else T);
+}
+
+pub fn xyz(v: anytype) ExtrapolateComponent(3, @TypeOf(v)) {
+    const T = @TypeOf(v);
+    const T_info = @typeInfo(T);
+
+    var out: ExtrapolateComponent(3, T) = undefined;
+    if (comptime T_info == .vector) {
+        if (T_info.vector.len < 3) @compileError("linalg.xyz requires at least 3 components or a scalar");
+        inline for (0..3) |i| {
+            out[i] = v[i];
+        }
+    } else {
+        inline for (0..3) |i| {
+            out[i] = v;
+        }
+    }
+
+    return out;
+}
+
 // --- Matrix Operations ---
 
 /// Returns a 4x4 identity matrix.
@@ -209,4 +239,112 @@ pub fn mat4_ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: 
     res[3][1] = -(top + bottom) / tmb;
     res[3][2] = -near / fmn;
     return res;
+}
+
+/// Creates a 4x4 translation matrix.
+pub fn mat4_translate(translation: vec3) mat4 {
+    var m = mat4_identity();
+    m[3] = .{ translation[0], translation[1], translation[2], 1.0 };
+    return m;
+}
+
+/// Creates a 4x4 scaling matrix.
+pub fn mat4_scale(s: vec3) mat4 {
+    var m = mat4_identity();
+    m[0][0] = s[0];
+    m[1][1] = s[1];
+    m[2][2] = s[2];
+    return m;
+}
+
+/// Creates a 4x4 rotation matrix from a quaternion.
+/// The quaternion is assumed to have components (x, y, z, w).
+pub fn mat4_from_quat(q: quat) mat4 {
+    const nq = normalize(q);
+    const x = nq[0];
+    const y = nq[1];
+    const z = nq[2];
+    const w = nq[3];
+
+    const xx = x * x;
+    const yy = y * y;
+    const zz = z * z;
+    const xy = x * y;
+    const xz = x * z;
+    const yz = y * z;
+    const wx = w * x;
+    const wy = w * y;
+    const wz = w * z;
+
+    var out: mat4 = undefined;
+
+    // Column 0
+    out[0][0] = 1.0 - 2.0 * (yy + zz);
+    out[0][1] = 2.0 * (xy + wz);
+    out[0][2] = 2.0 * (xz - wy);
+    out[0][3] = 0.0;
+
+    // Column 1
+    out[1][0] = 2.0 * (xy - wz);
+    out[1][1] = 1.0 - 2.0 * (xx + zz);
+    out[1][2] = 2.0 * (yz + wx);
+    out[1][3] = 0.0;
+
+    // Column 2
+    out[2][0] = 2.0 * (xz + wy);
+    out[2][1] = 2.0 * (yz - wx);
+    out[2][2] = 1.0 - 2.0 * (xx + yy);
+    out[2][3] = 0.0;
+
+    // Column 3
+    out[3] = .{ 0.0, 0.0, 0.0, 1.0 };
+
+    return out;
+}
+
+pub fn quat_slerp(q1: quat, q2: quat, t: anytype) quat {
+    const T = @TypeOf(t);
+    const T_info = @typeInfo(T);
+
+    const tv: quat = if (comptime T_info == .vector) t else @splat(t);
+
+    // Ensure quaternions are normalized
+    const temp_q1 = normalize(q1);
+    var temp_q2 = normalize(q2);
+
+    var d = dot(temp_q1, temp_q2);
+
+    // If dot product is negative, negate one quaternion to take the shortest path
+    if (d < 0.0) {
+        temp_q2[0] = -temp_q2[0];
+        temp_q2[1] = -temp_q2[1];
+        temp_q2[2] = -temp_q2[2];
+        temp_q2[3] = -temp_q2[3];
+        d = -d; // Recalculate d product (now positive)
+    }
+
+    // Handle near-parallel quaternions to avoid division by zero
+    const DOT_THRESHOLD = 0.9995;
+    if (d > DOT_THRESHOLD) {
+        // Linear interpolation (LERP) as an approximation
+        return normalize(quat{
+            temp_q1[0] + tv[0] * (temp_q2[0] - temp_q1[0]),
+            temp_q1[1] + tv[1] * (temp_q2[1] - temp_q1[1]),
+            temp_q1[2] + tv[2] * (temp_q2[2] - temp_q1[2]),
+            temp_q1[3] + tv[3] * (temp_q2[3] - temp_q1[3]),
+        });
+    }
+
+    const theta = std.math.acos(d);
+    const sin_theta = std.math.sin(theta);
+
+    var out: quat = undefined;
+
+    inline for (0..4) |i| {
+        const s0 = std.math.sin((1.0 - tv[i]) * theta) / sin_theta;
+        const s1 = std.math.sin(tv[i] * theta) / sin_theta;
+        out[i] = s0 * temp_q1[i] + s1 * temp_q2[i];
+    }
+
+    return out;
 }
