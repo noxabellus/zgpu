@@ -573,15 +573,24 @@ fn loadGltfModel(
     var animations = try std.ArrayList(Animation).initCapacity(allocator, gltf_data.data.animations.len);
     errdefer animations.deinit(allocator);
 
-    for (gltf_data.data.animations) |gltf_anim| {
+    for (gltf_data.data.animations, 0..) |gltf_anim, anim_index| {
         var anim_samplers = try std.ArrayList(AnimationSampler).initCapacity(allocator, gltf_anim.samplers.len);
         errdefer anim_samplers.deinit(allocator);
 
-        for (gltf_anim.samplers) |gltf_sampler| {
+        for (gltf_anim.samplers, 0..) |gltf_sampler, sampler_index| {
             const time_acc = gltf_data.data.accessors[gltf_sampler.input];
             const time_bv = gltf_data.data.buffer_views[time_acc.buffer_view.?];
             const time_bin = binary_buffers.items[time_bv.buffer];
             var time_iter = time_acc.iterator(f32, &gltf_data, time_bin);
+
+            if (gltf_sampler.interpolation != .linear) {
+                log.warn("non-linear interpolation mode specified for model {s} animation {s}/{} sampler {}", .{
+                    model_path,
+                    gltf_anim.name orelse "unnamed",
+                    anim_index,
+                    sampler_index,
+                });
+            }
 
             var times = try std.ArrayList(f32).initCapacity(allocator, time_acc.count);
             errdefer times.deinit(allocator);
@@ -1058,9 +1067,10 @@ pub fn main() !void {
         wgpu.queueWriteBuffer(queue, camera_buffer, 0, &camera_uniform, @sizeOf(CameraUniform));
 
         // --- Update animation and upload skinning data ---
+        const anim_index = 1;
         if (model.animations.len > 0) {
             animation_time += delta_time;
-            const anim = model.animations[2];
+            const anim = model.animations[anim_index];
             // Loop the animation
             const duration = anim.samplers[0].input[anim.samplers[0].input.len - 1];
             if (animation_time > duration) {
@@ -1068,7 +1078,7 @@ pub fn main() !void {
             }
 
             var skin_uniforms: SkinUniforms = .{ .joint_matrices = undefined };
-            updateAnimation(&model, 2, animation_time, &skin_uniforms.joint_matrices);
+            updateAnimation(&model, anim_index, animation_time, &skin_uniforms.joint_matrices);
             wgpu.queueWriteBuffer(queue, skin_uniform_buffer, 0, &skin_uniforms, @sizeOf(SkinUniforms));
         }
 
