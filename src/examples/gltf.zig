@@ -982,6 +982,9 @@ pub fn main() !void {
         const current_time = glfw.getTime();
         const delta_time: f32 = @floatCast(current_time - last_frame_time);
         last_frame_time = current_time;
+
+        defer debug.lap();
+
         glfw.pollEvents();
         _ = arena_state.reset(.retain_capacity);
 
@@ -1032,46 +1035,44 @@ pub fn main() !void {
 
             const encoder = app.gpu.getCommandEncoder("main_encoder");
 
-            var depth_stencil_attachment = wgpu.RenderPassDepthStencilAttachment{
-                .view = app.gpu.depth_view,
-                .depth_load_op = .clear,
-                .depth_store_op = .store,
-                .depth_clear_value = 1.0,
-                .depth_read_only = .False,
-                .stencil_load_op = .undefined,
-                .stencil_store_op = .undefined,
-            };
-            const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
-                .label = .fromSlice("main_render_pass"),
-                .color_attachment_count = 1,
-                .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
-                    .view = frame_view,
-                    .resolve_target = null,
-                    .load_op = .clear,
-                    .store_op = .store,
-                    .clear_value = wgpu.Color{ .r = 0.1, .g = 0.2, .b = 0.3, .a = 1 },
-                }},
-                .depth_stencil_attachment = &depth_stencil_attachment,
-            });
-            wgpu.renderPassEncoderSetPipeline(render_pass, render_pipeline);
-            wgpu.renderPassEncoderSetBindGroup(render_pass, 0, camera_bind_group, 0, null);
-            for (model.primitives) |primitive| {
-                wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
-                if (primitive.skin_index != null) {
-                    wgpu.renderPassEncoderSetBindGroup(render_pass, 2, skin_bind_group, 0, null);
+            {
+                const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
+                    .label = .fromSlice("main_render_pass"),
+                    .color_attachment_count = 1,
+                    .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
+                        .view = frame_view,
+                        .resolve_target = null,
+                        .load_op = .clear,
+                        .store_op = .store,
+                        .clear_value = wgpu.Color{ .r = 0.1, .g = 0.2, .b = 0.3, .a = 1 },
+                    }},
+                    .depth_stencil_attachment = &wgpu.RenderPassDepthStencilAttachment{
+                        .view = app.gpu.depth_view,
+                        .depth_load_op = .clear,
+                        .depth_store_op = .store,
+                        .depth_clear_value = 1.0,
+                        .depth_read_only = .False,
+                    },
+                });
+                defer wgpu.renderPassEncoderRelease(render_pass);
+
+                wgpu.renderPassEncoderSetPipeline(render_pass, render_pipeline);
+                wgpu.renderPassEncoderSetBindGroup(render_pass, 0, camera_bind_group, 0, null);
+                for (model.primitives) |primitive| {
+                    wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
+                    if (primitive.skin_index != null) {
+                        wgpu.renderPassEncoderSetBindGroup(render_pass, 2, skin_bind_group, 0, null);
+                    }
+                    wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
+                    wgpu.renderPassEncoderSetIndexBuffer(render_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
+                    wgpu.renderPassEncoderDrawIndexed(render_pass, primitive.index_count, 1, 0, 0, 0);
                 }
-                wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
-                wgpu.renderPassEncoderSetIndexBuffer(render_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
-                wgpu.renderPassEncoderDrawIndexed(render_pass, primitive.index_count, 1, 0, 0, 0);
+                wgpu.renderPassEncoderEnd(render_pass);
             }
-            wgpu.renderPassEncoderEnd(render_pass);
-            wgpu.renderPassEncoderRelease(render_pass);
 
             const cmd = app.gpu.finalizeCommandEncoder(encoder);
 
             app.gpu.submitCommands(&.{cmd});
         }
-
-        debug.lap();
     }
 }
