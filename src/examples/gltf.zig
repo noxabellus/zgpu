@@ -666,10 +666,16 @@ fn updateAnimation(model: *const Model, anim_idx: u32, time: f32, out_matrices: 
             if (channel.target_node != i) continue;
 
             const sampler = animation.samplers[channel.sampler_index];
-            // Find the keyframes to interpolate between
             var prev_key: usize = 0;
-            while (prev_key < sampler.input.len - 1 and sampler.input[prev_key + 1] < time) {
-                prev_key += 1;
+            // Find the keyframes to interpolate between
+            for (0..sampler.input.len) |ti| {
+                const tstart = sampler.input[ti];
+                const tend = sampler.input[(ti + 1) % sampler.input.len];
+
+                if (tstart <= time and time < tend) {
+                    prev_key = ti;
+                    break;
+                }
             }
             const next_key = (prev_key + 1) % sampler.input.len;
 
@@ -687,10 +693,7 @@ fn updateAnimation(model: *const Model, anim_idx: u32, time: f32, out_matrices: 
             }
         }
 
-        const t_mat = linalg.mat4_translate(t);
-        const r_mat = linalg.mat4_from_quat(r);
-        const s_mat = linalg.mat4_scale(s);
-        node_transforms[i] = linalg.mat4_mul(linalg.mat4_mul(t_mat, r_mat), s_mat);
+        node_transforms[i] = linalg.mat4_compose(t, r, s);
     }
 
     // Step 2: Calculate global transforms by walking the node hierarchy
@@ -1067,7 +1070,7 @@ pub fn main() !void {
         wgpu.queueWriteBuffer(queue, camera_buffer, 0, &camera_uniform, @sizeOf(CameraUniform));
 
         // --- Update animation and upload skinning data ---
-        const anim_index = 1;
+        const anim_index = 2;
         if (model.animations.len > 0) {
             animation_time += delta_time;
             const anim = model.animations[anim_index];

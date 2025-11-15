@@ -255,6 +255,10 @@ pub fn mat4_ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: 
     return res;
 }
 
+/// Creates a 4x4 matrix from translation, rotation and scale components
+pub fn mat4_compose(t: vec3, r: quat, s: vec3) mat4 {
+    return linalg.mat4_mul(linalg.mat4_mul(linalg.mat4_translate(t), linalg.mat4_from_quat(r)), linalg.mat4_scale(s));
+}
 /// Creates a 4x4 translation matrix.
 pub fn mat4_translate(translation: vec3) mat4 {
     var m = mat4_identity();
