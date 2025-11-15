@@ -857,7 +857,7 @@ pub fn main() !void {
         const delta_time: f32 = @floatCast(current_time - last_frame_time);
         last_frame_time = current_time;
         glfw.pollEvents();
-        _ = arena_state.reset(.free_all);
+        _ = arena_state.reset(.retain_capacity);
 
         var camera_uniform: CameraUniform = undefined;
         {
