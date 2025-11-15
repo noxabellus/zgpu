@@ -8,6 +8,7 @@ const glfw = @import("glfw");
 const gltf = @import("gltf");
 const stbi = @import("stbi");
 
+const Application = @import("../Application.zig");
 const debug = @import("../debug.zig");
 const linalg = @import("../linalg.zig");
 const vec2 = linalg.vec2;
@@ -26,18 +27,7 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-const DEPTH_FORMAT = wgpu.TextureFormat.depth32_float;
 const MAX_JOINTS = 128;
-
-const Demo = struct {
-    instance: wgpu.Instance = null,
-    surface: wgpu.Surface = null,
-    adapter: wgpu.Adapter = null,
-    device: wgpu.Device = null,
-    depth_texture: wgpu.Texture = null,
-    depth_view: wgpu.TextureView = null,
-    config: wgpu.SurfaceConfiguration = .{},
-};
 
 const Vertex = extern struct {
     position: vec3,
@@ -143,28 +133,6 @@ const SkinUniforms = extern struct {
 };
 
 const shader_text = @embedFile("shaders/GltfMultiPurpose.wgsl");
-
-fn createDepthTexture(d: *Demo) void {
-    if (d.depth_view) |v| wgpu.textureViewRelease(v);
-    if (d.depth_texture) |t| wgpu.textureRelease(t);
-    const depth_texture_descriptor = wgpu.TextureDescriptor{
-        .label = .fromSlice("depth_texture"),
-        .size = .{
-            .width = d.config.width,
-            .height = d.config.height,
-            .depth_or_array_layers = 1,
-        },
-        .mip_level_count = 1,
-        .sample_count = 1,
-        .dimension = .@"2d",
-        .format = DEPTH_FORMAT,
-        .usage = wgpu.TextureUsage.renderAttachmentUsage,
-        .view_format_count = 1,
-        .view_formats = &.{DEPTH_FORMAT},
-    };
-    d.depth_texture = wgpu.deviceCreateTexture(d.device, &depth_texture_descriptor);
-    d.depth_view = wgpu.textureCreateView(d.depth_texture, null);
-}
 
 /// Loads a glTF model from the given path, creating WGPU buffers and optimized runtime structures.
 fn loadGltfModel(
@@ -855,151 +823,20 @@ fn updateAnimation(
 
 pub fn main() !void {
     var timer = try std.time.Timer.start();
+
     const gpa = std.heap.page_allocator;
-    stbi.init(gpa);
-    defer stbi.deinit();
 
-    if (comptime builtin.os.tag != .windows) {
-        glfw.initHint(.{ .platform = .x11 });
-    } else {
-        glfw.initHint(.{ .platform = .win32 });
-    }
-    try glfw.init();
-    defer glfw.deinit();
-    var demo = Demo{};
-    const instance_extras = wgpu.InstanceExtras{
-        .chain = .{ .s_type = .instance_extras },
-        .backends = switch (builtin.os.tag) {
-            .windows => if (glfw.isRunningInWine()) wgpu.InstanceBackend.vulkanBackend else wgpu.InstanceBackend.dx12Backend,
-            else => wgpu.InstanceBackend.vulkanBackend,
-        },
-    };
-    wgpu.setLogCallback(&struct {
-        pub fn wgpu_logger(level: wgpu.LogLevel, message: wgpu.StringView, _: ?*anyopaque) callconv(.c) void {
-            const msg = message.toSlice();
-            const prefix = switch (level) {
-                .@"error" => "wgpu error: ",
-                .warn => "wgpu warn: ",
-                .info => "wgpu info: ",
-                .debug => "wgpu debug: ",
-                .trace => "wgpu trace: ",
-                else => "wgpu unknown: ",
-            };
-            std.debug.print("{s}{s}\n", .{ prefix, msg });
-        }
-    }.wgpu_logger, null);
-    wgpu.setLogLevel(.warn);
-    demo.instance = wgpu.createInstance(&wgpu.InstanceDescriptor{ .next_in_chain = @ptrCast(&instance_extras) });
-    std.debug.assert(demo.instance != null);
-    defer wgpu.instanceRelease(demo.instance);
-    glfw.windowHint(.{ .client_api = .none });
-    const window = try glfw.createWindow(800, 600, "zgpu glTF Animation", null, null);
-    defer glfw.destroyWindow(window);
-    glfw.setWindowUserPointer(window, &demo);
-    _ = glfw.setFramebufferSizeCallback(window, &struct {
-        fn handle_glfw_framebuffer_size(w: *glfw.Window, width: i32, height: i32) callconv(.c) void {
-            if (width <= 0 and height <= 0) return;
-            const d: *Demo = @ptrCast(@alignCast(glfw.getWindowUserPointer(w) orelse return));
-            if (d.surface == null) return;
-            d.config.width = @intCast(width);
-            d.config.height = @intCast(height);
-            wgpu.surfaceConfigure(d.surface, &d.config);
-            createDepthTexture(d);
-        }
-    }.handle_glfw_framebuffer_size);
-    if (comptime builtin.os.tag != .windows) {
-        const x11_display = glfw.getX11Display();
-        const x11_window = glfw.getX11Window(window);
-        var xlib_source = wgpu.SurfaceSourceXlibWindow{
-            .chain = .{ .s_type = .surface_source_xlib_window },
-            .display = x11_display,
-            .window = x11_window,
-        };
-        demo.surface = wgpu.instanceCreateSurface(demo.instance, &wgpu.SurfaceDescriptor{ .next_in_chain = @ptrCast(&xlib_source) });
-    } else {
-        const win32_hwnd = glfw.getWin32Window(window);
-        const win32_hinstance = glfw.getWin32ModuleHandle();
-        var win32_source = wgpu.SurfaceSourceWindowsHWND{
-            .chain = .{ .s_type = .surface_source_windows_hwnd },
-            .hwnd = win32_hwnd,
-            .hinstance = win32_hinstance,
-        };
-        demo.surface = wgpu.instanceCreateSurface(demo.instance, &wgpu.SurfaceDescriptor{ .next_in_chain = @ptrCast(&win32_source) });
-    }
-    std.debug.assert(demo.surface != null);
-    defer wgpu.surfaceRelease(demo.surface);
-    _ = wgpu.instanceRequestAdapter(demo.instance, &wgpu.RequestAdapterOptions{ .compatible_surface = demo.surface }, .{ .callback = &struct {
-        fn handle_request_adapter(status: wgpu.RequestAdapterStatus, adapter: wgpu.Adapter, msg: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
-            _ = ud2;
-            if (status == .success) {
-                const d: *Demo = @ptrCast(@alignCast(ud1.?));
-                d.adapter = adapter;
-            } else {
-                log.err("request_adapter failed: {s}", .{msg.toSlice()});
-            }
-        }
-    }.handle_request_adapter, .userdata1 = &demo });
-    while (demo.adapter == null) wgpu.instanceProcessEvents(demo.instance);
-    defer wgpu.adapterRelease(demo.adapter);
-    _ = wgpu.adapterRequestDevice(demo.adapter, null, .{ .callback = &struct {
-        fn handle_request_device(status: wgpu.RequestDeviceStatus, device: wgpu.Device, msg: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
-            _ = ud2;
-            if (status == .success) {
-                const d: *Demo = @ptrCast(@alignCast(ud1.?));
-                d.device = device;
-            } else {
-                log.err("request_device failed: {s}", .{msg.toSlice()});
-            }
-        }
-    }.handle_request_device, .userdata1 = &demo });
-    while (demo.device == null) wgpu.instanceProcessEvents(demo.instance);
-    defer wgpu.deviceRelease(demo.device);
-    defer if (demo.depth_view) |v| wgpu.textureViewRelease(v);
-    defer if (demo.depth_texture) |t| wgpu.textureRelease(t);
-    const queue = wgpu.deviceGetQueue(demo.device);
-    defer wgpu.queueRelease(queue);
-    var surface_capabilities: wgpu.SurfaceCapabilities = undefined;
-    const cap_res = wgpu.surfaceGetCapabilities(demo.surface, demo.adapter, &surface_capabilities);
-    if (cap_res != .success) return error.FailedToGetCapabilities;
-    defer wgpu.surfaceCapabilitiesFreeMembers(surface_capabilities);
-    if (surface_capabilities.format_count == 0) {
-        return error.NoSurfaceFormatAvailable;
-    }
+    var app = try Application.init(gpa, "zgpu glTF example");
+    defer app.deinit();
 
-    const surface_format: wgpu.TextureFormat =
-        for (0..surface_capabilities.format_count) |f| {
-            const fmt = surface_capabilities.formats.?[f];
-            if (fmt.isSrgb()) break fmt;
-        } else {
-            return error.NoSrgbSurfaceFormatAvailable;
-        };
-    log.info("Selected surface format {s}", .{@tagName(surface_format)});
-
-    demo.config = .{
-        .device = demo.device,
-        .usage = .renderAttachmentUsage,
-        .format = surface_format,
-        .present_mode = .fifo,
-        .alpha_mode = surface_capabilities.alpha_modes.?[0],
-    };
-    {
-        var width: i32 = 0;
-        var height: i32 = 0;
-        glfw.getWindowSize(window, &width, &height);
-        demo.config.width = @intCast(width);
-        demo.config.height = @intCast(height);
-    }
-    wgpu.surfaceConfigure(demo.surface, &demo.config);
-    createDepthTexture(&demo);
-
-    const camera_buffer = wgpu.deviceCreateBuffer(demo.device, &.{
+    const camera_buffer = wgpu.deviceCreateBuffer(app.gpu.device, &.{
         .label = .fromSlice("camera_buffer"),
         .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
         .size = @sizeOf(CameraUniform),
     });
     defer wgpu.bufferRelease(camera_buffer);
 
-    const camera_bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &.{
+    const camera_bind_group_layout = wgpu.deviceCreateBindGroupLayout(app.gpu.device, &.{
         .label = .fromSlice("camera_bind_group_layout"),
         .entry_count = 1,
         .entries = &.{
@@ -1012,7 +849,7 @@ pub fn main() !void {
     });
     defer wgpu.bindGroupLayoutRelease(camera_bind_group_layout);
 
-    const texture_bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &.{
+    const texture_bind_group_layout = wgpu.deviceCreateBindGroupLayout(app.gpu.device, &.{
         .label = .fromSlice("texture_bind_group_layout"),
         .entry_count = 2,
         .entries = &.{
@@ -1021,14 +858,14 @@ pub fn main() !void {
         },
     });
     defer wgpu.bindGroupLayoutRelease(texture_bind_group_layout);
-    const skin_uniform_buffer = wgpu.deviceCreateBuffer(demo.device, &.{
+    const skin_uniform_buffer = wgpu.deviceCreateBuffer(app.gpu.device, &.{
         .label = .fromSlice("skin_uniform_buffer"),
         .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
         .size = @sizeOf(SkinUniforms),
     });
     defer wgpu.bufferRelease(skin_uniform_buffer);
 
-    const skin_bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &.{
+    const skin_bind_group_layout = wgpu.deviceCreateBindGroupLayout(app.gpu.device, &.{
         .label = .fromSlice("skin_bind_group_layout"),
         .entry_count = 1,
         .entries = &.{
@@ -1041,7 +878,7 @@ pub fn main() !void {
     });
     defer wgpu.bindGroupLayoutRelease(skin_bind_group_layout);
 
-    const skin_bind_group = wgpu.deviceCreateBindGroup(demo.device, &.{
+    const skin_bind_group = wgpu.deviceCreateBindGroup(app.gpu.device, &.{
         .label = .fromSlice("skin_bind_group"),
         .layout = skin_bind_group_layout,
         .entry_count = 1,
@@ -1055,7 +892,7 @@ pub fn main() !void {
     });
     defer wgpu.bindGroupRelease(skin_bind_group);
 
-    const camera_bind_group = wgpu.deviceCreateBindGroup(demo.device, &.{
+    const camera_bind_group = wgpu.deviceCreateBindGroup(app.gpu.device, &.{
         .label = .fromSlice("camera_bind_group"),
         .layout = camera_bind_group_layout,
         .entry_count = 1,
@@ -1070,17 +907,17 @@ pub fn main() !void {
     });
     defer wgpu.bindGroupRelease(camera_bind_group);
 
-    var model = try loadGltfModel(gpa, demo.device, queue, "assets/models/greenman.glb", texture_bind_group_layout);
+    var model = try loadGltfModel(gpa, app.gpu.device, app.gpu.queue, "assets/models/greenman.glb", texture_bind_group_layout);
     defer model.deinit();
 
     const anim_index = 2;
     var anim_state = try AnimationState.init(gpa, &model, anim_index);
     defer anim_state.deinit();
 
-    const shader_module = try wgpu.loadShaderText(demo.device, "gltf_shader.wgsl", shader_text);
+    const shader_module = try wgpu.loadShaderText(app.gpu.device, "gltf_shader.wgsl", shader_text);
     defer wgpu.shaderModuleRelease(shader_module);
 
-    const pipeline_layout = wgpu.deviceCreatePipelineLayout(demo.device, &.{
+    const pipeline_layout = wgpu.deviceCreatePipelineLayout(app.gpu.device, &.{
         .label = .fromSlice("pipeline_layout"),
         .bind_group_layout_count = 3,
         .bind_group_layouts = &.{
@@ -1091,7 +928,7 @@ pub fn main() !void {
     });
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
 
-    const render_pipeline = wgpu.deviceCreateRenderPipeline(demo.device, &wgpu.RenderPipelineDescriptor{
+    const render_pipeline = wgpu.deviceCreateRenderPipeline(app.gpu.device, &wgpu.RenderPipelineDescriptor{
         .label = .fromSlice("render_pipeline"),
         .layout = pipeline_layout,
         .vertex = .{
@@ -1121,7 +958,7 @@ pub fn main() !void {
             .front_face = .ccw,
         },
         .depth_stencil = &wgpu.DepthStencilState{
-            .format = DEPTH_FORMAT,
+            .format = Application.DEPTH_FORMAT,
             .depth_write_enabled = .true,
             .depth_compare = .less,
             .stencil_front = .{},
@@ -1143,7 +980,7 @@ pub fn main() !void {
             .target_count = 1,
             .targets = &.{
                 wgpu.ColorTargetState{
-                    .format = surface_format,
+                    .format = app.gpu.surface_format,
                     .blend = null,
                     .write_mask = .all,
                 },
@@ -1160,7 +997,7 @@ pub fn main() !void {
 
     var animation_time: f32 = 0.0;
     var last_frame_time = glfw.getTime();
-    main_loop: while (!glfw.windowShouldClose(window)) {
+    main_loop: while (!glfw.windowShouldClose(app.window)) {
         const current_time = glfw.getTime();
         const delta_time: f32 = @floatCast(current_time - last_frame_time);
         last_frame_time = current_time;
@@ -1169,10 +1006,8 @@ pub fn main() !void {
 
         var camera_uniform: CameraUniform = undefined;
         {
-            var width: i32 = 0;
-            var height: i32 = 0;
-            glfw.getFramebufferSize(window, &width, &height);
-            const aspect = if (height == 0) 1.0 else @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(height));
+            const size = app.getFramebufferSize();
+            const aspect = if (size[1] == 0) 1.0 else @as(f32, @floatFromInt(size[0])) / @as(f32, @floatFromInt(size[1]));
             const proj = linalg.mat4_perspective(
                 linalg.deg_to_rad * 45.0,
                 aspect,
@@ -1186,7 +1021,7 @@ pub fn main() !void {
             );
             camera_uniform.view_proj = linalg.mat4_mul(proj, view);
         }
-        wgpu.queueWriteBuffer(queue, camera_buffer, 0, &camera_uniform, @sizeOf(CameraUniform));
+        wgpu.queueWriteBuffer(app.gpu.queue, camera_buffer, 0, &camera_uniform, @sizeOf(CameraUniform));
 
         if (model.animations.len > anim_index) {
             animation_time += delta_time;
@@ -1207,73 +1042,54 @@ pub fn main() !void {
                 &skin_uniforms.joint_matrices,
             );
 
-            wgpu.queueWriteBuffer(queue, skin_uniform_buffer, 0, &skin_uniforms, @sizeOf(SkinUniforms));
+            wgpu.queueWriteBuffer(app.gpu.queue, skin_uniform_buffer, 0, &skin_uniforms, @sizeOf(SkinUniforms));
         }
 
-        var surface_texture: wgpu.SurfaceTexture = undefined;
-        wgpu.surfaceGetCurrentTexture(demo.surface, &surface_texture);
-        switch (surface_texture.status) {
-            .success_optimal, .success_suboptimal => {},
-            .timeout, .outdated, .lost => {
-                if (surface_texture.texture != null) wgpu.textureRelease(surface_texture.texture);
-                var width: i32 = 0;
-                var height: i32 = 0;
-                glfw.getWindowSize(window, &width, &height);
-                if (width != 0 and height != 0) {
-                    demo.config.width = @intCast(width);
-                    demo.config.height = @intCast(height);
-                    wgpu.surfaceConfigure(demo.surface, &demo.config);
-                    createDepthTexture(&demo);
+        {
+            const frame_view = app.beginFrame() orelse continue :main_loop;
+            defer app.endFrame();
+
+            const encoder = wgpu.deviceCreateCommandEncoder(app.gpu.device, &.{ .label = .fromSlice("main_encoder") });
+            defer wgpu.commandEncoderRelease(encoder);
+            var depth_stencil_attachment = wgpu.RenderPassDepthStencilAttachment{
+                .view = app.gpu.depth_view,
+                .depth_load_op = .clear,
+                .depth_store_op = .store,
+                .depth_clear_value = 1.0,
+                .depth_read_only = .False,
+                .stencil_load_op = .undefined,
+                .stencil_store_op = .undefined,
+            };
+            const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
+                .label = .fromSlice("main_render_pass"),
+                .color_attachment_count = 1,
+                .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
+                    .view = frame_view,
+                    .resolve_target = null,
+                    .load_op = .clear,
+                    .store_op = .store,
+                    .clear_value = wgpu.Color{ .r = 0.1, .g = 0.2, .b = 0.3, .a = 1 },
+                }},
+                .depth_stencil_attachment = &depth_stencil_attachment,
+            });
+            wgpu.renderPassEncoderSetPipeline(render_pass, render_pipeline);
+            wgpu.renderPassEncoderSetBindGroup(render_pass, 0, camera_bind_group, 0, null);
+            for (model.primitives) |primitive| {
+                wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
+                if (primitive.skin_index != null) {
+                    wgpu.renderPassEncoderSetBindGroup(render_pass, 2, skin_bind_group, 0, null);
                 }
-                continue :main_loop;
-            },
-            else => std.debug.panic("get_current_texture status={any}", .{surface_texture.status}),
-        }
-        std.debug.assert(surface_texture.texture != null);
-        defer wgpu.textureRelease(surface_texture.texture);
-        const frame_view = wgpu.textureCreateView(surface_texture.texture, null);
-        std.debug.assert(frame_view != null);
-        defer wgpu.textureViewRelease(frame_view);
-        const encoder = wgpu.deviceCreateCommandEncoder(demo.device, &.{ .label = .fromSlice("main_encoder") });
-        defer wgpu.commandEncoderRelease(encoder);
-        var depth_stencil_attachment = wgpu.RenderPassDepthStencilAttachment{
-            .view = demo.depth_view,
-            .depth_load_op = .clear,
-            .depth_store_op = .store,
-            .depth_clear_value = 1.0,
-            .depth_read_only = .False,
-            .stencil_load_op = .undefined,
-            .stencil_store_op = .undefined,
-        };
-        const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
-            .label = .fromSlice("main_render_pass"),
-            .color_attachment_count = 1,
-            .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
-                .view = frame_view,
-                .resolve_target = null,
-                .load_op = .clear,
-                .store_op = .store,
-                .clear_value = wgpu.Color{ .r = 0.1, .g = 0.2, .b = 0.3, .a = 1 },
-            }},
-            .depth_stencil_attachment = &depth_stencil_attachment,
-        });
-        wgpu.renderPassEncoderSetPipeline(render_pass, render_pipeline);
-        wgpu.renderPassEncoderSetBindGroup(render_pass, 0, camera_bind_group, 0, null);
-        for (model.primitives) |primitive| {
-            wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
-            if (primitive.skin_index != null) {
-                wgpu.renderPassEncoderSetBindGroup(render_pass, 2, skin_bind_group, 0, null);
+                wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
+                wgpu.renderPassEncoderSetIndexBuffer(render_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
+                wgpu.renderPassEncoderDrawIndexed(render_pass, primitive.index_count, 1, 0, 0, 0);
             }
-            wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
-            wgpu.renderPassEncoderSetIndexBuffer(render_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
-            wgpu.renderPassEncoderDrawIndexed(render_pass, primitive.index_count, 1, 0, 0, 0);
+            wgpu.renderPassEncoderEnd(render_pass);
+            wgpu.renderPassEncoderRelease(render_pass);
+            const cmd = wgpu.commandEncoderFinish(encoder, null);
+            defer wgpu.commandBufferRelease(cmd);
+            wgpu.queueSubmit(app.gpu.queue, 1, &.{cmd});
         }
-        wgpu.renderPassEncoderEnd(render_pass);
-        wgpu.renderPassEncoderRelease(render_pass);
-        const cmd = wgpu.commandEncoderFinish(encoder, null);
-        defer wgpu.commandBufferRelease(cmd);
-        wgpu.queueSubmit(queue, 1, &.{cmd});
-        _ = wgpu.surfacePresent(demo.surface);
+
         debug.lap();
     }
 }
