@@ -340,17 +340,37 @@ fn loadGltfModel(
                         const s = iter.next().?;
                         const n: f32 = 1.0 / 65535.0;
                         break :blk if (s.len == 3)
-                            .{ @as(f32, @floatFromInt(s[0])) * n, @as(f32, @floatFromInt(s[1])) * n, @as(f32, @floatFromInt(s[2])) * n, 1.0 }
+                            .{
+                                @as(f32, @floatFromInt(s[0])) * n,
+                                @as(f32, @floatFromInt(s[1])) * n,
+                                @as(f32, @floatFromInt(s[2])) * n,
+                                1.0,
+                            }
                         else
-                            .{ @as(f32, @floatFromInt(s[0])) * n, @as(f32, @floatFromInt(s[1])) * n, @as(f32, @floatFromInt(s[2])) * n, @as(f32, @floatFromInt(s[3])) * n };
+                            .{
+                                @as(f32, @floatFromInt(s[0])) * n,
+                                @as(f32, @floatFromInt(s[1])) * n,
+                                @as(f32, @floatFromInt(s[2])) * n,
+                                @as(f32, @floatFromInt(s[3])) * n,
+                            };
                     },
                     .u8 => |*iter| blk: {
                         const s = iter.next().?;
                         const n: f32 = 1.0 / 255.0;
                         break :blk if (s.len == 3)
-                            .{ @as(f32, @floatFromInt(s[0])) * n, @as(f32, @floatFromInt(s[1])) * n, @as(f32, @floatFromInt(s[2])) * n, 1.0 }
+                            .{
+                                @as(f32, @floatFromInt(s[0])) * n,
+                                @as(f32, @floatFromInt(s[1])) * n,
+                                @as(f32, @floatFromInt(s[2])) * n,
+                                1.0,
+                            }
                         else
-                            .{ @as(f32, @floatFromInt(s[0])) * n, @as(f32, @floatFromInt(s[1])) * n, @as(f32, @floatFromInt(s[2])) * n, @as(f32, @floatFromInt(s[3])) * n };
+                            .{
+                                @as(f32, @floatFromInt(s[0])) * n,
+                                @as(f32, @floatFromInt(s[1])) * n,
+                                @as(f32, @floatFromInt(s[2])) * n,
+                                @as(f32, @floatFromInt(s[3])) * n,
+                            };
                     },
                 };
                 const uv_vec: vec2 = if (maybe_uv_iter) |*uv_iter| blk: {
@@ -398,7 +418,11 @@ fn loadGltfModel(
                     if (idx_acc.component_type == .unsigned_short) {
                         var indices = try std.ArrayList(u16).initCapacity(allocator, idx_acc.count);
                         defer indices.deinit(allocator);
-                        var idx_iter = idx_acc.iterator(u16, &gltf_data, binary_buffers.items[gltf_data.data.buffer_views[idx_acc.buffer_view.?].buffer]);
+                        var idx_iter = idx_acc.iterator(
+                            u16,
+                            &gltf_data,
+                            binary_buffers.items[gltf_data.data.buffer_views[idx_acc.buffer_view.?].buffer],
+                        );
                         while (idx_iter.next()) |idx_slice| for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
                         const index_buffer_bytes = std.mem.sliceAsBytes(indices.items);
                         ibo = wgpu.deviceCreateBuffer(device, &.{
@@ -410,7 +434,11 @@ fn loadGltfModel(
                     } else {
                         var indices = try std.ArrayList(u32).initCapacity(allocator, idx_acc.count);
                         defer indices.deinit(allocator);
-                        var idx_iter = idx_acc.iterator(u32, &gltf_data, binary_buffers.items[gltf_data.data.buffer_views[idx_acc.buffer_view.?].buffer]);
+                        var idx_iter = idx_acc.iterator(
+                            u32,
+                            &gltf_data,
+                            binary_buffers.items[gltf_data.data.buffer_views[idx_acc.buffer_view.?].buffer],
+                        );
                         while (idx_iter.next()) |idx_slice| for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
                         const index_buffer_bytes = std.mem.sliceAsBytes(indices.items);
                         ibo = wgpu.deviceCreateBuffer(device, &.{
@@ -445,12 +473,19 @@ fn loadGltfModel(
             if (maybe_image) |image| {
                 const texture_descriptor = wgpu.TextureDescriptor{
                     .label = .fromSlice("gltf_texture"),
-                    .size = .{ .width = image.width, .height = image.height, .depth_or_array_layers = 1 },
+                    .size = .{
+                        .width = image.width,
+                        .height = image.height,
+                        .depth_or_array_layers = 1,
+                    },
                     .mip_level_count = 1,
                     .sample_count = 1,
                     .dimension = .@"2d",
                     .format = .rgba8_unorm_srgb,
-                    .usage = .{ .texture_binding = true, .copy_dst = true },
+                    .usage = .{
+                        .texture_binding = true,
+                        .copy_dst = true,
+                    },
                 };
                 prim_texture = wgpu.deviceCreateTexture(device, &texture_descriptor);
                 prim_texture_view = wgpu.textureCreateView(prim_texture, null);
@@ -459,27 +494,51 @@ fn loadGltfModel(
                     &.{ .texture = prim_texture },
                     image.data.ptr,
                     image.data.len,
-                    &.{ .bytes_per_row = image.bytes_per_row, .rows_per_image = image.height },
-                    &.{ .width = image.width, .height = image.height, .depth_or_array_layers = 1 },
+                    &.{
+                        .bytes_per_row = image.bytes_per_row,
+                        .rows_per_image = image.height,
+                    },
+                    &.{
+                        .width = image.width,
+                        .height = image.height,
+                        .depth_or_array_layers = 1,
+                    },
                 );
             } else {
                 const texture_descriptor = wgpu.TextureDescriptor{
                     .label = .fromSlice("fallback_texture"),
-                    .size = .{ .width = 1, .height = 1, .depth_or_array_layers = 1 },
+                    .size = .{
+                        .width = 1,
+                        .height = 1,
+                        .depth_or_array_layers = 1,
+                    },
                     .mip_level_count = 1,
                     .sample_count = 1,
                     .dimension = .@"2d",
                     .format = .rgba8_unorm_srgb,
-                    .usage = .{ .texture_binding = true, .copy_dst = true },
+                    .usage = .{
+                        .texture_binding = true,
+                        .copy_dst = true,
+                    },
                 };
                 prim_texture = wgpu.deviceCreateTexture(device, &texture_descriptor);
                 prim_texture_view = wgpu.textureCreateView(prim_texture, null);
                 const white_pixel: u32 = 0xFFFFFFFF;
-                wgpu.queueWriteTexture(queue, &.{ .texture = prim_texture }, &white_pixel, 4, &.{ .bytes_per_row = 4, .rows_per_image = 1 }, &.{
-                    .width = 1,
-                    .height = 1,
-                    .depth_or_array_layers = 1,
-                });
+                wgpu.queueWriteTexture(
+                    queue,
+                    &.{ .texture = prim_texture },
+                    &white_pixel,
+                    4,
+                    &.{
+                        .bytes_per_row = 4,
+                        .rows_per_image = 1,
+                    },
+                    &.{
+                        .width = 1,
+                        .height = 1,
+                        .depth_or_array_layers = 1,
+                    },
+                );
             }
             const prim_sampler = wgpu.deviceCreateSampler(device, &.{
                 .address_mode_u = .repeat,
@@ -1026,7 +1085,11 @@ pub fn main() !void {
         .attribute_count = vertex_attributes.len,
         .attributes = &vertex_attributes,
     };
-    const color_target_state = wgpu.ColorTargetState{ .format = surface_format, .blend = null, .write_mask = .all };
+    const color_target_state = wgpu.ColorTargetState{
+        .format = surface_format,
+        .blend = null,
+        .write_mask = .all,
+    };
     const fragment_state = wgpu.FragmentState{
         .module = shader_module,
         .entry_point = .fromSlice("fs_main"),
