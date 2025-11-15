@@ -959,9 +959,22 @@ pub fn main() !void {
     const queue = wgpu.deviceGetQueue(demo.device);
     defer wgpu.queueRelease(queue);
     var surface_capabilities: wgpu.SurfaceCapabilities = undefined;
-    _ = wgpu.surfaceGetCapabilities(demo.surface, demo.adapter, &surface_capabilities);
+    const cap_res = wgpu.surfaceGetCapabilities(demo.surface, demo.adapter, &surface_capabilities);
+    if (cap_res != .success) return error.FailedToGetCapabilities;
     defer wgpu.surfaceCapabilitiesFreeMembers(surface_capabilities);
-    const surface_format: wgpu.TextureFormat = .bgra8_unorm_srgb;
+    if (surface_capabilities.format_count == 0) {
+        return error.NoSurfaceFormatAvailable;
+    }
+
+    const surface_format: wgpu.TextureFormat =
+        for (0..surface_capabilities.format_count) |f| {
+            const fmt = surface_capabilities.formats.?[f];
+            if (fmt.isSrgb()) break fmt;
+        } else {
+            return error.NoSrgbSurfaceFormatAvailable;
+        };
+    log.info("Selected surface format {s}", .{@tagName(surface_format)});
+
     demo.config = .{
         .device = demo.device,
         .usage = .renderAttachmentUsage,
@@ -985,6 +998,7 @@ pub fn main() !void {
         .size = @sizeOf(CameraUniform),
     });
     defer wgpu.bufferRelease(camera_buffer);
+
     const camera_bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &.{
         .label = .fromSlice("camera_bind_group_layout"),
         .entry_count = 1,
@@ -997,6 +1011,7 @@ pub fn main() !void {
         },
     });
     defer wgpu.bindGroupLayoutRelease(camera_bind_group_layout);
+
     const texture_bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &.{
         .label = .fromSlice("texture_bind_group_layout"),
         .entry_count = 2,
@@ -1012,6 +1027,7 @@ pub fn main() !void {
         .size = @sizeOf(SkinUniforms),
     });
     defer wgpu.bufferRelease(skin_uniform_buffer);
+
     const skin_bind_group_layout = wgpu.deviceCreateBindGroupLayout(demo.device, &.{
         .label = .fromSlice("skin_bind_group_layout"),
         .entry_count = 1,
@@ -1024,6 +1040,7 @@ pub fn main() !void {
         },
     });
     defer wgpu.bindGroupLayoutRelease(skin_bind_group_layout);
+
     const skin_bind_group = wgpu.deviceCreateBindGroup(demo.device, &.{
         .label = .fromSlice("skin_bind_group"),
         .layout = skin_bind_group_layout,
@@ -1037,6 +1054,7 @@ pub fn main() !void {
         },
     });
     defer wgpu.bindGroupRelease(skin_bind_group);
+
     const camera_bind_group = wgpu.deviceCreateBindGroup(demo.device, &.{
         .label = .fromSlice("camera_bind_group"),
         .layout = camera_bind_group_layout,
@@ -1061,6 +1079,7 @@ pub fn main() !void {
 
     const shader_module = try wgpu.loadShaderText(demo.device, "gltf_shader.wgsl", shader_text);
     defer wgpu.shaderModuleRelease(shader_module);
+
     const pipeline_layout = wgpu.deviceCreatePipelineLayout(demo.device, &.{
         .label = .fromSlice("pipeline_layout"),
         .bind_group_layout_count = 3,
@@ -1071,43 +1090,7 @@ pub fn main() !void {
         },
     });
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
-    const vertex_attributes = [_]wgpu.VertexAttribute{
-        .{ .shaderLocation = 0, .offset = @offsetOf(Vertex, "position"), .format = .float32x3 },
-        .{ .shaderLocation = 1, .offset = @offsetOf(Vertex, "normal"), .format = .float32x3 },
-        .{ .shaderLocation = 2, .offset = @offsetOf(Vertex, "color"), .format = .float32x4 },
-        .{ .shaderLocation = 3, .offset = @offsetOf(Vertex, "tex_coord"), .format = .float32x2 },
-        .{ .shaderLocation = 4, .offset = @offsetOf(Vertex, "joint_indices"), .format = .uint32x4 },
-        .{ .shaderLocation = 5, .offset = @offsetOf(Vertex, "joint_weights"), .format = .float32x4 },
-    };
-    const vertex_buffer_layout = wgpu.VertexBufferLayout{
-        .array_stride = @sizeOf(Vertex),
-        .step_mode = .vertex,
-        .attribute_count = vertex_attributes.len,
-        .attributes = &vertex_attributes,
-    };
-    const color_target_state = wgpu.ColorTargetState{
-        .format = surface_format,
-        .blend = null,
-        .write_mask = .all,
-    };
-    const fragment_state = wgpu.FragmentState{
-        .module = shader_module,
-        .entry_point = .fromSlice("fs_main"),
-        .target_count = 1,
-        .targets = &.{color_target_state},
-    };
-    const depth_stencil_state = wgpu.DepthStencilState{
-        .format = DEPTH_FORMAT,
-        .depth_write_enabled = .true,
-        .depth_compare = .less,
-        .stencil_front = .{},
-        .stencil_back = .{},
-        .stencil_read_mask = 0,
-        .stencil_write_mask = 0,
-        .depth_bias = 0,
-        .depth_bias_slope_scale = 0.0,
-        .depth_bias_clamp = 0.0,
-    };
+
     const render_pipeline = wgpu.deviceCreateRenderPipeline(demo.device, &wgpu.RenderPipelineDescriptor{
         .label = .fromSlice("render_pipeline"),
         .layout = pipeline_layout,
@@ -1115,7 +1098,21 @@ pub fn main() !void {
             .module = shader_module,
             .entry_point = .fromSlice("vs_main"),
             .buffer_count = 1,
-            .buffers = &.{vertex_buffer_layout},
+            .buffers = &.{
+                wgpu.VertexBufferLayout{
+                    .array_stride = @sizeOf(Vertex),
+                    .step_mode = .vertex,
+                    .attribute_count = 6,
+                    .attributes = &.{
+                        .{ .shaderLocation = 0, .offset = @offsetOf(Vertex, "position"), .format = .float32x3 },
+                        .{ .shaderLocation = 1, .offset = @offsetOf(Vertex, "normal"), .format = .float32x3 },
+                        .{ .shaderLocation = 2, .offset = @offsetOf(Vertex, "color"), .format = .float32x4 },
+                        .{ .shaderLocation = 3, .offset = @offsetOf(Vertex, "tex_coord"), .format = .float32x2 },
+                        .{ .shaderLocation = 4, .offset = @offsetOf(Vertex, "joint_indices"), .format = .uint32x4 },
+                        .{ .shaderLocation = 5, .offset = @offsetOf(Vertex, "joint_weights"), .format = .float32x4 },
+                    },
+                },
+            },
         },
         .primitive = .{
             .topology = .triangle_list,
@@ -1123,13 +1120,35 @@ pub fn main() !void {
             .cull_mode = .back,
             .front_face = .ccw,
         },
-        .depth_stencil = &depth_stencil_state,
+        .depth_stencil = &wgpu.DepthStencilState{
+            .format = DEPTH_FORMAT,
+            .depth_write_enabled = .true,
+            .depth_compare = .less,
+            .stencil_front = .{},
+            .stencil_back = .{},
+            .stencil_read_mask = 0,
+            .stencil_write_mask = 0,
+            .depth_bias = 0,
+            .depth_bias_slope_scale = 0.0,
+            .depth_bias_clamp = 0.0,
+        },
         .multisample = .{
             .count = 1,
             .mask = 0xFFFFFFFF,
             .alpha_to_coverage_enabled = .False,
         },
-        .fragment = &fragment_state,
+        .fragment = &wgpu.FragmentState{
+            .module = shader_module,
+            .entry_point = .fromSlice("fs_main"),
+            .target_count = 1,
+            .targets = &.{
+                wgpu.ColorTargetState{
+                    .format = surface_format,
+                    .blend = null,
+                    .write_mask = .all,
+                },
+            },
+        },
     });
     defer wgpu.renderPipelineRelease(render_pipeline);
 

@@ -390,6 +390,36 @@ pub const TextureFormat = enum(u32) {
     astc12x10_unorm_srgb = 93,
     astc12x12_unorm = 94,
     astc12x12_unorm_srgb = 95,
+
+    pub fn isSrgb(self: TextureFormat) bool {
+        return switch (self) {
+            inline .rgba8_unorm_srgb,
+            .bgra8_unorm_srgb,
+            .bc1rgba_unorm_srgb,
+            .bc2rgba_unorm_srgb,
+            .bc3rgba_unorm_srgb,
+            .bc7rgba_unorm_srgb,
+            .etc2rgb8_unorm_srgb,
+            .etc2rgb8a1_unorm_srgb,
+            .etc2rgba8_unorm_srgb,
+            .astc4x4_unorm_srgb,
+            .astc5x4_unorm_srgb,
+            .astc5x5_unorm_srgb,
+            .astc6x5_unorm_srgb,
+            .astc6x6_unorm_srgb,
+            .astc8x5_unorm_srgb,
+            .astc8x6_unorm_srgb,
+            .astc8x8_unorm_srgb,
+            .astc10x5_unorm_srgb,
+            .astc10x6_unorm_srgb,
+            .astc10x8_unorm_srgb,
+            .astc10x10_unorm_srgb,
+            .astc12x10_unorm_srgb,
+            .astc12x12_unorm_srgb,
+            => true,
+            inline else => false,
+        };
+    }
 };
 
 pub const LoadOp = enum(u32) {
