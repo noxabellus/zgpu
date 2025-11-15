@@ -79,10 +79,19 @@ pub fn aabb_contains(a: anytype, b: @TypeOf(a)) bool {
     return @reduce(.And, less_than) and @reduce(.And, greater_than);
 }
 
+/// Get the number of elements in a vector type
 pub fn numComponents(comptime T: type) usize {
     return @typeInfo(T).vector.len;
 }
 
+/// Convert a value to a vector type, or leave it in place and coerce if it is already a vector
+pub fn upcast(comptime T: type, v: anytype) T {
+    const U = @TypeOf(v);
+    const U_info = @typeInfo(U);
+    return if (comptime U_info == .vector) v else @splat(v);
+}
+
+/// N-dimensional dot product on vectors
 pub fn dot(a: anytype, b: @TypeOf(a)) @typeInfo(@TypeOf(a)).vector.child {
     var result: @typeInfo(@TypeOf(a)).vector.child = 0.0;
     inline for (0..comptime numComponents(@TypeOf(a))) |i| {
@@ -91,14 +100,17 @@ pub fn dot(a: anytype, b: @TypeOf(a)) @typeInfo(@TypeOf(a)).vector.child {
     return result;
 }
 
+/// get the magnitude of an n-dimensional vector
 pub fn len(v: anytype) @typeInfo(@TypeOf(v)).vector.child {
     return std.math.sqrt(dot(v, v));
 }
 
+/// get the square of the magnitude of an n-dimensional vector
 pub fn len_sq(v: anytype) @typeInfo(@TypeOf(v)).vector.child {
     return dot(v, v);
 }
 
+/// N-dimensional vector normalization
 pub fn normalize(v: anytype) @TypeOf(v) {
     const l = len(v);
     if (l == 0) return v;
@@ -109,7 +121,8 @@ pub fn normalize(v: anytype) @TypeOf(v) {
     return result;
 }
 
-pub fn cross(a: vec3, b: vec3) vec3 {
+/// Cross product for vector3 only
+pub fn vec3_cross(a: vec3, b: vec3) vec3 {
     return .{
         a[1] * b[2] - a[2] * b[1],
         a[2] * b[0] - a[0] * b[2],
@@ -117,16 +130,19 @@ pub fn cross(a: vec3, b: vec3) vec3 {
     };
 }
 
+/// Linear interpolate two N-dimensional vectors by at an N-dimensional vector or scalar delta
 pub fn lerp(a: anytype, b: @TypeOf(a), t: anytype) @TypeOf(a) {
-    const tv = if (comptime @TypeOf(t) == @TypeOf(a)) t else @as(@TypeOf(a), @splat(t));
+    const tv = upcast(@TypeOf(a), t);
     return a + (b - a) * tv;
 }
 
+/// Create a new N-dimensional vector from another vector or a scalar
 pub fn ExtrapolateComponent(comptime N: usize, comptime T: type) type {
     const T_info = @typeInfo(T);
     return @Vector(N, if (T_info == .vector) T_info.vector.child else T);
 }
 
+/// Extract the first three components of a vector, or splat a scalar two three components
 pub fn xyz(v: anytype) ExtrapolateComponent(3, @TypeOf(v)) {
     const T = @TypeOf(v);
     const T_info = @typeInfo(T);
@@ -145,8 +161,6 @@ pub fn xyz(v: anytype) ExtrapolateComponent(3, @TypeOf(v)) {
 
     return out;
 }
-
-// --- Matrix Operations ---
 
 /// Returns a 4x4 identity matrix.
 pub fn mat4_identity() mat4 {
@@ -180,8 +194,8 @@ pub fn mat4_mul(m1: mat4, m2: mat4) mat4 {
 /// Creates a view matrix that looks from `eye` towards `center`.
 pub fn mat4_look_at(eye: vec3, center: vec3, up: vec3) mat4 {
     const f = normalize(center - eye);
-    const s = normalize(cross(f, up));
-    const u = cross(s, f);
+    const s = normalize(vec3_cross(f, up));
+    const u = vec3_cross(s, f);
 
     // Note: The view matrix is the inverse of the camera's transformation matrix.
     // This results in the basis vectors (s, u, -f) being laid out in rows
@@ -302,11 +316,29 @@ pub fn mat4_from_quat(q: quat) mat4 {
     return out;
 }
 
-pub fn quat_slerp(q1: quat, q2: quat, t: anytype) quat {
-    const T = @TypeOf(t);
-    const T_info = @typeInfo(T);
+/// Cubic hermite interpolation on 3-dimensional vectors; delta may be either another vec3 or a scalar
+pub fn vec3_interp_cubic(v1: vec3, tangent1: vec3, v2: vec3, tangent2: vec3, t: anytype) vec3 {
+    const tv = upcast(quat, t);
 
-    const tv: quat = if (comptime T_info == .vector) t else @splat(t);
+    const t2 = tv * tv;
+    const t3 = tv * tv * tv;
+
+    const one: vec3 = @splat(1);
+    const two: vec3 = @splat(2);
+    const three: vec3 = @splat(3);
+
+    // zig fmt: off
+    return (two * t3 - three * t2 + one) * v1
+         + (t3 - two * t2 + tv) * tangent1
+         + (-two * t3 + three * t2) * v2
+         + (t3 - t2) * tangent2
+         ;
+    // zig fmt: on
+}
+
+/// Spherical linear interpolation on 3-dimensional vectors; delta may be either another vec3 or a scalar
+pub fn quat_slerp(q1: quat, q2: quat, t: anytype) quat {
+    const tv = upcast(quat, t);
 
     // Ensure quaternions are normalized
     const temp_q1 = normalize(q1);
@@ -316,10 +348,7 @@ pub fn quat_slerp(q1: quat, q2: quat, t: anytype) quat {
 
     // If dot product is negative, negate one quaternion to take the shortest path
     if (d < 0.0) {
-        temp_q2[0] = -temp_q2[0];
-        temp_q2[1] = -temp_q2[1];
-        temp_q2[2] = -temp_q2[2];
-        temp_q2[3] = -temp_q2[3];
+        temp_q2 = -temp_q2;
         d = -d; // Recalculate d product (now positive)
     }
 
@@ -327,12 +356,7 @@ pub fn quat_slerp(q1: quat, q2: quat, t: anytype) quat {
     const DOT_THRESHOLD = 0.9995;
     if (d > DOT_THRESHOLD) {
         // Linear interpolation (LERP) as an approximation
-        return normalize(quat{
-            temp_q1[0] + tv[0] * (temp_q2[0] - temp_q1[0]),
-            temp_q1[1] + tv[1] * (temp_q2[1] - temp_q1[1]),
-            temp_q1[2] + tv[2] * (temp_q2[2] - temp_q1[2]),
-            temp_q1[3] + tv[3] * (temp_q2[3] - temp_q1[3]),
-        });
+        return normalize(temp_q1 + tv * (temp_q2 - temp_q1));
     }
 
     const theta = std.math.acos(d);
@@ -347,4 +371,28 @@ pub fn quat_slerp(q1: quat, q2: quat, t: anytype) quat {
     }
 
     return out;
+}
+
+/// Cubic hermite interpolation on quaternions; delta may be either another quat or a scalar
+pub fn quat_interp_cubic(q1: quat, outTangent1: quat, q2: quat, inTangent2: quat, t: anytype) quat {
+    const tv = upcast(quat, t);
+
+    const t2 = tv * tv;
+    const t3 = t2 * tv;
+
+    const one: quat = @splat(1);
+    const two: quat = @splat(2);
+    const three: quat = @splat(3);
+
+    const h00: quat = two * t3 - three * t2 + one;
+    const h10: quat = t3 - two * t2 + t;
+    const h01: quat = -two * t3 + three * t2;
+    const h11: quat = t3 - t2;
+
+    const p0 = q1 * h00;
+    const m0 = outTangent1 * h10;
+    const p1 = q2 * h01;
+    const m1 = inTangent2 * h11;
+
+    return normalize(p0 + m0 + p1 + m1);
 }
