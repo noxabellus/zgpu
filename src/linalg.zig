@@ -163,14 +163,13 @@ pub fn xyz(v: anytype) ExtrapolateComponent(3, @TypeOf(v)) {
 }
 
 /// Returns a 4x4 identity matrix.
-pub fn mat4_identity() mat4 {
-    return mat4{
+pub const mat4_identity =
+    mat4{
         .{ 1, 0, 0, 0 },
         .{ 0, 1, 0, 0 },
         .{ 0, 0, 1, 0 },
         .{ 0, 0, 0, 1 },
     };
-}
 
 /// Multiplies two 4x4 matrices (self * other).
 pub fn mat4_mul(m1: mat4, m2: mat4) mat4 {
@@ -245,7 +244,7 @@ pub fn mat4_ortho(left: f32, right: f32, bottom: f32, top: f32, near: f32, far: 
     const tmb = top - bottom;
     const fmn = far - near;
 
-    var res = mat4_identity();
+    var res = mat4_identity;
     res[0][0] = 2.0 / rml;
     res[1][1] = 2.0 / tmb;
     res[2][2] = -1.0 / fmn; // Use -1 for [0, 1] depth range
@@ -261,14 +260,14 @@ pub fn mat4_compose(t: vec3, r: quat, s: vec3) mat4 {
 }
 /// Creates a 4x4 translation matrix.
 pub fn mat4_translate(translation: vec3) mat4 {
-    var m = mat4_identity();
+    var m = mat4_identity;
     m[3] = .{ translation[0], translation[1], translation[2], 1.0 };
     return m;
 }
 
 /// Creates a 4x4 scaling matrix.
 pub fn mat4_scale(s: vec3) mat4 {
-    var m = mat4_identity();
+    var m = mat4_identity;
     m[0][0] = s[0];
     m[1][1] = s[1];
     m[2][2] = s[2];
