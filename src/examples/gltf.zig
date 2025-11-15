@@ -137,8 +137,7 @@ const shader_text = @embedFile("shaders/GltfMultiPurpose.wgsl");
 /// Loads a glTF model from the given path, creating WGPU buffers and optimized runtime structures.
 fn loadGltfModel(
     allocator: std.mem.Allocator,
-    device: wgpu.Device,
-    queue: wgpu.Queue,
+    gpu: *Application.Gpu,
     model_path: []const u8,
     texture_bind_group_layout: wgpu.BindGroupLayout,
 ) !Model {
@@ -370,12 +369,12 @@ fn loadGltfModel(
             }
 
             const vertex_buffer_bytes = std.mem.sliceAsBytes(vertices.items);
-            const vbo = wgpu.deviceCreateBuffer(device, &.{
-                .label = wgpu.StringView.fromSlice(mesh.name orelse "anonymous_mesh"),
+            const vbo = gpu.createBuffer(&.{
+                .label = .fromSlice(mesh.name orelse "anonymous_mesh"),
                 .usage = .{ .vertex = true, .copy_dst = true },
                 .size = vertex_buffer_bytes.len,
             });
-            wgpu.queueWriteBuffer(queue, vbo, 0, vertex_buffer_bytes.ptr, vertex_buffer_bytes.len);
+            gpu.writeBuffer(vbo, 0, vertex_buffer_bytes);
             const idx_acc = gltf_data.data.accessors[primitive.indices.?];
             var ibo: wgpu.Buffer = undefined;
             const index_count: u32 = @intCast(idx_acc.count);
@@ -393,12 +392,12 @@ fn loadGltfModel(
                         );
                         while (idx_iter.next()) |idx_slice| for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
                         const index_buffer_bytes = std.mem.sliceAsBytes(indices.items);
-                        ibo = wgpu.deviceCreateBuffer(device, &.{
+                        ibo = gpu.createBuffer(&.{
                             .label = .fromSlice("index_buffer"),
                             .usage = .{ .index = true, .copy_dst = true },
                             .size = index_buffer_bytes.len,
                         });
-                        wgpu.queueWriteBuffer(queue, ibo, 0, index_buffer_bytes.ptr, index_buffer_bytes.len);
+                        gpu.writeBuffer(ibo, 0, index_buffer_bytes);
                     } else {
                         var indices = try std.ArrayList(u32).initCapacity(allocator, idx_acc.count);
                         defer indices.deinit(allocator);
@@ -409,12 +408,12 @@ fn loadGltfModel(
                         );
                         while (idx_iter.next()) |idx_slice| for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
                         const index_buffer_bytes = std.mem.sliceAsBytes(indices.items);
-                        ibo = wgpu.deviceCreateBuffer(device, &.{
+                        ibo = gpu.createBuffer(&.{
                             .label = .fromSlice("index_buffer"),
                             .usage = .{ .index = true, .copy_dst = true },
                             .size = index_buffer_bytes.len,
                         });
-                        wgpu.queueWriteBuffer(queue, ibo, 0, index_buffer_bytes.ptr, index_buffer_bytes.len);
+                        gpu.writeBuffer(ibo, 0, index_buffer_bytes);
                     }
                 },
                 else => return error.UnsupportedIndexFormat,
@@ -439,7 +438,7 @@ fn loadGltfModel(
                 }
             }
             if (maybe_image) |image| {
-                const texture_descriptor = wgpu.TextureDescriptor{
+                prim_texture = gpu.createTexture(&.{
                     .label = .fromSlice("gltf_texture"),
                     .size = .{
                         .width = image.width,
@@ -454,26 +453,11 @@ fn loadGltfModel(
                         .texture_binding = true,
                         .copy_dst = true,
                     },
-                };
-                prim_texture = wgpu.deviceCreateTexture(device, &texture_descriptor);
+                });
                 prim_texture_view = wgpu.textureCreateView(prim_texture, null);
-                wgpu.queueWriteTexture(
-                    queue,
-                    &.{ .texture = prim_texture },
-                    image.data.ptr,
-                    image.data.len,
-                    &.{
-                        .bytes_per_row = image.bytes_per_row,
-                        .rows_per_image = image.height,
-                    },
-                    &.{
-                        .width = image.width,
-                        .height = image.height,
-                        .depth_or_array_layers = 1,
-                    },
-                );
+                gpu.writeTextureImage(.{ .texture = prim_texture }, &image);
             } else {
-                const texture_descriptor = wgpu.TextureDescriptor{
+                prim_texture = gpu.createTexture(&.{
                     .label = .fromSlice("fallback_texture"),
                     .size = .{
                         .width = 1,
@@ -488,33 +472,30 @@ fn loadGltfModel(
                         .texture_binding = true,
                         .copy_dst = true,
                     },
-                };
-                prim_texture = wgpu.deviceCreateTexture(device, &texture_descriptor);
+                });
                 prim_texture_view = wgpu.textureCreateView(prim_texture, null);
                 const white_pixel: u32 = 0xFFFFFFFF;
-                wgpu.queueWriteTexture(
-                    queue,
-                    &.{ .texture = prim_texture },
-                    &white_pixel,
-                    4,
-                    &.{
+                gpu.writeTexture(
+                    .{ .texture = prim_texture },
+                    .{
                         .bytes_per_row = 4,
                         .rows_per_image = 1,
                     },
-                    &.{
+                    .{
                         .width = 1,
                         .height = 1,
                         .depth_or_array_layers = 1,
                     },
+                    &white_pixel,
                 );
             }
-            const prim_sampler = wgpu.deviceCreateSampler(device, &.{
+            const prim_sampler = gpu.createSampler(&.{
                 .address_mode_u = .repeat,
                 .address_mode_v = .repeat,
                 .mag_filter = .linear,
                 .min_filter = .linear,
             });
-            const prim_bind_group = wgpu.deviceCreateBindGroup(device, &.{
+            const prim_bind_group = gpu.createBindGroup(&.{
                 .layout = texture_bind_group_layout,
                 .entry_count = 2,
                 .entries = &.{
@@ -829,14 +810,14 @@ pub fn main() !void {
     var app = try Application.init(gpa, "zgpu glTF example");
     defer app.deinit();
 
-    const camera_buffer = wgpu.deviceCreateBuffer(app.gpu.device, &.{
+    const camera_buffer = app.gpu.createBuffer(&.{
         .label = .fromSlice("camera_buffer"),
         .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
         .size = @sizeOf(CameraUniform),
     });
     defer wgpu.bufferRelease(camera_buffer);
 
-    const camera_bind_group_layout = wgpu.deviceCreateBindGroupLayout(app.gpu.device, &.{
+    const camera_bind_group_layout = app.gpu.createBindGroupLayout(&.{
         .label = .fromSlice("camera_bind_group_layout"),
         .entry_count = 1,
         .entries = &.{
@@ -849,7 +830,7 @@ pub fn main() !void {
     });
     defer wgpu.bindGroupLayoutRelease(camera_bind_group_layout);
 
-    const texture_bind_group_layout = wgpu.deviceCreateBindGroupLayout(app.gpu.device, &.{
+    const texture_bind_group_layout = app.gpu.createBindGroupLayout(&.{
         .label = .fromSlice("texture_bind_group_layout"),
         .entry_count = 2,
         .entries = &.{
@@ -858,14 +839,14 @@ pub fn main() !void {
         },
     });
     defer wgpu.bindGroupLayoutRelease(texture_bind_group_layout);
-    const skin_uniform_buffer = wgpu.deviceCreateBuffer(app.gpu.device, &.{
+    const skin_uniform_buffer = app.gpu.createBuffer(&.{
         .label = .fromSlice("skin_uniform_buffer"),
         .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
         .size = @sizeOf(SkinUniforms),
     });
     defer wgpu.bufferRelease(skin_uniform_buffer);
 
-    const skin_bind_group_layout = wgpu.deviceCreateBindGroupLayout(app.gpu.device, &.{
+    const skin_bind_group_layout = app.gpu.createBindGroupLayout(&.{
         .label = .fromSlice("skin_bind_group_layout"),
         .entry_count = 1,
         .entries = &.{
@@ -878,7 +859,7 @@ pub fn main() !void {
     });
     defer wgpu.bindGroupLayoutRelease(skin_bind_group_layout);
 
-    const skin_bind_group = wgpu.deviceCreateBindGroup(app.gpu.device, &.{
+    const skin_bind_group = app.gpu.createBindGroup(&.{
         .label = .fromSlice("skin_bind_group"),
         .layout = skin_bind_group_layout,
         .entry_count = 1,
@@ -892,7 +873,7 @@ pub fn main() !void {
     });
     defer wgpu.bindGroupRelease(skin_bind_group);
 
-    const camera_bind_group = wgpu.deviceCreateBindGroup(app.gpu.device, &.{
+    const camera_bind_group = app.gpu.createBindGroup(&.{
         .label = .fromSlice("camera_bind_group"),
         .layout = camera_bind_group_layout,
         .entry_count = 1,
@@ -907,17 +888,17 @@ pub fn main() !void {
     });
     defer wgpu.bindGroupRelease(camera_bind_group);
 
-    var model = try loadGltfModel(gpa, app.gpu.device, app.gpu.queue, "assets/models/greenman.glb", texture_bind_group_layout);
+    var model = try loadGltfModel(gpa, &app.gpu, "assets/models/greenman.glb", texture_bind_group_layout);
     defer model.deinit();
 
     const anim_index = 2;
     var anim_state = try AnimationState.init(gpa, &model, anim_index);
     defer anim_state.deinit();
 
-    const shader_module = try wgpu.loadShaderText(app.gpu.device, "gltf_shader.wgsl", shader_text);
+    const shader_module = try app.gpu.loadShaderText("gltf_shader.wgsl", shader_text);
     defer wgpu.shaderModuleRelease(shader_module);
 
-    const pipeline_layout = wgpu.deviceCreatePipelineLayout(app.gpu.device, &.{
+    const pipeline_layout = app.gpu.createPipelineLayout(&.{
         .label = .fromSlice("pipeline_layout"),
         .bind_group_layout_count = 3,
         .bind_group_layouts = &.{
@@ -928,7 +909,7 @@ pub fn main() !void {
     });
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
 
-    const render_pipeline = wgpu.deviceCreateRenderPipeline(app.gpu.device, &wgpu.RenderPipelineDescriptor{
+    const render_pipeline = app.gpu.createPipeline(&wgpu.RenderPipelineDescriptor{
         .label = .fromSlice("render_pipeline"),
         .layout = pipeline_layout,
         .vertex = .{
@@ -1006,7 +987,7 @@ pub fn main() !void {
 
         var camera_uniform: CameraUniform = undefined;
         {
-            const size = app.getFramebufferSize();
+            const size = app.gpu.getFramebufferSize();
             const aspect = if (size[1] == 0) 1.0 else @as(f32, @floatFromInt(size[0])) / @as(f32, @floatFromInt(size[1]));
             const proj = linalg.mat4_perspective(
                 linalg.deg_to_rad * 45.0,
@@ -1021,7 +1002,7 @@ pub fn main() !void {
             );
             camera_uniform.view_proj = linalg.mat4_mul(proj, view);
         }
-        wgpu.queueWriteBuffer(app.gpu.queue, camera_buffer, 0, &camera_uniform, @sizeOf(CameraUniform));
+        app.gpu.writeBuffer(camera_buffer, 0, &camera_uniform);
 
         if (model.animations.len > anim_index) {
             animation_time += delta_time;
@@ -1042,15 +1023,15 @@ pub fn main() !void {
                 &skin_uniforms.joint_matrices,
             );
 
-            wgpu.queueWriteBuffer(app.gpu.queue, skin_uniform_buffer, 0, &skin_uniforms, @sizeOf(SkinUniforms));
+            app.gpu.writeBuffer(skin_uniform_buffer, 0, &skin_uniforms);
         }
 
         {
-            const frame_view = app.beginFrame() orelse continue :main_loop;
-            defer app.endFrame();
+            const frame_view = app.gpu.beginFrame() orelse continue :main_loop;
+            defer app.gpu.endFrame(frame_view);
 
-            const encoder = wgpu.deviceCreateCommandEncoder(app.gpu.device, &.{ .label = .fromSlice("main_encoder") });
-            defer wgpu.commandEncoderRelease(encoder);
+            const encoder = app.gpu.getCommandEncoder("main_encoder");
+
             var depth_stencil_attachment = wgpu.RenderPassDepthStencilAttachment{
                 .view = app.gpu.depth_view,
                 .depth_load_op = .clear,
@@ -1085,9 +1066,10 @@ pub fn main() !void {
             }
             wgpu.renderPassEncoderEnd(render_pass);
             wgpu.renderPassEncoderRelease(render_pass);
-            const cmd = wgpu.commandEncoderFinish(encoder, null);
-            defer wgpu.commandBufferRelease(cmd);
-            wgpu.queueSubmit(app.gpu.queue, 1, &.{cmd});
+
+            const cmd = app.gpu.finalizeCommandEncoder(encoder);
+
+            app.gpu.submitCommands(&.{cmd});
         }
 
         debug.lap();
