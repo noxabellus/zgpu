@@ -136,13 +136,26 @@ pub fn lerp(a: anytype, b: @TypeOf(a), t: anytype) @TypeOf(a) {
     return a + (b - a) * tv;
 }
 
+/// Compare two vectors for approximate equality, with an absolute tolerance
+pub fn approxEqAbs(a: anytype, b: @TypeOf(a), epsilon: anytype) bool {
+    const T = @TypeOf(a);
+    const S = @typeInfo(T).vector.child;
+    const eps = upcast(T, epsilon);
+    inline for (0..comptime numComponents(T)) |i| {
+        if (!std.math.approxEqAbs(S, a[i], b[i], eps[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /// Create a new N-dimensional vector from another vector or a scalar
 pub fn ExtrapolateComponent(comptime N: usize, comptime T: type) type {
     const T_info = @typeInfo(T);
     return @Vector(N, if (T_info == .vector) T_info.vector.child else T);
 }
 
-/// Extract the first three components of a vector, or splat a scalar two three components
+/// Extract the first three components of a vector, or splat a scalar to three components
 pub fn xyz(v: anytype) ExtrapolateComponent(3, @TypeOf(v)) {
     const T = @TypeOf(v);
     const T_info = @typeInfo(T);
@@ -162,7 +175,7 @@ pub fn xyz(v: anytype) ExtrapolateComponent(3, @TypeOf(v)) {
     return out;
 }
 
-/// Returns a 4x4 identity matrix.
+/// A 4x4 identity matrix.
 pub const mat4_identity =
     mat4{
         .{ 1, 0, 0, 0 },
@@ -170,6 +183,9 @@ pub const mat4_identity =
         .{ 0, 0, 1, 0 },
         .{ 0, 0, 0, 1 },
     };
+
+/// A quaternion representing no rotation.
+pub const quat_identity = quat{ 0, 0, 0, 1 };
 
 /// Multiplies two 4x4 matrices (self * other).
 pub fn mat4_mul(m1: mat4, m2: mat4) mat4 {
