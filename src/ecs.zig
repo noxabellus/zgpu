@@ -773,7 +773,13 @@ pub fn ComponentBuffer(comptime Component: type) type {
             // if the component already exists for this entity, replace it and exit early.
             const entry = self.indices.items[pseudo_index];
             if (entry.enabled) {
-                if (comptime @sizeOf(Component) > 0) self.storage.items[entry.index] = if (component_data) |data| data.* else std.mem.zeroes(Component);
+                if (comptime @sizeOf(Component) > 0) {
+                    if (component_data) |data| {
+                        self.storage.items[entry.index] = data.*;
+                    } else {
+                        @memset(std.mem.asBytes(&self.storage.items[entry.index]), 0);
+                    }
+                }
                 return;
             }
 
@@ -787,7 +793,11 @@ pub fn ComponentBuffer(comptime Component: type) type {
                 errdefer _ = self.storage.pop();
 
                 // Copy the actual component data into the newly allocated slot.
-                component_storage.* = if (component_data) |data| data.* else std.mem.zeroes(Component);
+                if (component_data) |data| {
+                    component_storage.* = data.*;
+                } else {
+                    @memset(std.mem.asBytes(component_storage), 0);
+                }
             } else {
                 // Zero-sized types (ZSTs) do not require storage space; ensures there wasn't a bug.
                 std.debug.assert(component_data == null);
@@ -831,7 +841,7 @@ pub fn ComponentBuffer(comptime Component: type) type {
 
             // Perform the swap-remove on the dense storage. This moves the *last* component
             // in the array into the slot we just vacated, patching the "hole".
-            out.* = if (comptime @sizeOf(Component) > 0) self.storage.swapRemove(index_to_remove) else std.mem.zeroes(Component); // yes i'd a fully zeroed type of zero size please
+            out.* = if (comptime @sizeOf(Component) > 0) self.storage.swapRemove(index_to_remove) else std.mem.zeroes(Component); // yes i'd like a fully zeroed type of zero size please
 
             // Perform a parallel swap-remove on the reverse_indices array.
             _ = self.reverse_indices.swapRemove(index_to_remove);
