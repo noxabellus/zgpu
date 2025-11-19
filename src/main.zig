@@ -17,6 +17,8 @@ pub const GpuGrid = @import("GpuGrid.zig");
 pub const InputState = @import("InputState.zig");
 pub const linalg = @import("linalg.zig");
 pub const Ui = @import("Ui.zig");
+pub const SlotMap = @import("SlotMap.zig");
+pub const ecs = @import("ecs.zig");
 pub const tests = @import("tests.zig");
 
 test {
