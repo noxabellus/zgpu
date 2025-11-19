@@ -95,8 +95,8 @@ fn handle_mouse_move(w: *glfw.Window, xpos: f64, ypos: f64) callconv(.c) void {
     front[2] = std.math.sin(pitch_rad);
     d.camera_front = linalg.normalize(front);
     // Also re-calculate the Right and Up vector (world up is Z-axis)
-    d.camera_right = linalg.normalize(linalg.cross(d.camera_front, .{ 0.0, 0.0, 1.0 }));
-    d.camera_up = linalg.normalize(linalg.cross(d.camera_right, d.camera_front));
+    d.camera_right = linalg.normalize(linalg.vec3_cross(d.camera_front, .{ 0.0, 0.0, 1.0 }));
+    d.camera_up = linalg.normalize(linalg.vec3_cross(d.camera_right, d.camera_front));
 }
 
 // A struct for our camera's view-projection matrix uniform.
@@ -175,8 +175,8 @@ pub fn main() !void {
     var demo = Demo{};
 
     // Initial camera vector calculations (Z-up: world up is {0, 0, 1})
-    demo.camera_right = linalg.normalize(linalg.cross(demo.camera_front, .{ 0.0, 0.0, 1.0 }));
-    demo.camera_up = linalg.normalize(linalg.cross(demo.camera_right, demo.camera_front));
+    demo.camera_right = linalg.normalize(linalg.vec3_cross(demo.camera_front, .{ 0.0, 0.0, 1.0 }));
+    demo.camera_up = linalg.normalize(linalg.vec3_cross(demo.camera_right, demo.camera_front));
 
     const instance_extras = wgpu.InstanceExtras{ .chain = .{ .s_type = .instance_extras }, .backends = switch (builtin.os.tag) {
         .windows => if (glfw.isRunningInWine()) wgpu.InstanceBackend.vulkanBackend else wgpu.InstanceBackend.dx12Backend,
