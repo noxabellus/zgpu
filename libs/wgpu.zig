@@ -1074,7 +1074,7 @@ pub const Limits = extern struct {
 
 pub const MultisampleState = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
-    count: u32 = 0,
+    count: u32 = 1, // the minimum valid value is 1
     mask: u32 = 0,
     alpha_to_coverage_enabled: BigBool = .False,
 };
@@ -1444,8 +1444,8 @@ pub const TextureDescriptor = extern struct {
     dimension: TextureDimension = .undefined,
     size: Extent3D = .{},
     format: TextureFormat = .undefined,
-    mip_level_count: u32 = 0,
-    sample_count: u32 = 0,
+    mip_level_count: u32 = 1, // 1 is the minimum valid value
+    sample_count: u32 = 1, // 1 is the minimum valid value
     view_format_count: usize = 0,
     view_formats: ?[*]const TextureFormat = null,
 };
