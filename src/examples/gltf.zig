@@ -895,7 +895,7 @@ pub fn main() !void {
     var anim_state = try AnimationState.init(gpa, &model, anim_index);
     defer anim_state.deinit();
 
-    const shader_module = try app.gpu.loadShaderText("gltf_shader.wgsl", shader_text);
+    const shader_module = try app.gpu.loadShaderText("GltfMultiPurpose.wgsl", shader_text);
     defer wgpu.shaderModuleRelease(shader_module);
 
     const pipeline_layout = app.gpu.createPipelineLayout(&.{
