@@ -260,6 +260,11 @@ pub const Gpu = struct {
         return wgpu.deviceCreatePipelineLayout(self.device, descriptor);
     }
 
+    pub fn createComputePipeline(self: *Gpu, descriptor: *const wgpu.ComputePipelineDescriptor) wgpu.ComputePipeline {
+        return wgpu.deviceCreateComputePipeline(self.device, descriptor);
+    }
+
+    // TODO: rename to createRenderPipeline
     pub fn createPipeline(self: *Gpu, descriptor: *const wgpu.RenderPipelineDescriptor) wgpu.RenderPipeline {
         return wgpu.deviceCreateRenderPipeline(self.device, descriptor);
     }
