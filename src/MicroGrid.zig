@@ -41,7 +41,7 @@ pub const voxeme_scale = 1.0;
 /// This determines the maximum world size supported by the grid.
 /// Each axis supports `grid_axis_divisor` pages, so the total world size is 512^3 pages,
 /// forming a 4km^3 cube with the current settings.
-pub const grid_axis_divisor = 128;
+pub const grid_axis_divisor = 512;
 
 //// The number of voxemes along each axis in a page. Changing this value does not
 //// change level of detail in the world, but it does effect how much volume can be
