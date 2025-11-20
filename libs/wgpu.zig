@@ -1075,7 +1075,7 @@ pub const Limits = extern struct {
 pub const MultisampleState = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
     count: u32 = 1, // the minimum valid value is 1
-    mask: u32 = 0,
+    mask: u32 = 0xFFFFFFFF, // better default value than 0
     alpha_to_coverage_enabled: BigBool = .False,
 };
 
