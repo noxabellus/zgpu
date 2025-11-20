@@ -161,15 +161,6 @@ pub fn main() !void {
     };
     const gpa = tsa.allocator();
 
-    if (comptime builtin.os.tag != .windows) {
-        glfw.initHint(.{ .platform = .x11 });
-    } else {
-        glfw.initHint(.{ .platform = .win32 });
-    }
-
-    try glfw.init();
-    defer glfw.deinit();
-
     const app = try Application.init(gpa, "zgpu micro grid example");
     defer app.deinit();
 
