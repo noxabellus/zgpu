@@ -1741,7 +1741,8 @@ pub const Manager = struct {
     front_index: u1,
 
     /// Grid command queue used by main thread to request work from the manager thread
-    grid_command_queue: std.ArrayList(Grid.Command),
+    grid_command_queue: [2]std.ArrayList(Grid.Command),
+    front_queue: u1,
 
     /// Mesh cache command queue used by the manager thread
     mesh_command_queue: AsyncQueue(MeshCache.Command),
@@ -1800,9 +1801,15 @@ pub const Manager = struct {
         self.frame_ready = .init(false);
         self.running = .init(true);
 
-        self.grid_command_queue = .empty;
-        try self.grid_command_queue.ensureTotalCapacity(self.allocator, 1024);
-        errdefer self.grid_command_queue.deinit(self.allocator);
+        self.grid_command_queue[0] = .empty;
+        try self.grid_command_queue[0].ensureTotalCapacity(self.allocator, 1024);
+        errdefer self.grid_command_queue[0].deinit(self.allocator);
+
+        self.grid_command_queue[1] = .empty;
+        try self.grid_command_queue[1].ensureTotalCapacity(self.allocator, 1024);
+        errdefer self.grid_command_queue[1].deinit(self.allocator);
+
+        self.front_queue = 0;
 
         self.mesh_command_queue = try AsyncQueue(MeshCache.Command).init(self.allocator, std.math.maxInt(u16)); // TODO: calculate memory usage
         errdefer self.mesh_command_queue.deinit(self.allocator);
@@ -1856,7 +1863,8 @@ pub const Manager = struct {
         var back_mut = self.back();
         back_mut.deinit();
 
-        self.grid_command_queue.deinit(self.allocator);
+        self.grid_command_queue[0].deinit(self.allocator);
+        self.grid_command_queue[1].deinit(self.allocator);
         self.mesh_command_queue.deinit(self.allocator);
         self.prune_command_queue.deinit(self.allocator);
         self.buffer_free_queue.deinit(self.allocator);
@@ -1873,7 +1881,7 @@ pub const Manager = struct {
     pub fn queueCommands(self: *Manager, commands: []const Grid.Command) !void {
         self.cmd_mutex.lock();
         defer self.cmd_mutex.unlock();
-        try self.grid_command_queue.appendSlice(self.allocator, commands);
+        try self.grid_command_queue[self.front_queue].appendSlice(self.allocator, commands);
     }
 
     /// Swaps the front and back buffers and signals the manager that a new frame of commands is ready.
@@ -1894,8 +1902,7 @@ pub const Manager = struct {
     }
 
     pub fn manager(self: *Manager) void {
-        var local_command_buffer: std.ArrayList(Grid.Command) = .empty;
-        defer local_command_buffer.deinit(self.allocator);
+        var local_command_buffer: *std.ArrayList(Grid.Command) = undefined;
 
         log.info("Grid.Manager thread: started", .{});
 
@@ -1923,33 +1930,27 @@ pub const Manager = struct {
                 }
 
                 {
-                    timer.reset();
                     self.cmd_mutex.lock();
-                    defer {
-                        self.cmd_mutex.unlock();
-                        elapsed = timer.read();
-                        std.debug.print("Grid.Manager thread: copied {d} commands in {d}ns ({d:.5}ms)\n", .{ local_command_buffer.items.len, elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
-                    }
+                    defer self.cmd_mutex.unlock();
 
-                    // Drain the queue into a local buffer so we can unlock quickly.
-                    local_command_buffer.clearRetainingCapacity();
-                    local_command_buffer.appendSlice(self.allocator, self.grid_command_queue.items) catch |err| {
-                        log.err("Grid.Manager thread: failed to copy command buffer: {s}; exiting\n", .{@errorName(err)});
-                        return;
-                    };
-                    self.grid_command_queue.clearRetainingCapacity();
+                    local_command_buffer = &self.grid_command_queue[self.front_queue];
+                    self.front_queue = ~self.front_queue;
                     break :wait_and_copy self.back();
                 }
             };
 
             timer.reset();
             // 2. Apply all queued commands to the back grid. This populates the dirty sets.
+            const count = local_command_buffer.items.len;
+            if (count == 0) continue;
+
             buffers.grid.applyCommands(local_command_buffer.items) catch |err| {
                 log.err("Failed to apply grid commands: {s}; exiting", .{@errorName(err)});
                 return;
             };
+            local_command_buffer.clearRetainingCapacity();
             elapsed = timer.read();
-            std.debug.print("Grid.Manager thread: applied {d} commands in {d}ns ({d:.5}ms)\n", .{ local_command_buffer.items.len, elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
+            std.debug.print("Grid.Manager thread: applied {d} commands in {d}ns ({d:.5}ms)\n", .{ count, elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
 
             _ = self.update_arena.reset(.retain_capacity);
             var thread_safe_allocator = std.heap.ThreadSafeAllocator{
