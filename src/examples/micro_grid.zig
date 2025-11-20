@@ -33,7 +33,7 @@ const Demo = struct {
     config: wgpu.SurfaceConfiguration = .{},
 
     // --- Camera state for fly controls (Z-up coordinate system) ---
-    camera_pos: vec3 = .{ 8.125, 28.125, 8.125 }, // Start outside the sphere (X, Y, Z with Z-up)
+    camera_pos: vec3 = .{ 8.125, 28.125, 2 }, // Start outside the sphere (X, Y, Z with Z-up)
     camera_front: vec3 = .{ 0.0, -1.0, 0.0 }, // Looking towards the sphere
     camera_up: vec3 = .{ 0.0, 0.0, 1.0 }, // Z is up
     camera_right: vec3 = .{ 0.0, 0.0, 0.0 }, // will be calculated
@@ -448,24 +448,32 @@ pub fn main() !void {
     var commands: std.ArrayList(Grid.Command) = .empty;
     defer commands.deinit(gpa);
 
-    // for (0..4) |x| {
-    //     for (0..4) |y| {
-    //         for (0..4) |z| {
-    //             try commands.append(gpa, .{
-    //                 .set_page = .{
-    //                     .coord = vec3i{ @intCast(x), @intCast(y), @intCast(z) },
-    //                     .voxel = .{ .material_id = if ((x + y + z) % 2 == 0) stone_mat else dirt_mat },
-    //                 },
-    //             });
-    //         }
-    //     }
-    // }
+    for (0..4) |x| {
+        for (0..4) |y| {
+            for (0..4) |z| {
+                try commands.append(gpa, .{
+                    .set_page = .{
+                        .coord = vec3i{ @as(i32, @intCast(x)) - 2, @as(i32, @intCast(y)) - 2, @as(i32, @intCast(z)) - 4 },
+                        .voxel = .{ .material_id = if ((x + y + z) % 2 == 0) stone_mat else dirt_mat },
+                    },
+                });
+            }
+        }
+    }
 
-    // The boundary between pages is at global voxel coordinates that are multiples of
-    // (page_axis_divisor * voxeme_axis_divisor) = 16 * 16 = 256.
-    // Placing the center at (256, 256, 128) will make it perfectly intersect the corner
-    // of pages (0,0,0), (1,0,0), (0,1,0), and (1,1,0).
-    const center_voxel = vec3i{ 256, 256, 128 };
+    for (0..2) |x| {
+        for (0..2) |y| {
+            try commands.append(gpa, .{
+                .set_voxeme = .{
+                    .page_coord = vec3i{ @intCast(x), @intCast(y), 0 },
+                    .local_coord = vec3i{ 0, 0, 0 },
+                    .voxel = .{ .material_id = if ((x + y) % 2 == 0) stone_mat else dirt_mat },
+                },
+            });
+        }
+    }
+
+    const center_voxel = vec3i{ 128, 128, 32 };
     const radius = 32;
     const radius_sq = radius * radius;
 
