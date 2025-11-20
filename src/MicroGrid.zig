@@ -2281,7 +2281,12 @@ pub const Manager = struct {
         }
     }
 
-    /// Recalculates the 6-face visibility for a specific voxeme and all of its heterogeneous voxels, if it has any.
+    const NeighborContext = struct {
+        is_loaded: bool,
+        is_opaque_homo: bool,
+        buffer: ?[*]const Voxel, // Raw pointer for speed
+    };
+
     fn voxeme_visibility_job(self: *Manager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32, local_voxeme_1d_index: u32) void {
         _ = self;
         _ = arena;
@@ -2291,14 +2296,19 @@ pub const Manager = struct {
         const voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[page_index].lookup(voxeme_coord);
         if (voxeme_index == sentinel_index) return;
 
-        var new_voxeme_vis = Visibility.all;
+        // Hoisted pointers
+        const material_flags = buffers.grid.materials.items(.flags);
+        const buffer_handle = buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index];
+
+        // 1. PRE-RESOLVE NEIGHBORS (The "Context" Optimization)
+        // Calculate the state of the 6 surrounding voxemes ONCE, so we don't hash-lookup inside the loop.
+        var neighbor_contexts: [6]NeighborContext = undefined;
 
         inline for (AxisDir.values) |axis_dir| {
-            const offset_index = comptime axis_dir.toIndex();
-            const offset = comptime offsets[offset_index];
-
-            // Check if neighbor is in different page
+            const offset = axis_dir.getOffset();
             const neighbor_coord = voxeme_coord + offset;
+
+            // Handle Page Boundaries logic...
             const neighbor_page_offset = vec3i{
                 @intFromBool(neighbor_coord[0] < 0 or neighbor_coord[0] >= page_axis_divisor),
                 @intFromBool(neighbor_coord[1] < 0 or neighbor_coord[1] >= page_axis_divisor),
@@ -2310,94 +2320,185 @@ pub const Manager = struct {
             else
                 page_index;
 
-            const neighbor_is_opaque = check_opacity: {
-                if (neighbor_page_index != sentinel_index) {
-                    const neighbor_voxeme_coord = vec3i{
-                        @mod(neighbor_coord[0], page_axis_divisor),
-                        @mod(neighbor_coord[1], page_axis_divisor),
-                        @mod(neighbor_coord[2], page_axis_divisor),
-                    };
+            var ctx = NeighborContext{ .is_loaded = false, .is_opaque_homo = false, .buffer = null };
 
-                    const neighbor_voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[neighbor_page_index].lookup(neighbor_voxeme_coord);
+            if (neighbor_page_index != sentinel_index) {
+                const n_voxeme_coord = vec3i{
+                    @mod(neighbor_coord[0], page_axis_divisor),
+                    @mod(neighbor_coord[1], page_axis_divisor),
+                    @mod(neighbor_coord[2], page_axis_divisor),
+                };
+                const n_voxeme_idx = buffers.grid.pages.items(.voxeme_indirection)[neighbor_page_index].lookup(n_voxeme_coord);
 
-                    if (neighbor_voxeme_index != sentinel_index) {
-                        const neighbor_buffer_handle = buffers.grid.voxemes.items(.buffer_indirection)[neighbor_voxeme_index];
-                        if (neighbor_buffer_handle == sentinel_index) {
-                            const neighbor_homo_voxel = buffers.grid.voxemes.items(.voxel)[neighbor_voxeme_index];
-                            break :check_opacity buffers.grid.isOpaqueMaterial(neighbor_homo_voxel.material_id);
-                        } else {
-                            // For heterogeneous voxemes, check each voxel on the shared face
-                            const buffer = buffers.grid.voxels.items(.voxel)[neighbor_buffer_handle];
-                            const face_index = offset_index ^ 1; // Get opposite face index
-
-                            // Iterate through all voxels on the shared face
-                            for (voxeme_face_voxel_coords[face_index]) |face_coord| {
-                                const voxel_index = convert.localVoxelCoordToIndex(face_coord);
-                                const voxel = buffer[voxel_index];
-                                if (!buffers.grid.isOpaqueMaterial(voxel.material_id)) {
-                                    break :check_opacity false;
-                                }
-                            }
-                            break :check_opacity true;
-                        }
+                if (n_voxeme_idx != sentinel_index) {
+                    ctx.is_loaded = true;
+                    const n_handle = buffers.grid.voxemes.items(.buffer_indirection)[n_voxeme_idx];
+                    if (n_handle == sentinel_index) {
+                        // Homogeneous Neighbor
+                        const vox = &buffers.grid.voxemes.items(.voxel)[n_voxeme_idx];
+                        ctx.is_opaque_homo = material_flags[@intFromEnum(vox.material_id)].is_opaque;
                     } else {
-                        const neighbor_homo_voxel = buffers.grid.pages.items(.voxel)[neighbor_page_index];
-                        break :check_opacity buffers.grid.isOpaqueMaterial(neighbor_homo_voxel.material_id);
+                        // Heterogeneous Neighbor - Store the buffer pointer!
+                        ctx.buffer = &buffers.grid.voxels.items(.voxel)[n_handle];
                     }
                 } else {
-                    break :check_opacity false;
+                    // Implicit/Page Voxel
+                    ctx.is_loaded = true;
+                    const vox = &buffers.grid.pages.items(.voxel)[neighbor_page_index];
+                    ctx.is_opaque_homo = material_flags[@intFromEnum(vox.material_id)].is_opaque;
                 }
-            };
-
-            if (neighbor_is_opaque) {
-                new_voxeme_vis.set(axis_dir, false);
             }
+            neighbor_contexts[axis_dir.toIndex()] = ctx;
         }
 
+        // 2. Update Homogeneous Voxeme Visibility (using contexts)
+        var new_voxeme_vis = Visibility.all;
+        inline for (AxisDir.values) |axis_dir| {
+            const idx = axis_dir.toIndex();
+            const ctx = neighbor_contexts[idx];
+            var is_opaque = false;
+
+            if (ctx.is_loaded) {
+                if (ctx.buffer) |buff| {
+                    // Hetero neighbor: Check face.
+                    // Note: This is the slow path for the Voxeme itself, but fast for Voxel iteration
+                    const face_index = idx ^ 1; // Opposite face
+                    is_opaque = true;
+                    for (voxeme_face_voxel_coords[face_index]) |face_coord| {
+                        const v_idx = convert.localVoxelCoordToIndex(face_coord);
+                        if (!material_flags[@intFromEnum(buff[v_idx].material_id)].is_opaque) {
+                            is_opaque = false;
+                            break;
+                        }
+                    }
+                } else {
+                    is_opaque = ctx.is_opaque_homo;
+                }
+            }
+            if (is_opaque) new_voxeme_vis.set(axis_dir, false);
+        }
         buffers.grid.voxemes.items(.visibility)[voxeme_index] = new_voxeme_vis;
 
-        const buffer_handle = buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index];
+        // 3. Heterogeneous Voxel Loop
         if (buffer_handle != sentinel_index) {
-            // Recalculate visibility for all voxels in the buffer
-            const buffer_data = &buffers.grid.voxels.items(.visibility)[buffer_handle];
-
-            // Pre-fetch material data for fast internal lookups
+            const vis_buffer = &buffers.grid.voxels.items(.visibility)[buffer_handle];
             const voxel_buffer = &buffers.grid.voxels.items(.voxel)[buffer_handle];
 
-            for (0..voxels_per_voxeme) |voxel_1d_index| {
-                // OPTIMIZATION: Skip visibility calculation for empty voxels.
-                // The mesher ignores them anyway, so their visibility mask is irrelevant.
-                if (voxel_buffer[voxel_1d_index].material_id == .none) {
-                    buffer_data[voxel_1d_index] = Visibility.none; // Or undefined, doesn't matter
+            // Precompute stride offsets for internal checks
+            // const stride_x: i32 = 1;
+            // const stride_y: i32 = voxeme_axis_divisor;
+            // const stride_z: i32 = voxeme_axis_divisor * voxeme_axis_divisor;
+            // const offsets_internal = [_]i32{ stride_x, -stride_x, stride_y, -stride_y, stride_z, -stride_z };
+
+            // Offsets to map boundary voxel index to neighbor buffer index.
+            // E.g. +X direction: I am at x=15 (idx), Neighbor is x=0 (idx - 15).
+            const offsets_external = [_]i32{ -15, 15, -240, 240, -3840, 3840 };
+
+            for (0..voxels_per_voxeme) |i| {
+                const mat_id = voxel_buffer[i].material_id;
+                if (mat_id == .none) {
+                    vis_buffer[i] = Visibility.none;
                     continue;
                 }
-                // Convert 1D index to 3D local coord (fast bitwise ops)
-                const local_coord = convert.indexToLocalVoxelCoord(@intCast(voxel_1d_index));
+
+                // Fast decode of local coordinate from index `i`
+                const x = i & voxeme_axis_mask;
+                const y = (i >> voxeme_axis_shift) & voxeme_axis_mask;
+                const z = (i >> (voxeme_axis_shift * 2));
+
                 var new_vis = Visibility.all;
 
-                inline for (AxisDir.values) |axis_dir| {
-                    const offset = axis_dir.getOffset();
-                    const neighbor_local = local_coord + offset;
-
-                    // OPTIMIZATION: Fast path for internal neighbors
-                    if (neighbor_local[0] >= 0 and neighbor_local[0] < voxeme_axis_divisor and
-                        neighbor_local[1] >= 0 and neighbor_local[1] < voxeme_axis_divisor and
-                        neighbor_local[2] >= 0 and neighbor_local[2] < voxeme_axis_divisor)
-                    {
-                        const neighbor_idx = convert.localVoxelCoordToIndex(neighbor_local);
-                        if (buffers.grid.isOpaqueMaterial(voxel_buffer[neighbor_idx].material_id)) {
-                            new_vis.set(axis_dir, false);
-                        }
-                    } else {
-                        // Slow path: Neighbor is in a different voxeme/page
-                        // Use existing global coordinate logic here
-                        const global_voxel_coord = convert.partsToGlobalVoxel(page_coord, voxeme_coord, local_coord);
-                        if (buffers.grid.isOpaqueVoxel(global_voxel_coord + offset)) {
-                            new_vis.set(axis_dir, false);
+                // Unroll checks for all 6 directions
+                // 0: +X
+                if (x < 15) {
+                    // Internal
+                    const n_idx = i + 1;
+                    if (material_flags[@intFromEnum(voxel_buffer[n_idx].material_id)].is_opaque) new_vis.setIndex(0, false);
+                } else {
+                    // External: Use Context 0
+                    const ctx = neighbor_contexts[0];
+                    if (ctx.is_loaded) {
+                        if (ctx.buffer) |b| {
+                            // Map i (at x=15) to neighbor index (at x=0)
+                            const n_idx = @as(u32, @intCast(@as(i32, @intCast(i)) + offsets_external[0]));
+                            if (material_flags[@intFromEnum(b[n_idx].material_id)].is_opaque) new_vis.setIndex(0, false);
+                        } else if (ctx.is_opaque_homo) {
+                            new_vis.setIndex(0, false);
                         }
                     }
                 }
-                buffer_data[voxel_1d_index] = new_vis;
+
+                // 1: -X
+                if (x > 0) {
+                    const n_idx = i - 1;
+                    if (material_flags[@intFromEnum(voxel_buffer[n_idx].material_id)].is_opaque) new_vis.setIndex(1, false);
+                } else {
+                    const ctx = neighbor_contexts[1];
+                    if (ctx.is_loaded) {
+                        if (ctx.buffer) |b| {
+                            const n_idx = @as(u32, @intCast(@as(i32, @intCast(i)) + offsets_external[1]));
+                            if (material_flags[@intFromEnum(b[n_idx].material_id)].is_opaque) new_vis.setIndex(1, false);
+                        } else if (ctx.is_opaque_homo) new_vis.setIndex(1, false);
+                    }
+                }
+
+                // 2: +Y
+                if (y < 15) {
+                    const n_idx = i + 16;
+                    if (material_flags[@intFromEnum(voxel_buffer[n_idx].material_id)].is_opaque) new_vis.setIndex(2, false);
+                } else {
+                    const ctx = neighbor_contexts[2];
+                    if (ctx.is_loaded) {
+                        if (ctx.buffer) |b| {
+                            const n_idx = @as(u32, @intCast(@as(i32, @intCast(i)) + offsets_external[2]));
+                            if (material_flags[@intFromEnum(b[n_idx].material_id)].is_opaque) new_vis.setIndex(2, false);
+                        } else if (ctx.is_opaque_homo) new_vis.setIndex(2, false);
+                    }
+                }
+
+                // 3: -Y
+                if (y > 0) {
+                    const n_idx = i - 16;
+                    if (material_flags[@intFromEnum(voxel_buffer[n_idx].material_id)].is_opaque) new_vis.setIndex(3, false);
+                } else {
+                    const ctx = neighbor_contexts[3];
+                    if (ctx.is_loaded) {
+                        if (ctx.buffer) |b| {
+                            const n_idx = @as(u32, @intCast(@as(i32, @intCast(i)) + offsets_external[3]));
+                            if (material_flags[@intFromEnum(b[n_idx].material_id)].is_opaque) new_vis.setIndex(3, false);
+                        } else if (ctx.is_opaque_homo) new_vis.setIndex(3, false);
+                    }
+                }
+
+                // 4: +Z
+                if (z < 15) {
+                    const n_idx = i + 256;
+                    if (material_flags[@intFromEnum(voxel_buffer[n_idx].material_id)].is_opaque) new_vis.setIndex(4, false);
+                } else {
+                    const ctx = neighbor_contexts[4];
+                    if (ctx.is_loaded) {
+                        if (ctx.buffer) |b| {
+                            const n_idx = @as(u32, @intCast(@as(i32, @intCast(i)) + offsets_external[4]));
+                            if (material_flags[@intFromEnum(b[n_idx].material_id)].is_opaque) new_vis.setIndex(4, false);
+                        } else if (ctx.is_opaque_homo) new_vis.setIndex(4, false);
+                    }
+                }
+
+                // 5: -Z
+                if (z > 0) {
+                    const n_idx = i - 256;
+                    if (material_flags[@intFromEnum(voxel_buffer[n_idx].material_id)].is_opaque) new_vis.setIndex(5, false);
+                } else {
+                    const ctx = neighbor_contexts[5];
+                    if (ctx.is_loaded) {
+                        if (ctx.buffer) |b| {
+                            const n_idx = @as(u32, @intCast(@as(i32, @intCast(i)) + offsets_external[5]));
+                            if (material_flags[@intFromEnum(b[n_idx].material_id)].is_opaque) new_vis.setIndex(5, false);
+                        } else if (ctx.is_opaque_homo) new_vis.setIndex(5, false);
+                    }
+                }
+
+                vis_buffer[i] = new_vis;
             }
         }
     }
