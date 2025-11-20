@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const example = @import("examples/gltf.zig");
+pub const example = @import("examples/micro_grid.zig");
 
 pub const main = example.main;
 

@@ -416,9 +416,9 @@ pub fn GridTable(comptime dims: comptime_int) type {
     };
 }
 
-/// A spacial hash table for pages.
+/// A table for pages.
 pub const PageTable = GridTable(grid_axis_divisor);
-/// A spacial hash table for voxemes within a page.
+/// A table for voxemes within a page.
 pub const VoxemeTable = GridTable(page_axis_divisor);
 /// A dense minimum-scale voxel state grid.
 pub const VoxelBuffer = [voxels_per_voxeme]Voxel; // 16*16*16 voxels in a voxeme; 16kb
@@ -992,20 +992,25 @@ pub fn setVoxel(self: *Grid, global_voxel: vec3i, new_voxel: Voxel) !void {
     self.pages.items(.dirty_voxeme_set)[page_index].set(local_voxeme_idx);
     self.dirty_page_set.set(page_index);
 
-    for (offsets) |offset| {
-        const neighbor_global_voxel = global_voxel + offset;
-        const neighbor_parts = convert.globalVoxelToParts(neighbor_global_voxel);
-        const neighbor_page_index = self.page_indirection.lookup(neighbor_parts.page_coord);
+    if (local_voxel_coord[0] == 0 or local_voxel_coord[0] == voxeme_axis_mask or
+        local_voxel_coord[1] == 0 or local_voxel_coord[1] == voxeme_axis_mask or
+        local_voxel_coord[2] == 0 or local_voxel_coord[2] == voxeme_axis_mask)
+    {
+        for (offsets) |offset| {
+            const neighbor_global_voxel = global_voxel + offset;
+            const neighbor_parts = convert.globalVoxelToParts(neighbor_global_voxel);
+            const neighbor_page_index = self.page_indirection.lookup(neighbor_parts.page_coord);
 
-        if (neighbor_page_index != sentinel_index) {
-            self.dirty_page_set.set(neighbor_page_index);
+            if (neighbor_page_index != sentinel_index) {
+                self.dirty_page_set.set(neighbor_page_index);
 
-            const neighbor_voxeme_table: *VoxemeTable = &self.pages.items(.voxeme_indirection)[neighbor_page_index];
-            const neighbor_voxeme_index = neighbor_voxeme_table.lookup(neighbor_parts.local_voxeme_coord);
+                const neighbor_voxeme_table: *VoxemeTable = &self.pages.items(.voxeme_indirection)[neighbor_page_index];
+                const neighbor_voxeme_index = neighbor_voxeme_table.lookup(neighbor_parts.local_voxeme_coord);
 
-            if (neighbor_voxeme_index != sentinel_index) {
-                const neighbor_local_voxeme_idx = convert.localVoxemeCoordToIndex(neighbor_parts.local_voxeme_coord);
-                self.pages.items(.dirty_voxeme_set)[neighbor_page_index].set(neighbor_local_voxeme_idx);
+                if (neighbor_voxeme_index != sentinel_index) {
+                    const neighbor_local_voxeme_idx = convert.localVoxemeCoordToIndex(neighbor_parts.local_voxeme_coord);
+                    self.pages.items(.dirty_voxeme_set)[neighbor_page_index].set(neighbor_local_voxeme_idx);
+                }
             }
         }
     }
@@ -1861,10 +1866,10 @@ pub const Manager = struct {
     }
 
     /// Queues a command for the manager thread to process. This is the main thread's primary write interface.
-    pub fn queueCommand(self: *Manager, command: Grid.Command) !void {
+    pub fn queueCommands(self: *Manager, commands: []const Grid.Command) !void {
         self.cmd_mutex.lock();
         defer self.cmd_mutex.unlock();
-        try self.grid_command_queue.append(self.allocator, command);
+        try self.grid_command_queue.appendSlice(self.allocator, commands);
     }
 
     /// Swaps the front and back buffers and signals the manager that a new frame of commands is ready.
@@ -1893,6 +1898,8 @@ pub const Manager = struct {
         while (self.running.load(.monotonic)) {
             self.sync_mutex.lock();
             defer self.sync_mutex.unlock();
+            var timer = std.time.Timer.start() catch unreachable;
+            var elapsed: u64 = 0;
             const buffers = wait_and_copy: {
                 // Wait until a frame is ready or we're shutting down
                 wait_loop: while (true) {
@@ -1912,8 +1919,13 @@ pub const Manager = struct {
                 }
 
                 {
+                    timer.reset();
                     self.cmd_mutex.lock();
-                    defer self.cmd_mutex.unlock();
+                    defer {
+                        self.cmd_mutex.unlock();
+                        elapsed = timer.read();
+                        std.debug.print("Grid.Manager thread: copied {d} commands in {d}ns ({d:.5}ms)\n", .{ local_command_buffer.items.len, elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
+                    }
 
                     // Drain the queue into a local buffer so we can unlock quickly.
                     local_command_buffer.clearRetainingCapacity();
@@ -1926,11 +1938,14 @@ pub const Manager = struct {
                 }
             };
 
+            timer.reset();
             // 2. Apply all queued commands to the back grid. This populates the dirty sets.
             buffers.grid.applyCommands(local_command_buffer.items) catch |err| {
                 log.err("Failed to apply grid commands: {s}; exiting", .{@errorName(err)});
                 return;
             };
+            elapsed = timer.read();
+            std.debug.print("Grid.Manager thread: applied {d} commands in {d}ns ({d:.5}ms)\n", .{ local_command_buffer.items.len, elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
 
             _ = self.update_arena.reset(.retain_capacity);
             var thread_safe_allocator = std.heap.ThreadSafeAllocator{
@@ -1941,8 +1956,8 @@ pub const Manager = struct {
             var voxeme_wait_group = std.Thread.WaitGroup{};
             var page_wait_group = std.Thread.WaitGroup{};
 
+            timer.reset();
             var page_it = buffers.grid.dirty_page_set.iterator();
-
             // 3. Process dirty voxemes for homogenization/pruning.
             while (page_it.next()) |page_index| {
                 var voxeme_it = buffers.grid.pages.items(.dirty_voxeme_set)[page_index].iterator();
@@ -1957,17 +1972,24 @@ pub const Manager = struct {
                 }
             }
             self.thread_pool.waitAndWork(&voxeme_wait_group);
+            elapsed = timer.read();
+            std.debug.print("Grid.Manager thread: processed dirty voxemes in {d}ns ({d:.5}ms)\n", .{ elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
 
             // Drain buffer free queue before next steps.
+            timer.reset();
             while (self.buffer_free_queue.dequeue_sync()) |buffer_idx| {
                 buffers.grid.buffer_free_list.append(self.allocator, buffer_idx) catch |err| {
                     log.err("Grid.Manager thread: failed to append to buffer free list: {s}; exiting", .{@errorName(err)});
                     return;
                 };
             }
+            elapsed = timer.read();
+            std.debug.print("Grid.Manager thread: processed buffer free queue in {d}ns ({d:.5}ms)\n", .{ elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
 
             // 4. Process dirty pages for homogenization/pruning.
+            timer.reset();
             page_it = buffers.grid.dirty_page_set.iterator();
+
             while (page_it.next()) |index| {
                 self.thread_pool.spawnWg(&page_wait_group, page_job, .{
                     self,
@@ -1977,16 +1999,22 @@ pub const Manager = struct {
                 });
             }
             self.thread_pool.waitAndWork(&page_wait_group);
+            elapsed = timer.read();
+            std.debug.print("Grid.Manager thread: processed dirty pages in {d}ns ({d:.5}ms)\n", .{ elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
 
             // Drain voxeme free queue
+            timer.reset();
             while (self.voxeme_free_queue.dequeue_sync()) |voxeme_idx| {
                 buffers.grid.voxeme_free_list.append(self.allocator, voxeme_idx) catch |err| {
                     log.err("Grid.Manager thread: failed to append to buffer free list: {s}; exiting", .{@errorName(err)});
                     return;
                 };
             }
+            elapsed = timer.read();
+            std.debug.print("Grid.Manager thread: processed voxeme free queue in {d}ns ({d:.5}ms)\n", .{ elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
 
             // 5. Apply any generated pruning commands serially.
+            timer.reset();
             while (self.prune_command_queue.dequeue_sync()) |cmd| {
                 switch (cmd) {
                     .prune_page => |page_coord| {
@@ -2021,8 +2049,11 @@ pub const Manager = struct {
                     },
                 }
             }
+            elapsed = timer.read();
+            std.debug.print("Grid.Manager thread: processed prune command queue in {d}ns ({d:.5}ms)\n", .{ elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
 
             // 6. Recalculate visibility for dirty voxemes.
+            timer.reset();
             voxeme_wait_group = std.Thread.WaitGroup{};
             page_it = buffers.grid.dirty_page_set.iterator();
             while (page_it.next()) |page_index| {
@@ -2038,8 +2069,11 @@ pub const Manager = struct {
                 }
             }
             self.thread_pool.waitAndWork(&voxeme_wait_group);
+            elapsed = timer.read();
+            std.debug.print("Grid.Manager thread: recalculated visibility for dirty voxemes in {d}ns ({d:.5}ms)\n", .{ elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
 
             // 7. Recalculate visibility for dirty pages.
+            timer.reset();
             page_wait_group = std.Thread.WaitGroup{};
             page_it = buffers.grid.dirty_page_set.iterator();
             while (page_it.next()) |index| {
@@ -2051,8 +2085,11 @@ pub const Manager = struct {
                 });
             }
             self.thread_pool.waitAndWork(&page_wait_group);
+            elapsed = timer.read();
+            std.debug.print("Grid.Manager thread: recalculated visibility for dirty pages in {d}ns ({d:.5}ms)\n", .{ elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
 
             // 8. Generate/update meshes for any dirty pages.
+            timer.reset();
             page_wait_group = std.Thread.WaitGroup{};
             for (&buffers.grid.page_indirection.mapping) |page_index| {
                 if (page_index == sentinel_index) continue;
@@ -2069,8 +2106,11 @@ pub const Manager = struct {
                 });
             }
             self.thread_pool.waitAndWork(&page_wait_group);
+            elapsed = timer.read();
+            std.debug.print("Grid.Manager thread: generated meshes for dirty pages in {d}ns ({d:.5}ms)\n", .{ elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
 
             // 9. Finalize: clear all dirty bits, apply mesh commands, and defrag.
+            timer.reset();
             page_it = buffers.grid.dirty_page_set.iterator();
             while (page_it.next()) |page_index| {
                 const dirty_set = &buffers.grid.pages.items(.dirty_voxeme_set)[page_index];
@@ -2086,17 +2126,25 @@ pub const Manager = struct {
                 }
             }
             buffers.grid.dirty_page_set.unsetAll();
+            elapsed = timer.read();
+            std.debug.print("Grid.Manager thread: cleared dirty bits in {d}ns ({d:.5}ms)\n", .{ elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
 
+            timer.reset();
             buffers.mesh_cache.applyCommands(self.allocator, self.mesh_command_queue.buffer[0..self.mesh_command_queue.top]) catch |err| {
                 log.err("Grid.Manager thread: Failed to apply mesh cache commands: {s}; exiting", .{@errorName(err)});
                 return;
             };
             self.mesh_command_queue.top = 0; // Reset queue
+            elapsed = timer.read();
+            std.debug.print("Grid.Manager thread: applied mesh cache commands in {d}ns ({d:.5}ms)\n", .{ elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
 
+            timer.reset();
             buffers.mesh_cache.maybeDefrag(arena, self.allocator) catch |err| {
                 log.err("Grid.Manager thread: Failed to defragment mesh cache: {s}; exiting", .{@errorName(err)});
                 return;
             };
+            elapsed = timer.read();
+            std.debug.print("Grid.Manager thread: (maybe) defragmented mesh cache in {d}ns ({d:.5}ms)\n", .{ elapsed, @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms });
         }
     }
 
@@ -2294,22 +2342,36 @@ pub const Manager = struct {
             // Recalculate visibility for all voxels in the buffer
             const buffer_data = &buffers.grid.voxels.items(.visibility)[buffer_handle];
 
-            // TODO: this could be split up to better utilize thread pool
-            for (0..voxels_per_voxeme) |voxel_1d_index| {
-                const local_voxel_coord = convert.indexToLocalVoxelCoord(@intCast(voxel_1d_index));
-                const global_voxel_coord = convert.partsToGlobalVoxel(page_coord, voxeme_coord, local_voxel_coord);
+            // Pre-fetch material data for fast internal lookups
+            const voxel_buffer = buffers.grid.voxels.items(.voxel)[buffer_handle];
 
+            for (0..voxels_per_voxeme) |voxel_1d_index| {
+                // Convert 1D index to 3D local coord (fast bitwise ops)
+                const local_coord = convert.indexToLocalVoxelCoord(@intCast(voxel_1d_index));
                 var new_vis = Visibility.all;
 
-                for (AxisDir.values) |axis_dir| {
-                    const offset_index = axis_dir.toIndex();
-                    const offset = offsets[offset_index];
-                    const neighbor_global_coord = global_voxel_coord + offset;
-                    if (buffers.grid.isOpaqueVoxel(neighbor_global_coord)) {
-                        new_vis.set(axis_dir, false);
+                inline for (AxisDir.values) |axis_dir| {
+                    const offset = axis_dir.getOffset();
+                    const neighbor_local = local_coord + offset;
+
+                    // OPTIMIZATION: Fast path for internal neighbors
+                    if (neighbor_local[0] >= 0 and neighbor_local[0] < voxeme_axis_divisor and
+                        neighbor_local[1] >= 0 and neighbor_local[1] < voxeme_axis_divisor and
+                        neighbor_local[2] >= 0 and neighbor_local[2] < voxeme_axis_divisor)
+                    {
+                        const neighbor_idx = convert.localVoxelCoordToIndex(neighbor_local);
+                        if (buffers.grid.isOpaqueMaterial(voxel_buffer[neighbor_idx].material_id)) {
+                            new_vis.set(axis_dir, false);
+                        }
+                    } else {
+                        // Slow path: Neighbor is in a different voxeme/page
+                        // Use existing global coordinate logic here
+                        const global_voxel_coord = convert.partsToGlobalVoxel(page_coord, voxeme_coord, local_coord);
+                        if (buffers.grid.isOpaqueVoxel(global_voxel_coord + offset)) {
+                            new_vis.set(axis_dir, false);
+                        }
                     }
                 }
-
                 buffer_data[voxel_1d_index] = new_vis;
             }
         }

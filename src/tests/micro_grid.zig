@@ -468,8 +468,10 @@ test "setVoxel dirties neighbors across page boundary" {
 }
 
 test "manager creates sphere mesh across four pages" {
+    const gpa = std.testing.allocator;
+
     // --- Create Grid and Generate Mesh ---
-    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     // const frame_arena = arena_state.allocator();
 
@@ -477,9 +479,9 @@ test "manager creates sphere mesh across four pages" {
 
     // 1. Initialize the manager and its dependencies
     var pool: std.Thread.Pool = undefined;
-    try pool.init(.{ .allocator = std.testing.allocator, .n_jobs = 4 });
+    try pool.init(.{ .allocator = gpa, .n_jobs = 4 });
     defer pool.deinit();
-    const grid = try Grid.init(std.testing.allocator);
+    const grid = try Grid.init(gpa);
     // Note: We don't defer grid.deinit() here because manager.deinit() returns ownership to us.
 
     var manager = try Grid.Manager.init(grid, &pool);
@@ -500,6 +502,8 @@ test "manager creates sphere mesh across four pages" {
     const min_bound = center_voxel - @as(vec3i, @splat(radius));
     const max_bound = center_voxel + @as(vec3i, @splat(radius));
 
+    var commands = std.ArrayList(Grid.Command).empty;
+    defer commands.deinit(gpa);
     // 4. Queue commands to create the sphere
     var z = min_bound[2];
     while (z <= max_bound[2]) : (z += 1) {
@@ -512,7 +516,7 @@ test "manager creates sphere mesh across four pages" {
                 const dist_sq = linalg.len_sq(offset);
 
                 if (dist_sq <= radius_sq) {
-                    try manager.queueCommand(.{ .set_voxel = .{
+                    try commands.append(gpa, .{ .set_voxel = .{
                         .global_voxel = current_voxel,
                         .voxel = sphere_voxel,
                     } });
@@ -521,7 +525,9 @@ test "manager creates sphere mesh across four pages" {
         }
     }
 
-    std.log.debug("Queued sphere voxel commands.", .{});
+    try manager.queueCommands(commands.items);
+
+    std.log.debug("Queued sphere voxel {} commands.", .{commands.items.len});
 
     // 5. Signal the manager to process the commands and wait for completion.
     // manager.deinit() joins the worker thread, ensuring all work is finished.

@@ -431,7 +431,7 @@ pub fn main() !void {
 
     // 1. Initialize the manager and its dependencies
     var pool: std.Thread.Pool = undefined;
-    try pool.init(.{ .allocator = gpa, .n_jobs = 4 });
+    try pool.init(.{ .allocator = gpa });
     defer pool.deinit();
 
     const grid = try Grid.init(gpa);
@@ -452,10 +452,11 @@ pub fn main() !void {
     const radius = 32;
     const radius_sq = radius * radius;
 
+    // 4. Queue commands to create the sphere with two materials
     const min_bound = center_voxel - @as(vec3i, @splat(radius));
     const max_bound = center_voxel + @as(vec3i, @splat(radius));
-
-    // 4. Queue commands to create the sphere with two materials
+    var commands: std.ArrayList(Grid.Command) = .empty;
+    defer commands.deinit(gpa);
     var z = min_bound[2];
     while (z <= max_bound[2]) : (z += 1) {
         var y = min_bound[1];
@@ -471,7 +472,7 @@ pub fn main() !void {
                     const material_id = if (z < center_voxel[2]) stone_mat else dirt_mat;
                     const sphere_voxel = Grid.Voxel{ .material_id = material_id };
 
-                    try manager.queueCommand(.{ .set_voxel = .{
+                    try commands.append(gpa, .{ .set_voxel = .{
                         .global_voxel = current_voxel,
                         .voxel = sphere_voxel,
                     } });
@@ -480,7 +481,9 @@ pub fn main() !void {
         }
     }
 
-    log.info("Queued sphere voxel commands.", .{});
+    try manager.queueCommands(commands.items);
+
+    log.info("Queued sphere voxel {} commands.", .{commands.items.len});
 
     manager.endFrame();
     var time = try std.time.Timer.start();
