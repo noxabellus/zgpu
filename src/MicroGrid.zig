@@ -41,7 +41,7 @@ pub const voxeme_scale = 1.0;
 /// This determines the maximum world size supported by the grid.
 /// Each axis supports `grid_axis_divisor` pages, so the total world size is 512^3 pages,
 /// forming a 4km^3 cube with the current settings.
-pub const grid_axis_divisor = 512;
+pub const grid_axis_divisor = 128;
 
 //// The number of voxemes along each axis in a page. Changing this value does not
 //// change level of detail in the world, but it does effect how much volume can be
@@ -2393,7 +2393,7 @@ pub const Manager = struct {
 
             // Offsets to map boundary voxel index to neighbor buffer index.
             // E.g. +X direction: I am at x=15 (idx), Neighbor is x=0 (idx - 15).
-            const offsets_external = [_]i32{ -15, 15, -240, 240, -3840, 3840 };
+            const offsets_external = [_]i32{ -voxeme_axis_mask, voxeme_axis_mask, -(voxeme_axis_mask * voxeme_axis_divisor), (voxeme_axis_mask * voxeme_axis_divisor), -(voxeme_axis_mask * voxeme_axis_divisor * voxeme_axis_divisor), (voxeme_axis_mask * voxeme_axis_divisor * voxeme_axis_divisor) };
 
             for (0..voxels_per_voxeme) |i| {
                 const mat_id = voxel_buffer[i].material_id;
@@ -2411,7 +2411,7 @@ pub const Manager = struct {
 
                 // Unroll checks for all 6 directions
                 // 0: +X
-                if (x < 15) {
+                if (x < voxeme_axis_mask) {
                     // Internal
                     const n_idx = i + 1;
                     if (material_flags[@intFromEnum(voxel_buffer[n_idx].material_id)].is_opaque) new_vis.setIndex(0, false);
@@ -2444,8 +2444,8 @@ pub const Manager = struct {
                 }
 
                 // 2: +Y
-                if (y < 15) {
-                    const n_idx = i + 16;
+                if (y < voxeme_axis_mask) {
+                    const n_idx = i + voxeme_axis_divisor;
                     if (material_flags[@intFromEnum(voxel_buffer[n_idx].material_id)].is_opaque) new_vis.setIndex(2, false);
                 } else {
                     const ctx = neighbor_contexts[2];
@@ -2459,7 +2459,7 @@ pub const Manager = struct {
 
                 // 3: -Y
                 if (y > 0) {
-                    const n_idx = i - 16;
+                    const n_idx = i - voxeme_axis_divisor;
                     if (material_flags[@intFromEnum(voxel_buffer[n_idx].material_id)].is_opaque) new_vis.setIndex(3, false);
                 } else {
                     const ctx = neighbor_contexts[3];
@@ -2472,8 +2472,8 @@ pub const Manager = struct {
                 }
 
                 // 4: +Z
-                if (z < 15) {
-                    const n_idx = i + 256;
+                if (z < voxeme_axis_mask) {
+                    const n_idx = i + (voxeme_axis_divisor * voxeme_axis_divisor);
                     if (material_flags[@intFromEnum(voxel_buffer[n_idx].material_id)].is_opaque) new_vis.setIndex(4, false);
                 } else {
                     const ctx = neighbor_contexts[4];
@@ -2487,7 +2487,7 @@ pub const Manager = struct {
 
                 // 5: -Z
                 if (z > 0) {
-                    const n_idx = i - 256;
+                    const n_idx = i - (voxeme_axis_divisor * voxeme_axis_divisor);
                     if (material_flags[@intFromEnum(voxel_buffer[n_idx].material_id)].is_opaque) new_vis.setIndex(5, false);
                 } else {
                     const ctx = neighbor_contexts[5];
