@@ -1,4 +1,4 @@
-//! This is a GPU-focused voxel grid. We need to eliminate hash tables and dynamic allocation from the design.
+//! This is a small-voxel focused voxel grid. We need to eliminate hash tables and dynamic allocation from the design.
 //! This is a work in progress. The code here is focused around prototyping the data structures and procedures that will be needed gpu-side.
 //! Thus, we are avoiding data types > 32 bits in atomic operations, and avoiding pointers.
 //! basic idea:
@@ -12,7 +12,7 @@ const Grid = @This();
 
 const std = @import("std");
 
-const log = std.log.scoped(.gpu_grid);
+const log = std.log.scoped(.micro_grid);
 
 const linalg = @import("linalg.zig");
 const FixedBitSet = @import("FixedBitSet.zig");

@@ -9,7 +9,7 @@ const glfw = @import("glfw");
 
 const debug = @import("../debug.zig");
 const linalg = @import("../linalg.zig");
-const Grid = @import("../GpuGrid.zig");
+const Grid = @import("../MicroGrid.zig");
 
 const vec2 = linalg.vec2;
 const vec3 = linalg.vec3;
@@ -21,7 +21,7 @@ pub const std_options = std.Options{
 };
 
 test {
-    log.debug("semantic analysis for examples/gpu_grid.zig", .{});
+    log.debug("semantic analysis for examples/micro_grid.zig", .{});
     std.testing.refAllDecls(@This());
 }
 

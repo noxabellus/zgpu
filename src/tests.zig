@@ -1,7 +1,7 @@
 const std = @import("std");
 const log = std.log.scoped(.tests);
 
-pub const gpu_grid = @import("tests/gpu_grid.zig");
+pub const micro_grid = @import("tests/micro_grid.zig");
 
 test {
     log.debug("semantic analysis for tests.zig", .{});

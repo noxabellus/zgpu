@@ -1,5 +1,5 @@
 const std = @import("std");
-const log = std.log.scoped(.gpu_grid_tests);
+const log = std.log.scoped(.micro_grid_tests);
 
 const linalg = @import("../linalg.zig");
 const vec3 = linalg.vec3;
@@ -9,7 +9,7 @@ const VoxemeTable = Grid.VoxemeTable;
 const MaterialId = Grid.MaterialId;
 const PageTable = Grid.PageTable;
 
-const Grid = @import("../GpuGrid.zig");
+const Grid = @import("../MicroGrid.zig");
 const convert = Grid.convert;
 
 // A helper function to make the validation reusable and clear.
