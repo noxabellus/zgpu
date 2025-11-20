@@ -13,6 +13,7 @@ pub const DEPTH_FORMAT = wgpu.TextureFormat.depth32_float;
 pub const WGPU_LOG_LEVEL = wgpu.LogLevel.warn;
 
 window: *glfw.Window,
+user_data: *anyopaque,
 gpu: Gpu,
 
 pub const Gpu = struct {
