@@ -777,7 +777,7 @@ fn setAABB(self: *Grid, aabb: aabb3i, new_voxel: Voxel) !void {
 
                     // --- Optimized Dirty-Marking for Shell ---
                     self.dirty_page_set.set(page_index);
-                    self.pages.items(.dirty_voxeme_set)[page_index].setAll();
+                    // self.pages.items(.dirty_voxeme_set)[page_index].setAll(); DO NOT DO THIS
 
                     const is_on_shell = [6]bool{
                         page_coord[0] == max_page_coord_inclusive[0], // +X
@@ -877,7 +877,7 @@ fn setPage(self: *Grid, page_coord: vec3i, new_voxel: Voxel) !void {
 
     // --- MARK DIRTY ---
     self.dirty_page_set.set(page_index);
-    self.pages.items(.dirty_voxeme_set)[page_index].setAll();
+    // self.pages.items(.dirty_voxeme_set)[page_index].setAll(); DO NOT DO THIS
 
     for (offsets, 0..) |offset, i| {
         const neighbor_page_coord = page_coord + offset;
@@ -886,10 +886,14 @@ fn setPage(self: *Grid, page_coord: vec3i, new_voxel: Voxel) !void {
 
         self.dirty_page_set.set(neighbor_page_index);
 
-        const neighbor_face_index = i ^ 1;
-        const neighbor_dirty_set = &self.pages.items(.dirty_voxeme_set)[neighbor_page_index];
-        for (page_face_voxeme_coords[neighbor_face_index]) |local_coord| {
-            neighbor_dirty_set.set(convert.localVoxemeCoordToIndex(local_coord));
+        const neighbor_voxeme_count = self.pages.items(.voxeme_indirection)[neighbor_page_index].len;
+
+        if (neighbor_voxeme_count > 0) {
+            const neighbor_face_index = i ^ 1;
+            const neighbor_dirty_set = &self.pages.items(.dirty_voxeme_set)[neighbor_page_index];
+            for (page_face_voxeme_coords[neighbor_face_index]) |local_coord| {
+                neighbor_dirty_set.set(convert.localVoxemeCoordToIndex(local_coord));
+            }
         }
     }
 }
@@ -2091,13 +2095,14 @@ pub const Manager = struct {
             // 8. Generate/update meshes for any dirty pages.
             timer.reset();
             page_wait_group = std.Thread.WaitGroup{};
-            for (&buffers.grid.page_indirection.mapping) |page_index| {
-                if (page_index == sentinel_index) continue;
-                const page_coord = buffers.grid.pages.items(.coord)[page_index];
+            // OPTIMIZATION: Only iterate pages that are actually marked dirty.
+            // Previous code iterated the entire 2-million entry grid mapping.
+            var mesh_page_it = buffers.grid.dirty_page_set.iterator();
+            while (mesh_page_it.next()) |idx| {
+                const page_index: u32 = @intCast(idx);
 
-                // Remesh if the page was directly dirtied, OR if it doesn't have a mesh yet.
-                if (!buffers.grid.dirty_page_set.isSet(page_index) and buffers.mesh_cache.page_indirection.lookup(page_coord) != sentinel_index) continue;
-
+                // We don't need to check if it's dirty (we know it is)
+                // or if it lacks a mesh (if it's dirty, it needs a new one regardless).
                 self.thread_pool.spawnWg(&page_wait_group, mesh_job, .{
                     self,
                     arena,
@@ -2213,6 +2218,20 @@ pub const Manager = struct {
         _ = arena;
 
         const page_voxel = buffers.grid.pages.items(.voxel)[page_index];
+        const voxeme_indirection = &buffers.grid.pages.items(.voxeme_indirection)[page_index];
+
+        // OPTIMIZATION: Fast path for already homogeneous pages
+        if (voxeme_indirection.len == 0) {
+            if (page_voxel == Voxel.empty) {
+                // Prune empty pages
+                self.prune_command_queue.enqueue(.{ .prune_page = buffers.grid.pages.items(.coord)[page_index] }) catch |err| {
+                    log.err("Grid.Manager page_job: failed to enqueue prune command: {s}", .{@errorName(err)});
+                    return;
+                };
+            }
+            // If homogeneous and not empty, we are done. No need to scan 4096 entries.
+            return;
+        }
 
         // try to homogenize
         var all_identical = true;
@@ -2220,7 +2239,7 @@ pub const Manager = struct {
         var voxeme_1d_index: u32 = 0;
         while (voxeme_1d_index < voxemes_per_page) : (voxeme_1d_index += 1) {
             const voxeme_coord = convert.indexToLocalVoxemeCoord(voxeme_1d_index);
-            const voxeme_index = buffers.grid.pages.items(.voxeme_indirection)[page_index].lookup(voxeme_coord);
+            const voxeme_index = voxeme_indirection.lookup(voxeme_coord);
             if (voxeme_index == sentinel_index) continue;
             const voxeme_voxel = buffers.grid.voxemes.items(.voxel)[voxeme_index];
             const buffer_handle = buffers.grid.voxemes.items(.buffer_indirection)[voxeme_index];
@@ -2343,9 +2362,15 @@ pub const Manager = struct {
             const buffer_data = &buffers.grid.voxels.items(.visibility)[buffer_handle];
 
             // Pre-fetch material data for fast internal lookups
-            const voxel_buffer = buffers.grid.voxels.items(.voxel)[buffer_handle];
+            const voxel_buffer = &buffers.grid.voxels.items(.voxel)[buffer_handle];
 
             for (0..voxels_per_voxeme) |voxel_1d_index| {
+                // OPTIMIZATION: Skip visibility calculation for empty voxels.
+                // The mesher ignores them anyway, so their visibility mask is irrelevant.
+                if (voxel_buffer[voxel_1d_index].material_id == .none) {
+                    buffer_data[voxel_1d_index] = Visibility.none; // Or undefined, doesn't matter
+                    continue;
+                }
                 // Convert 1D index to 3D local coord (fast bitwise ops)
                 const local_coord = convert.indexToLocalVoxelCoord(@intCast(voxel_1d_index));
                 var new_vis = Visibility.all;
@@ -2407,15 +2432,44 @@ pub const Manager = struct {
 
     /// Generates a mesh for a dirty page using a simple "naive cubes" algorithm.
     fn mesh_job(self: *Manager, arena: std.mem.Allocator, buffers: SwapBuffers, page_index: u32) void {
+        const page_coord = buffers.grid.pages.items(.coord)[page_index];
+
         var vertices: std.MultiArrayList(MeshCache.VertexData) = .empty;
         var indices: std.ArrayList(u32) = .empty;
 
-        const page_coord = buffers.grid.pages.items(.coord)[page_index];
+        // 2. OPTIMIZATION: Early-out for fully occluded homogeneous pages
+        // If a page is homogeneous and its visibility mask is 0 (none), it is invisible.
+        const is_hetero = buffers.grid.pages.items(.voxeme_indirection)[page_index].len != 0;
+        if (!is_hetero) {
+            const visibility = buffers.grid.pages.items(.visibility)[page_index];
+            // Cast to u6 (the backing type of Visibility) to check if all bits are 0
+            if (@as(u6, @bitCast(visibility)) == 0) {
+                // Page is fully invisible. Ensure it's removed from cache and exit.
+                // This avoids ALL allocation and mesh processing.
+                self.mesh_command_queue.enqueue(.{ .remove = page_coord }) catch |err| {
+                    log.err("Grid.Manager mesh_job: failed to enqueue mesh cache update command for page {any}: {s}", .{ page_coord, @errorName(err) });
+                    return;
+                };
+                return;
+            }
+        }
+
+        // 3. Generate Mesh
         pageMeshBasic(buffers.grid, arena, page_coord, &vertices, &indices) catch |err| {
-            log.err("Grid.Manager mesh_job: failed to generate basic mesh for page {any}: {s}", .{ page_coord, @errorName(err) });
+            log.err("Grid.Manager mesh_job: failed to generate mesh for page {any}: {s}", .{ page_coord, @errorName(err) });
             return;
         };
 
+        // 4. OPTIMIZATION: Handle "Technically Dirty but Empty" meshes
+        // If pageMeshBasic ran but produced no geometry (e.g., heterogeneous but all voxels occluded),
+        // send a REMOVE command instead of an INSERT.
+        // This saves the MeshCache from managing empty instance slots.
+        if (vertices.len == 0) {
+            self.mesh_command_queue.enqueue(.{ .remove = page_coord }) catch |err| {
+                log.err("Grid.Manager mesh_job: failed to enqueue mesh cache update command for page {any}: {s}", .{ page_coord, @errorName(err) });
+            };
+            return;
+        }
         const min_global_voxel = convert.partsToGlobalVoxel(
             page_coord,
             .{ 0, 0, 0 },

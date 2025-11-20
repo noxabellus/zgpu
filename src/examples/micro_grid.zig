@@ -444,6 +444,23 @@ pub fn main() !void {
     const dirt_mat = try manager.front().grid.registerMaterial(.{ .color = .{ .r = 139, .g = 90, .b = 43, .a = 255 }, .flags = .{ .is_opaque = true } });
 
     // 3. Define the sphere geometry.
+
+    var commands: std.ArrayList(Grid.Command) = .empty;
+    defer commands.deinit(gpa);
+
+    // for (0..4) |x| {
+    //     for (0..4) |y| {
+    //         for (0..4) |z| {
+    //             try commands.append(gpa, .{
+    //                 .set_page = .{
+    //                     .coord = vec3i{ @intCast(x), @intCast(y), @intCast(z) },
+    //                     .voxel = .{ .material_id = if ((x + y + z) % 2 == 0) stone_mat else dirt_mat },
+    //                 },
+    //             });
+    //         }
+    //     }
+    // }
+
     // The boundary between pages is at global voxel coordinates that are multiples of
     // (page_axis_divisor * voxeme_axis_divisor) = 16 * 16 = 256.
     // Placing the center at (256, 256, 128) will make it perfectly intersect the corner
@@ -455,8 +472,6 @@ pub fn main() !void {
     // 4. Queue commands to create the sphere with two materials
     const min_bound = center_voxel - @as(vec3i, @splat(radius));
     const max_bound = center_voxel + @as(vec3i, @splat(radius));
-    var commands: std.ArrayList(Grid.Command) = .empty;
-    defer commands.deinit(gpa);
     var z = min_bound[2];
     while (z <= max_bound[2]) : (z += 1) {
         var y = min_bound[1];
