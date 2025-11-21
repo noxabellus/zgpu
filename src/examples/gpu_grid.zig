@@ -10,6 +10,7 @@ const glfw = @import("glfw");
 const debug = @import("../debug.zig");
 const linalg = @import("../linalg.zig");
 const Application = @import("../Application.zig");
+const Camera = @import("../Camera.zig");
 
 const vec2 = linalg.vec2;
 const vec3 = linalg.vec3;
@@ -28,85 +29,14 @@ test {
 
 const Demo = struct {
     app: *Application,
-
-    // --- Camera state for fly controls (Z-up coordinate system) ---
-    camera_pos: vec3 = .{ 8.125, 28.125, 2 }, // Start outside the sphere (X, Y, Z with Z-up)
-    camera_front: vec3 = .{ 0.0, -1.0, 0.0 }, // Looking towards the sphere
-    camera_up: vec3 = .{ 0.0, 0.0, 1.0 }, // Z is up
-    camera_right: vec3 = .{ 0.0, 0.0, 0.0 }, // will be calculated
-
-    yaw: f32 = -90.0,
-    pitch: f32 = 0.0,
-
-    first_mouse: bool = true,
-    last_x: f64 = 400.0,
-    last_y: f64 = 300.0,
-
-    // Timing
-    delta_time: f32 = 0.0,
-    last_frame: f32 = 0.0,
+    camera: Camera = .{},
 };
-
-// --- Mouse movement callback ---
-fn handle_mouse_move(w: *glfw.Window, xpos: f64, ypos: f64) callconv(.c) void {
-    const app: *Application = @ptrCast(@alignCast(glfw.getWindowUserPointer(w) orelse return));
-    const d: *Demo = @ptrCast(@alignCast(app.user_data));
-
-    const btn_state = glfw.getMouseButton(w, .button_3);
-    if (btn_state != .repeat and btn_state != .press) {
-        d.first_mouse = true;
-        return;
-    }
-
-    if (d.first_mouse) {
-        d.last_x = xpos;
-        d.last_y = ypos;
-        d.first_mouse = false;
-    }
-
-    var x_offset = d.last_x - xpos;
-    var y_offset = d.last_y - ypos; // reversed since y-coordinates go from top to bottom
-    d.last_x = xpos;
-    d.last_y = ypos;
-
-    const sensitivity: f64 = 0.05;
-    x_offset *= sensitivity;
-    y_offset *= sensitivity;
-
-    d.yaw += @floatCast(x_offset);
-    d.pitch += @floatCast(y_offset);
-
-    // constrain pitch
-    if (d.pitch > 89.0) {
-        d.pitch = 89.0;
-    }
-    if (d.pitch < -89.0) {
-        d.pitch = -89.0;
-    }
-
-    var front: vec3 = undefined;
-    const yaw_rad = linalg.deg_to_rad * d.yaw;
-    const pitch_rad = linalg.deg_to_rad * d.pitch;
-    // Z-up coordinate system: X-right, Y-forward, Z-up
-    front[0] = std.math.cos(yaw_rad) * std.math.cos(pitch_rad);
-    front[1] = std.math.sin(yaw_rad) * std.math.cos(pitch_rad);
-    front[2] = std.math.sin(pitch_rad);
-    d.camera_front = linalg.normalize(front);
-    // Also re-calculate the Right and Up vector (world up is Z-axis)
-    d.camera_right = linalg.normalize(linalg.vec3_cross(d.camera_front, .{ 0.0, 0.0, 1.0 }));
-    d.camera_up = linalg.normalize(linalg.vec3_cross(d.camera_right, d.camera_front));
-}
 
 const Color = packed struct {
     r: u8,
     g: u8,
     b: u8,
     a: u8,
-};
-
-// A struct for our camera's view-projection matrix uniform.
-const CameraUniform = extern struct {
-    view_proj: mat4,
 };
 
 // --- Constants ---
@@ -143,10 +73,16 @@ pub fn main() !void {
     app.user_data = &demo;
 
     // Initial camera vector calculations (Z-up: world up is {0, 0, 1})
-    demo.camera_right = linalg.normalize(linalg.vec3_cross(demo.camera_front, .{ 0.0, 0.0, 1.0 }));
-    demo.camera_up = linalg.normalize(linalg.vec3_cross(demo.camera_right, demo.camera_front));
+    demo.camera.right = linalg.normalize(linalg.vec3_cross(demo.camera.front, .{ 0.0, 0.0, 1.0 }));
+    demo.camera.up = linalg.normalize(linalg.vec3_cross(demo.camera.right, demo.camera.front));
 
-    _ = glfw.setCursorPosCallback(app.window, handle_mouse_move);
+    _ = glfw.setCursorPosCallback(app.window, struct {
+        pub fn mouse_handler(w: *glfw.Window, xpos: f64, ypos: f64) callconv(.c) void {
+            const a: *Application = @ptrCast(@alignCast(glfw.getWindowUserPointer(w)));
+            const d: *Demo = @ptrCast(@alignCast(a.user_data));
+            d.camera.handle_mouse_move(w, vec2{ @floatCast(xpos), @floatCast(ypos) });
+        }
+    }.mouse_handler);
 
     // ------------------------------------------------------------------------
     // 1. COMPUTE PIPELINE SETUP
@@ -246,7 +182,7 @@ pub fn main() !void {
 
     const camera_buffer = app.gpu.createBuffer(&.{
         .usage = .{ .uniform = true, .copy_dst = true },
-        .size = @sizeOf(CameraUniform),
+        .size = @sizeOf(Camera.Uniform),
     });
     defer wgpu.bufferRelease(camera_buffer);
 
@@ -292,7 +228,7 @@ pub fn main() !void {
         .layout = render_bg_layout,
         .entry_count = 2,
         .entries = &.{
-            .{ .binding = 0, .buffer = camera_buffer, .size = @sizeOf(CameraUniform) },
+            .{ .binding = 0, .buffer = camera_buffer, .size = @sizeOf(Camera.Uniform) },
             .{ .binding = 1, .buffer = vertex_pool_buffer, .size = MAX_VERTS * 8 },
         },
     });
@@ -309,50 +245,12 @@ pub fn main() !void {
         defer debug.lap();
 
         // --- Delta time calculation ---
-        const ns_since_start = frame_timer.read();
-        const current_frame = @as(f32, @floatFromInt(ns_since_start)) / std.time.ns_per_s;
-        demo.delta_time = current_frame - demo.last_frame;
-        demo.last_frame = current_frame;
+        const ns_since_last = frame_timer.lap();
+        const delta_time = @as(f32, @floatFromInt(ns_since_last)) / std.time.ns_per_s;
 
         // --- Process keyboard input ---
-        const camera_speed = 10.0 * demo.delta_time; // Adjust speed as needed
-        if (glfw.getKey(app.window, .w) == .press) {
-            demo.camera_pos = demo.camera_pos + demo.camera_front * @as(vec3, @splat(camera_speed));
-        }
-        if (glfw.getKey(app.window, .s) == .press) {
-            demo.camera_pos = demo.camera_pos - demo.camera_front * @as(vec3, @splat(camera_speed));
-        }
-        if (glfw.getKey(app.window, .a) == .press) {
-            demo.camera_pos = demo.camera_pos - demo.camera_right * @as(vec3, @splat(camera_speed));
-        }
-        if (glfw.getKey(app.window, .d) == .press) {
-            demo.camera_pos = demo.camera_pos + demo.camera_right * @as(vec3, @splat(camera_speed));
-        }
-        if (glfw.getKey(app.window, .e) == .press) {
-            demo.camera_pos = demo.camera_pos + demo.camera_up * @as(vec3, @splat(camera_speed));
-        }
-        if (glfw.getKey(app.window, .q) == .press) {
-            demo.camera_pos = demo.camera_pos - demo.camera_up * @as(vec3, @splat(camera_speed));
-        }
-
-        // --- Calculate the view-projection matrix from fly camera state ---
-        var camera_uniform: CameraUniform = undefined;
-        {
-            var width: i32 = 0;
-            var height: i32 = 0;
-            glfw.getFramebufferSize(app.window, &width, &height);
-            const aspect = if (height == 0) 1.0 else @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(height));
-
-            const proj = linalg.mat4_perspective(linalg.deg_to_rad * 60.0, aspect, 0.1, 1000.0);
-
-            const view = linalg.mat4_look_at(
-                demo.camera_pos,
-                demo.camera_pos + demo.camera_front,
-                demo.camera_up,
-            );
-
-            camera_uniform.view_proj = linalg.mat4_mul(proj, view);
-        }
+        var camera_uniform: Camera.Uniform = undefined;
+        demo.camera.update(app.window, delta_time, &camera_uniform);
         app.gpu.writeBuffer(camera_buffer, 0, &camera_uniform);
 
         {
@@ -362,7 +260,7 @@ pub fn main() !void {
             const encoder = app.gpu.getCommandEncoder("main_encoder");
 
             // --- STEP A: RESET INDIRECT BUFFER ---
-            // We must reset the vertex_count to 0 every frame (or whenever we remesh).
+            // We must reset the vertex_count to 0 whenever we remesh.
             // For this test, we remesh every frame to prove it's fast.
             const reset_data = IndirectDrawArgs{ .vertex_count = 0, .instance_count = 1, .first_vertex = 0, .first_instance = 0 };
             app.gpu.writeBuffer(indirect_buffer, 0, &reset_data); // Note: In prod, use copyBufferToBuffer or clearBuffer (Not sure how this is supposed to work if we need to set instance count)

@@ -54,7 +54,7 @@ const face_data = array<FaceData, 6>(
         vec3<u32>(0, 0, 0), vec3<u32>(0, 1, 0), vec3<u32>(1, 1, 0), vec3<u32>(1, 0, 0)),
 );
     
-@compute @workgroup_size(4, 4, 4) // 64 threads per group
+@compute @workgroup_size(4, 4, 4)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     // Hardcoded for this demo: We are meshing Brick #0 at World Pos (0,0,0)
     // In a real engine, we'd look up the BrickMap here.
@@ -66,26 +66,21 @@ fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     
     // 0 is empty
     if (voxel_data == 0u) { return; }
-    
-    // SIMPLE FACE CULLING (Naive)
-    // Real implementation: Check neighbor voxels in pool. 
-    // For this demo, we just emit a cube for every solid voxel to prove the pipeline.
-    
+        
     // Allocate space for 36 vertices (6 faces * 2 tris * 3 verts)
     let start_idx = atomicAdd(&indirect_draw.vertex_count, 36u);
     
-
     for (var f = 0u; f < 6; f++) {
         let face = face_data[f];
 
         let norm = face.norm;
 
-        if (!((face.neighbor.x == -1 && id.x ==  0u)
-           || (face.neighbor.y == -1 && id.y ==  0u)
-           || (face.neighbor.z == -1 && id.z ==  0u)
-           || (face.neighbor.x ==  1 && id.x == 15u)
-           || (face.neighbor.y ==  1 && id.y == 15u)
-           || (face.neighbor.z ==  1 && id.z == 15u)
+        if (!( (face.neighbor.x == -1 && id.x ==  0u)
+            || (face.neighbor.y == -1 && id.y ==  0u)
+            || (face.neighbor.z == -1 && id.z ==  0u)
+            || (face.neighbor.x ==  1 && id.x == 15u)
+            || (face.neighbor.y ==  1 && id.y == 15u)
+            || (face.neighbor.z ==  1 && id.z == 15u)
         )) {
             let neighbor_pos = vec3<u32>(u32(i32(id.x) + face.neighbor.x), u32(i32(id.y) + face.neighbor.y), u32(i32(id.z) + face.neighbor.z));
 

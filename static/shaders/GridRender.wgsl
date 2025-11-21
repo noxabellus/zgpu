@@ -57,6 +57,5 @@ fn vs_main(@builtin(vertex_index) v_idx: u32) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // Simple lighting
     return vec4<f32>(in.color, 1.0);
 }
