@@ -249,15 +249,16 @@ pub fn main() !void {
         const delta_time = @as(f32, @floatFromInt(ns_since_last)) / std.time.ns_per_s;
 
         // --- Process keyboard input ---
-        var camera_uniform: Camera.Uniform = undefined;
-        demo.camera.update(app.window, delta_time, &camera_uniform);
-        app.gpu.writeBuffer(camera_buffer, 0, &camera_uniform);
+        demo.camera.update(app.window, delta_time);
 
         {
             const frame_view = app.gpu.beginFrame() orelse continue :main_loop;
             defer app.gpu.endFrame(frame_view);
 
             const encoder = app.gpu.getCommandEncoder("main_encoder");
+
+            // --- Update camera uniform ---
+            app.gpu.writeBuffer(camera_buffer, 0, &demo.camera.calculateUniform(app.window));
 
             // --- STEP A: RESET INDIRECT BUFFER ---
             // We must reset the vertex_count to 0 whenever we remesh.

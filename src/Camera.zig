@@ -70,7 +70,8 @@ pub fn handle_mouse_move(self: *Camera, w: *glfw.Window, pos: vec2) callconv(.c)
     self.up = linalg.normalize(linalg.vec3_cross(self.right, self.front));
 }
 
-pub fn update(self: *Camera, window: *glfw.Window, delta: f32, uniform: *Uniform) void {
+// Process keyboard input
+pub fn update(self: *Camera, window: *glfw.Window, delta: f32) void {
     const frame_speed: vec3 = @splat(self.speed * delta);
     if (glfw.getKey(window, .w) == .press) {
         self.pos += self.front * frame_speed;
@@ -91,27 +92,29 @@ pub fn update(self: *Camera, window: *glfw.Window, delta: f32, uniform: *Uniform
     if (glfw.getKey(window, .q) == .press) {
         self.pos -= self.up * frame_speed;
     }
+}
 
-    // --- Calculate the view-projection matrix from fly camera state ---
-    {
-        var width: i32 = 0;
-        var height: i32 = 0;
-        glfw.getFramebufferSize(window, &width, &height);
-        const aspect = if (height == 0) 1.0 else @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(height));
+/// Calculate the view-projection matrix from fly camera state
+pub fn calculateUniform(self: *Camera, window: *glfw.Window) Uniform {
+    var width: i32 = 0;
+    var height: i32 = 0;
+    glfw.getFramebufferSize(window, &width, &height);
+    const aspect = if (height == 0) 1.0 else @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(height));
 
-        const proj = linalg.mat4_perspective(
-            linalg.deg_to_rad * 60.0,
-            aspect,
-            0.1,
-            1000.0,
-        );
+    const proj = linalg.mat4_perspective(
+        linalg.deg_to_rad * 60.0,
+        aspect,
+        0.1,
+        1000.0,
+    );
 
-        const view = linalg.mat4_look_at(
-            self.pos,
-            self.pos + self.front,
-            self.up,
-        );
+    const view = linalg.mat4_look_at(
+        self.pos,
+        self.pos + self.front,
+        self.up,
+    );
 
-        uniform.view_proj = linalg.mat4_mul(proj, view);
-    }
+    return Uniform{
+        .view_proj = linalg.mat4_mul(proj, view),
+    };
 }
