@@ -665,6 +665,7 @@ fn loadGltfModel(
 
 // State object to hold pre-allocated buffers for animation, avoiding per-frame allocations.
 const AnimationState = struct {
+    poses: []NodePose,
     local_transforms: []mat4,
     global_transforms: []mat4,
     channel_key_cache: []u32,
@@ -675,6 +676,7 @@ const AnimationState = struct {
         const anim = &model.animations[anim_idx];
         const channel_count = anim.translation_channels.len + anim.rotation_channels.len + anim.scale_channels.len;
         const out = AnimationState{
+            .poses = try allocator.alloc(NodePose, node_count),
             .local_transforms = try allocator.alloc(mat4, node_count),
             .global_transforms = try allocator.alloc(mat4, node_count),
             .channel_key_cache = try allocator.alloc(u32, channel_count),
@@ -684,6 +686,7 @@ const AnimationState = struct {
         return out;
     }
     pub fn deinit(self: *AnimationState) void {
+        self.allocator.free(self.poses);
         self.allocator.free(self.local_transforms);
         self.allocator.free(self.global_transforms);
         self.allocator.free(self.channel_key_cache);
@@ -716,7 +719,6 @@ fn updateNodeHierarchyRecursive(
 }
 
 fn updateAnimation(
-    arena: std.mem.Allocator,
     model: *const Model,
     anim_idx: u32,
     time: f32,
@@ -725,11 +727,8 @@ fn updateAnimation(
 ) void {
     const animation = &model.animations[anim_idx];
 
-    var poses = arena.alloc(NodePose, model.nodes.len) catch unreachable;
-    defer arena.free(poses);
-
     for (model.nodes, 0..) |node, i| {
-        poses[i] = .{
+        state.poses[i] = .{
             .translation = node.default_translation,
             .rotation = node.default_rotation,
             .scale = node.default_scale,
@@ -750,7 +749,7 @@ fn updateAnimation(
         const clamped_factor = @min(@max(factor, 0.0), 1.0);
         const prev_val = sampler.output[prev_key];
         const next_val = sampler.output[next_key];
-        poses[channel.target_node].translation = linalg.lerp(linalg.xyz(prev_val), linalg.xyz(next_val), clamped_factor);
+        state.poses[channel.target_node].translation = linalg.lerp(linalg.xyz(prev_val), linalg.xyz(next_val), clamped_factor);
     }
     key_cache_offset += @intCast(animation.translation_channels.len);
 
@@ -767,7 +766,7 @@ fn updateAnimation(
         const clamped_factor = @min(@max(factor, 0.0), 1.0);
         const prev_val = sampler.output[prev_key];
         const next_val = sampler.output[next_key];
-        poses[channel.target_node].rotation = linalg.quat_slerp(prev_val, next_val, clamped_factor);
+        state.poses[channel.target_node].rotation = linalg.quat_slerp(prev_val, next_val, clamped_factor);
     }
     key_cache_offset += @intCast(animation.rotation_channels.len);
 
@@ -784,10 +783,10 @@ fn updateAnimation(
         const clamped_factor = @min(@max(factor, 0.0), 1.0);
         const prev_val = sampler.output[prev_key];
         const next_val = sampler.output[next_key];
-        poses[channel.target_node].scale = linalg.lerp(linalg.xyz(prev_val), linalg.xyz(next_val), clamped_factor);
+        state.poses[channel.target_node].scale = linalg.lerp(linalg.xyz(prev_val), linalg.xyz(next_val), clamped_factor);
     }
 
-    for (poses, 0..) |p, i| {
+    for (state.poses, 0..) |p, i| {
         state.local_transforms[i] = linalg.mat4_compose(p.translation, p.rotation, p.scale);
     }
 
@@ -813,7 +812,7 @@ pub fn main() !void {
 
     const gpa = std.heap.page_allocator;
 
-    const app = try Application.init(gpa, "zgpu micro grid example");
+    const app = try Application.init(gpa, "zgpu gltf example");
     defer app.deinit();
 
     var demo = Demo{
@@ -916,6 +915,7 @@ pub fn main() !void {
     defer model.deinit();
 
     const anim_index = 2;
+    const anim_speed = 2.0; // Playback speed multiplier
     var anim_state = try AnimationState.init(gpa, &model, anim_index);
     defer anim_state.deinit();
 
@@ -1014,7 +1014,7 @@ pub fn main() !void {
 
         // --- Update Animation ---
         if (model.animations.len > anim_index) {
-            animation_time += delta_time;
+            animation_time += delta_time * anim_speed;
             const anim = &model.animations[anim_index];
             if (animation_time > anim.duration) {
                 animation_time -= anim.duration;
@@ -1024,7 +1024,6 @@ pub fn main() !void {
             var skin_uniforms: SkinUniforms = .{ .joint_matrices = undefined };
 
             updateAnimation(
-                arena_state.allocator(),
                 &model,
                 anim_index,
                 animation_time,
