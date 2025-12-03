@@ -400,6 +400,7 @@ pub const Gpu = struct {
 
 pub fn init(gpa: std.mem.Allocator, name: [*:0]const u8) !*Application {
     log.info("application initializing...", .{});
+    var timer = try std.time.Timer.start();
 
     stbi.init(gpa);
     errdefer stbi.deinit();
@@ -436,7 +437,10 @@ pub fn init(gpa: std.mem.Allocator, name: [*:0]const u8) !*Application {
 
     try self.gpu.init();
 
-    log.info("application initialized", .{});
+    const elapsed = timer.read();
+    const ms = @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms;
+
+    log.info("application initialized in {d:.3}ms", .{ms});
 
     return self;
 }
