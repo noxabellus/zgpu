@@ -29,7 +29,7 @@ test {
 
 const Demo = struct {
     app: *Application,
-    camera: Camera = .{},
+    camera: Camera,
 };
 
 const Color = packed struct {
@@ -68,13 +68,16 @@ pub fn main() !void {
     const app = try Application.init(gpa, "zgpu micro grid example");
     defer app.deinit();
 
-    var demo = Demo{ .app = app };
+    var demo = Demo{
+        .app = app,
+        .camera = Camera.fromLookAt(
+            .{ 8.125, 28.125, 2 }, // Start outside the sphere (X, Y, Z with Z-up)
+            .{ 0.0, 1.0, 0.0 }, // Looking towards the sphere
+            .{ 0.0, 0.0, 1.0 }, // Z is up
+        ),
+    };
 
     app.user_data = &demo;
-
-    // Initial camera vector calculations (Z-up: world up is {0, 0, 1})
-    demo.camera.right = linalg.normalize(linalg.vec3_cross(demo.camera.front, .{ 0.0, 0.0, 1.0 }));
-    demo.camera.up = linalg.normalize(linalg.vec3_cross(demo.camera.right, demo.camera.front));
 
     _ = glfw.setCursorPosCallback(app.window, struct {
         pub fn mouse_handler(w: *glfw.Window, xpos: f64, ypos: f64) callconv(.c) void {
