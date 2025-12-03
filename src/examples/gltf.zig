@@ -9,6 +9,7 @@ const gltf = @import("gltf");
 const stbi = @import("stbi");
 
 const Application = @import("../Application.zig");
+const Camera = @import("../Camera.zig");
 const debug = @import("../debug.zig");
 const linalg = @import("../linalg.zig");
 const vec2 = linalg.vec2;
@@ -26,6 +27,11 @@ test {
     log.debug("semantic analysis for examples/gltf.zig", .{});
     std.testing.refAllDecls(@This());
 }
+
+const Demo = struct {
+    app: *Application,
+    camera: Camera,
+};
 
 const MAX_JOINTS = 128;
 
@@ -807,15 +813,33 @@ pub fn main() !void {
 
     const gpa = std.heap.page_allocator;
 
-    var app = try Application.init(gpa, "zgpu glTF example");
+    const app = try Application.init(gpa, "zgpu micro grid example");
     defer app.deinit();
 
+    var demo = Demo{
+        .app = app,
+        .camera = Camera.fromLookAt(
+            vec3{ 10.0, 2.0, 0.0 },
+            vec3{ 0, 1.0, 0.0 },
+            vec3{ 0.0, 1.0, 0.0 },
+        ),
+    };
+
+    app.user_data = &demo;
+
     const camera_buffer = app.gpu.createBuffer(&.{
-        .label = .fromSlice("camera_buffer"),
-        .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
-        .size = @sizeOf(CameraUniform),
+        .usage = .{ .uniform = true, .copy_dst = true },
+        .size = @sizeOf(Camera.Uniform),
     });
     defer wgpu.bufferRelease(camera_buffer);
+
+    _ = glfw.setCursorPosCallback(app.window, struct {
+        pub fn mouse_handler(w: *glfw.Window, xpos: f64, ypos: f64) callconv(.c) void {
+            const a: *Application = @ptrCast(@alignCast(glfw.getWindowUserPointer(w)));
+            const d: *Demo = @ptrCast(@alignCast(a.user_data));
+            d.camera.handle_mouse_move(w, vec2{ @floatCast(xpos), @floatCast(ypos) });
+        }
+    }.mouse_handler);
 
     const camera_bind_group_layout = app.gpu.createBindGroupLayout(&.{
         .label = .fromSlice("camera_bind_group_layout"),
@@ -988,25 +1012,7 @@ pub fn main() !void {
         glfw.pollEvents();
         _ = arena_state.reset(.retain_capacity);
 
-        var camera_uniform: CameraUniform = undefined;
-        {
-            const size = app.gpu.getFramebufferSize();
-            const aspect = if (size[1] == 0) 1.0 else @as(f32, @floatFromInt(size[0])) / @as(f32, @floatFromInt(size[1]));
-            const proj = linalg.mat4_perspective(
-                linalg.deg_to_rad * 45.0,
-                aspect,
-                0.1,
-                100.0,
-            );
-            const view = linalg.mat4_look_at(
-                .{ 2.5, 2.0, 3.0 },
-                .{ 0.0, 1.0, 0.0 },
-                .{ 0.0, 1.0, 0.0 },
-            );
-            camera_uniform.view_proj = linalg.mat4_mul(proj, view);
-        }
-        app.gpu.writeBuffer(camera_buffer, 0, &camera_uniform);
-
+        // --- Update Animation ---
         if (model.animations.len > anim_index) {
             animation_time += delta_time;
             const anim = &model.animations[anim_index];
@@ -1029,11 +1035,17 @@ pub fn main() !void {
             app.gpu.writeBuffer(skin_uniform_buffer, 0, &skin_uniforms);
         }
 
+        // --- Process keyboard input ---
+        demo.camera.update(app.window, delta_time);
+
         {
             const frame_view = app.gpu.beginFrame() orelse continue :main_loop;
             defer app.gpu.endFrame(frame_view);
 
             const encoder = app.gpu.getCommandEncoder("main_encoder");
+
+            // --- Update camera uniform ---
+            app.gpu.writeBuffer(camera_buffer, 0, &demo.camera.calculateUniform(app.window));
 
             {
                 const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
