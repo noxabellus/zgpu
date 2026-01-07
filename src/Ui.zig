@@ -1005,11 +1005,20 @@ pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemCon
 
     if (self.hovered()) {
         self.menu_state.setHighlighted(self.gpa, level, id);
-        // If we hover a menu item, it should take precedence over any focused widget inside the menu.
-        if (self.state.focused_id != null) {
-            // A more complex check could verify the focused element is a child of the current menu,
-            // but for now, simply clearing focus when hovering any menu item is effective and intuitive.
-            self.state.focused_id = null;
+
+        // Fix: Do not set focused_id to null. Set it to the Menu Panel.
+        // This ensures the Menu Panel receives the 'Enter' key event.
+        const menu_data = clay.getElementData(menu_id);
+        if (menu_data.found) {
+            // Only update if we aren't already focused on the menu, to avoid thrashing
+            const current_focus = self.state.focusedIdValue() orelse 0;
+            if (current_focus != menu_id.id) {
+                self.state.focused_id = .{
+                    .id = menu_id,
+                    .bounding_box = menu_data.bounding_box,
+                    .state = .flags(.{ .focus = true, .keyboard = true, .activate = true }),
+                };
+            }
         }
     }
 
@@ -1062,9 +1071,18 @@ pub fn subMenu(self: *Ui, self_id: ElementId, label: []const u8, child_menu_id: 
 
     if (self.hovered()) {
         self.menu_state.setHighlighted(self.gpa, level, self_id);
-        // Also clear widget focus when hovering a submenu trigger.
-        if (self.state.focused_id != null) {
-            self.state.focused_id = null;
+
+        // Fix: Same logic as menuItem. Steal focus back to the menu panel if hovering.
+        const menu_data = clay.getElementData(parent_menu_id);
+        if (menu_data.found) {
+            const current_focus = self.state.focusedIdValue() orelse 0;
+            if (current_focus != parent_menu_id.id) {
+                self.state.focused_id = .{
+                    .id = parent_menu_id,
+                    .bounding_box = menu_data.bounding_box,
+                    .state = .flags(.{ .focus = true, .keyboard = true, .activate = true }),
+                };
+            }
         }
 
         if (self.menu_state.hovered_submenu_candidate) |candidate| {
@@ -1103,30 +1121,27 @@ pub fn subMenu(self: *Ui, self_id: ElementId, label: []const u8, child_menu_id: 
 /// Registers the currently open element as a navigable target within the current menu.
 /// This allows keyboard focus to move from menu items into custom embedded widgets.
 pub fn menuNavigable(self: *Ui) !void {
-    // This function must be called from within an open menu (i.e., inside a beginMenu/endMenu block).
+    // This function must be called from within an open menu.
     std.debug.assert(self.open_ids.items.len >= 1);
-
-    // The menu stack must have at least one menu open.
-    if (self.menu_state.stack.items.len == 0) {
-        log.warn("menuNavigable called, but no menu is currently open in the menu stack.", .{});
-        return;
-    }
 
     const element_id = self.open_ids.items[self.open_ids.items.len - 1];
 
-    // The current menu is always the last one on the menu_state stack.
-    // This is robust and not dependent on the layout nesting depth.
-    const menu_info = self.menu_state.stack.items[self.menu_state.stack.items.len - 1];
-    const menu_id = menu_info.id;
+    // Search backwards through the open layout elements to find the nearest parent
+    // that is actually a menu (exists in navigable_items).
+    var i = self.open_ids.items.len;
+    while (i > 0) {
+        i -= 1;
+        const ancestor_id = self.open_ids.items[i];
 
-    // Add this item to its parent menu's navigable list.
-    // The list is guaranteed to exist because it's created in `beginMenu`.
-    if (self.menu_state.navigable_items.getPtr(menu_id.id)) |list| {
-        try list.append(self.gpa, element_id);
-    } else {
-        // This case should ideally not be hit if used correctly.
-        log.err("Could not find navigable item list for menu {any}", .{menu_id});
+        // If we find a list for this ID, it means this ancestor is a menu.
+        if (self.menu_state.navigable_items.getPtr(ancestor_id.id)) |list| {
+            try list.append(self.gpa, element_id);
+            return;
+        }
     }
+
+    // If we get here, we are trying to make something navigable but we aren't inside a menu.
+    log.err("menuNavigable called, but no ancestor menu found in open_ids stack.", .{});
 }
 
 pub fn menuSeparator(self: *Ui) !void {
@@ -2100,8 +2115,17 @@ fn navigateMenu(self: *Ui, menu_id: ElementId, direction: enum { next, prev, up,
         }
     } else {
         // The new target is a standard menu item.
-        // 1. Clear global focus in case we just navigated off a widget.
-        self.state.focused_id = null;
+
+        // Fix: Do NOT set focused_id to null. Set it to the Menu Panel.
+        const element_data = clay.getElementData(menu_id);
+        if (element_data.found) {
+            self.state.focused_id = .{
+                .id = menu_id,
+                .bounding_box = element_data.bounding_box,
+                .state = .flags(.{ .focus = true, .keyboard = true, .activate = true }),
+            };
+        }
+
         // 2. Set the visual highlight on the new menu item.
         self.menu_state.setHighlighted(self.gpa, level, new_target_id);
     }
