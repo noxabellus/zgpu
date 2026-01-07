@@ -999,7 +999,7 @@ pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemCon
         },
         .background_color = if (is_highlighted) config.background_color_highlighted else config.background_color,
         .corner_radius = config.corner_radius,
-        .state = .flags(.{ .activate = true, .hover = true }),
+        .state = .flags(.{ .activate = true, .hover = true, .click = true }),
     });
     defer self.closeElement();
 
