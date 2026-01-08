@@ -1,4 +1,4 @@
-//! An example of the new UI wrapper over clay.
+//! An example of the UI system rendering some game-stylized components.
 
 const std = @import("std");
 const log = std.log.scoped(.main);
@@ -17,7 +17,7 @@ pub const Ui = @import("../Ui.zig");
 pub const linalg = @import("../linalg.zig");
 
 test {
-    log.debug("semantic analysis for examples/ui.zig", .{});
+    log.debug("semantic analysis for examples/ui-stylized.zig", .{});
     std.testing.refAllDecls(@This());
 }
 
@@ -52,6 +52,9 @@ const COLOR_LIGHT = Ui.Color.fromLinearU8(244, 235, 230, 255);
 const COLOR_LIGHT_HOVER = Ui.Color.fromLinearU8(224, 215, 210, 255);
 const COLOR_BUTTON_HOVER = Ui.Color.fromLinearU8(238, 227, 225, 255);
 const COLOR_BROWN = Ui.Color.fromLinearU8(61, 26, 5, 255);
+const COLOR_GREYBROWN = Ui.Color.fromLinearU8(54, 48, 33, 255);
+const COLOR_TAN = Ui.Color.fromLinearU8(128, 113, 77, 255);
+const COLOR_PHOSPHOR = Ui.Color.fromLinearU8(0xff, 0xd4, 0x77, 0xff);
 const COLOR_RED = Ui.Color.fromLinearU8(168, 66, 28, 255);
 const COLOR_RED_HOVER = Ui.Color.fromLinearU8(148, 46, 8, 255);
 const COLOR_ORANGE = Ui.Color.fromLinearU8(225, 138, 50, 255);
@@ -60,6 +63,7 @@ const COLOR_TEAL = Ui.Color.fromLinearU8(111, 173, 162, 255);
 const COLOR_BLUE_DARK = Ui.Color.fromLinearU8(2, 32, 82, 255);
 const COLOR_NONE = Ui.Color.fromLinearU8(0, 0, 0, 255);
 const COLOR_WHITE = Ui.Color.fromLinearU8(255, 255, 255, 255);
+const COLOR_BLACK = Ui.Color.fromLinearU8(0, 0, 0, 255);
 
 const Theme = enum(u32) {
     light,
@@ -79,9 +83,26 @@ fn createLayout(ui: *Ui) !void {
                 .child_alignment = .center,
                 .child_gap = 10,
             },
-            .background_color = COLOR_LIGHT,
+            .background_color = COLOR_GREYBROWN,
         });
         defer ui.closeElement();
+
+        {
+            try ui.beginElement(.fromSlice("TitleText"));
+            defer ui.closeElement();
+
+            try ui.configureElement(.{
+                .layout = .{
+                    .sizing = .fit,
+                },
+            });
+
+            try ui.text("UI Stylized Example", .{
+                .font_id = FONT_ID_TITLE,
+                .font_size = 32,
+                .color = COLOR_PHOSPHOR,
+            });
+        }
 
         {
             try ui.beginElement(.fromSlice("TextInputTest"));
@@ -92,10 +113,10 @@ fn createLayout(ui: *Ui) !void {
                     .sizing = .{ .w = .fixed(300 + 5 * 2 + 2 * 2), .h = .fixed(16 * 6 + 5 * 2 + 2 * 2) },
                     .padding = .all(5),
                 },
-                .background_color = COLOR_WHITE,
+                .background_color = COLOR_BROWN,
                 .border = .{
                     .width = .all(2),
-                    .color = COLOR_BROWN,
+                    .color = COLOR_PHOSPHOR,
                 },
                 .corner_radius = .all(5),
                 .clip = .{
@@ -113,9 +134,11 @@ fn createLayout(ui: *Ui) !void {
 
             try ui.bindTextInput(.{
                 .alignment = .left,
-                .font_id = FONT_ID_MONO,
+                .font_id = FONT_ID_TITLE,
                 .font_size = 16,
-                .color = COLOR_BLUE,
+                .color = COLOR_PHOSPHOR,
+                .caret_color = COLOR_PHOSPHOR,
+                .selection_color = COLOR_PHOSPHOR.withAlpha(0.25),
                 .line_height = 20,
             });
         }
@@ -141,8 +164,8 @@ fn createLayout(ui: *Ui) !void {
                 .min = 0.0,
                 .max = 1.0,
                 .default = 0.5,
-                .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-                .handle_color = COLOR_ORANGE,
+                .track_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                .handle_color = COLOR_PHOSPHOR,
             });
         }
 
@@ -167,8 +190,8 @@ fn createLayout(ui: *Ui) !void {
                 .min = -100.0,
                 .max = 100.0,
                 .default = 0.0,
-                .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-                .handle_color = COLOR_BLUE,
+                .track_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                .handle_color = COLOR_PHOSPHOR,
             });
         }
 
@@ -193,8 +216,8 @@ fn createLayout(ui: *Ui) !void {
                 .min = -50,
                 .max = 50,
                 .default = 0,
-                .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-                .handle_color = COLOR_RED,
+                .track_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                .handle_color = COLOR_PHOSPHOR,
             });
         }
 
@@ -219,8 +242,8 @@ fn createLayout(ui: *Ui) !void {
                 .min = 0,
                 .max = 100,
                 .default = 50,
-                .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-                .handle_color = COLOR_TEAL,
+                .track_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                .handle_color = COLOR_PHOSPHOR,
             });
         }
 
@@ -230,7 +253,13 @@ fn createLayout(ui: *Ui) !void {
 
             try ui.bindDropdown(Theme, .{
                 .default = .light,
-                .font_id = FONT_ID_BODY,
+                .font_id = FONT_ID_TITLE,
+                .box_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                .text_color = COLOR_PHOSPHOR,
+                .panel_color = COLOR_BROWN,
+                .option_color_hover = COLOR_TAN,
+                .box_color_hover = COLOR_TAN,
+                .font_size = 16,
             });
         }
 
@@ -238,17 +267,21 @@ fn createLayout(ui: *Ui) !void {
             try ui.beginElement(.fromSlice("CheckboxTest"));
             defer ui.closeElement();
 
-            try ui.configureElement(.{ .layout = .{
-                .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
-            }, .widget = true, .state = .flags(.{
-                .activate = true,
-                .focus = true,
-            }), .border = .{ .width = .all(1), .color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK } });
+            try ui.configureElement(.{
+                .layout = .{
+                    .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
+                },
+                .widget = true,
+                .state = .flags(.{
+                    .activate = true,
+                    .focus = true,
+                }),
+            });
 
             try ui.bindCheckbox(.{
                 .default = true,
-                .box_color = COLOR_LIGHT_HOVER,
-                .check_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK,
+                .box_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                .check_color = COLOR_PHOSPHOR,
                 .size = 16.0,
             });
         }
@@ -267,21 +300,21 @@ fn createLayout(ui: *Ui) !void {
                 try ui.beginElement(.fromSlice("RadioLight"));
                 defer ui.closeElement();
                 try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
-                try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .light, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
+                try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .light, .circle_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN, .dot_color = COLOR_PHOSPHOR });
             }
             {
                 // Dark Theme Button
                 try ui.beginElement(.fromSlice("RadioDark"));
                 defer ui.closeElement();
                 try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
-                try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .dark, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
+                try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .dark, .circle_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN, .dot_color = COLOR_PHOSPHOR });
             }
             {
                 // System Theme Button
                 try ui.beginElement(.fromSlice("RadioSystem"));
                 defer ui.closeElement();
                 try ui.configureElement(.{ .layout = .{ .sizing = .{ .w = .fixed(20), .h = .fixed(20) } }, .widget = true, .state = .flags(.{ .activate = true, .focus = true }) });
-                try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .system, .circle_color = if (ui.focused()) COLOR_BLUE else COLOR_BLUE_DARK, .dot_color = COLOR_LIGHT });
+                try ui.bindRadioButton(Theme, .{ .group_id = radio_group_id, .value = .system, .circle_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN, .dot_color = COLOR_PHOSPHOR });
             }
         }
     }
@@ -696,9 +729,9 @@ pub fn main() !void {
     );
 
     // --- Load Assets ---
-    FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/quicksand/semibold.ttf");
-    FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/calistoga/regular.ttf");
-    FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/dejavu/sans-mono.ttf");
+    FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/quicksand/semibold.ttf", .linear);
+    FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/pixels/ModernDOS9x16.ttf", .nearest);
+    FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/dejavu/sans-mono.ttf", .linear);
 
     zig_logo_image_id = try asset_cache.loadImage("assets/images/zig-mark.png", true);
     wgpu_logo_image_id = try asset_cache.loadImage("assets/images/wgpu-logo.png", true);

@@ -137,7 +137,7 @@ pub fn For(comptime T: type) type {
                 },
                 .background_color = if (ui.hovered()) self.box_color_hover else self.box_color,
                 .corner_radius = .all(4),
-                .border = .{ .width = .all(1), .color = if (ui.focused()) Ui.Color.blue else Ui.Color.black },
+                // .border = .{ .width = .all(1), .color = if (ui.focused()) Ui.Color.blue else Ui.Color.black }, FIXME
                 .widget = false,
                 .state = .flags(.{ .activate = true, .focus = true, .keyboard = true }),
             });
@@ -164,7 +164,7 @@ pub fn For(comptime T: type) type {
                         .z_index = 10,
                     },
                     .background_color = self.panel_color,
-                    .border = .{ .width = .all(1), .color = Ui.Color.black },
+                    // .border = .{ .width = .all(1), .color = Ui.Color.black }, FIXME
                     .corner_radius = .all(4),
                 });
                 defer ui.closeElement();
@@ -188,6 +188,7 @@ pub fn For(comptime T: type) type {
                         },
                         .background_color = if (self.highlighted_index == i) self.option_color_hover else .transparent,
                         .widget = false,
+                        .corner_radius = .all(4),
                         .state = .flags(.{ .activate = true }),
                     });
 

@@ -437,7 +437,31 @@ pub fn endFrame(self: *Batch2D) !void {
             continue;
         };
 
-        const use_nearest_flag = if (AssetCache.decodeGlyphId(p.image_id).is_glyph_or_special) USE_NEAREST_MASK else 0;
+        const decoded = AssetCache.decodeGlyphId(p.image_id);
+
+        var use_nearest = false;
+
+        if (decoded.is_glyph_or_special) {
+            // It is a glyph or special ID
+            if (decoded.font_id == AssetCache.SPECIAL_ID_font_id) {
+                // White pixel always needs nearest neighbor
+                use_nearest = true;
+            } else {
+                // Look up the font to see its preference
+                const font = &self.asset_cache.fonts.items[decoded.font_id];
+                use_nearest = (font.filter_mode == .nearest);
+            }
+        } else {
+            // It is a standard image
+            const image_idx = @as(usize, @intCast(p.image_id));
+            if (image_idx < self.asset_cache.images.items.len) {
+                // TODO: add filter_mode to LoadedImage too
+                const img = &self.asset_cache.images.items[image_idx];
+                _ = img; // unused for now
+            }
+        }
+
+        const use_nearest_flag = if (use_nearest) USE_NEAREST_MASK else 0;
         const encoded_params = use_nearest_flag | (location.indirection_table_index & IMAGE_ID_MASK);
 
         const verts = self.vertices.items[p.vertex_start_index .. p.vertex_start_index + p.vertex_count];
@@ -879,7 +903,18 @@ pub fn drawTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, v1: vec2, u
 
     // PACKED PATH: The image is in the atlas.
     // 1. Calculate the final `encoded_params` with the correct indirection table index.
-    const use_nearest_flag = if (AssetCache.decodeGlyphId(image_id).is_glyph_or_special) USE_NEAREST_MASK else 0;
+    var use_nearest = false;
+    const decoded = AssetCache.decodeGlyphId(image_id);
+    if (decoded.is_glyph_or_special) {
+        if (decoded.font_id == AssetCache.SPECIAL_ID_font_id) {
+            use_nearest = true;
+        } else {
+            const font = &self.asset_cache.fonts.items[decoded.font_id];
+            use_nearest = (font.filter_mode == .nearest);
+        }
+    }
+
+    const use_nearest_flag = if (use_nearest) USE_NEAREST_MASK else 0;
     const encoded_params = use_nearest_flag | (location.indirection_table_index & IMAGE_ID_MASK);
 
     // 2. Push the triangle with the final `encoded_params` and the ORIGINAL image-relative UVs.

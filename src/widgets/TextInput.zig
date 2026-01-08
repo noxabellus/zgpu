@@ -4,6 +4,7 @@ const TextInputWidget = @This();
 
 const std = @import("std");
 const Ui = @import("../Ui.zig");
+const Batch2D = @import("../Batch2D.zig");
 
 const linalg = @import("../linalg.zig");
 const vec2 = linalg.vec2;
@@ -26,6 +27,9 @@ text_was_modified_last_frame: bool = false,
 column_select_start_pos: ?u32 = null,
 drag_additive: u32 = 0,
 
+selection_color: Ui.Color,
+caret_color: Ui.Color,
+
 pub const Config = struct {
     /// The default value the text input will be initialized to.
     default_text: []const u8 = "[Type here]",
@@ -43,6 +47,10 @@ pub const Config = struct {
     wrap_mode: Ui.TextElementConfigWrapMode = .words,
     /// Controls how wrapped lines of text are horizontally aligned within the outer text bounding box.
     alignment: Ui.TextAlignment = .left,
+    /// The RGBA color of selection highlights.
+    selection_color: Ui.Color = .{ .r = 0.75, .g = 0, .b = 0.75, .a = 0.5 },
+    /// The RGBA color of selection carets.
+    caret_color: Ui.Color = .{ .r = 1, .a = 1 },
 
     pub fn toFull(self: *const Config) Ui.TextElementConfig {
         return .{
@@ -65,6 +73,8 @@ pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*TextInputWidget {
     self.* = TextInputWidget{
         .id = id,
         .selection_render_data = .{ .carets = &self.carets },
+        .selection_color = config.selection_color,
+        .caret_color = config.caret_color,
     };
 
     self.text_buffers[0] = try std.ArrayList(u8).initCapacity(ui.gpa, config.default_text.len);
@@ -293,8 +303,22 @@ fn findPrevWordBreak(text: []const u8, start_index: u32) u32 {
 pub fn render(self: *TextInputWidget, ui: *Ui, command: Ui.RenderCommand) !void {
     const caret_list = self.selection_render_data.carets;
 
-    const selection_color = Ui.Color.init(0.75, 0, 0.75, 0.5);
     const caret_width: f32 = 1.5;
+
+    const data = command.render_data.custom;
+    const color = Ui.clayColorToBatchColor(data.background_color);
+    const radius = Batch2D.CornerRadius{
+        .top_left = data.corner_radius.top_left,
+        .top_right = data.corner_radius.top_right,
+        .bottom_right = data.corner_radius.bottom_right,
+        .bottom_left = data.corner_radius.bottom_left,
+    };
+    try ui.renderer.drawRoundedRect(
+        .{ command.bounding_box.x, command.bounding_box.y },
+        .{ command.bounding_box.width, command.bounding_box.height },
+        radius,
+        color,
+    );
 
     if (ui.state.focusedIdValue() != command.id) {
         log.debug("skipping rendering carets for unfocused TextInput", .{});
@@ -345,7 +369,7 @@ pub fn render(self: *TextInputWidget, ui: *Ui, command: Ui.RenderCommand) !void 
                     // The selection covers the rest of the line
                     end_offset.offset.x - start_offset.offset.x;
 
-                try ui.renderer.drawRect(.{ rect_x, rect_y }, .{ rect_w, rect_h }, selection_color);
+                try ui.renderer.drawRect(.{ rect_x, rect_y }, .{ rect_w, rect_h }, self.selection_color);
 
                 i = end_of_line + 1;
             }
@@ -355,7 +379,7 @@ pub fn render(self: *TextInputWidget, ui: *Ui, command: Ui.RenderCommand) !void 
         if (ui.getCharacterOffset(.fromRawId(command.id), caret.end)) |caret_offset| {
             const caret_x = command.bounding_box.x + caret_offset.offset.x;
             const caret_y = command.bounding_box.y + caret_offset.offset.y;
-            try ui.renderer.drawRect(.{ caret_x, caret_y }, .{ caret_width, caret_offset.line_height }, .{ .r = 1, .a = 1 });
+            try ui.renderer.drawRect(.{ caret_x, caret_y }, .{ caret_width, caret_offset.line_height }, self.caret_color);
         }
     }
 }

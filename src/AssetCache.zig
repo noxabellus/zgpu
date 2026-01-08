@@ -5,6 +5,8 @@ const std = @import("std");
 const stbi = @import("stbi");
 const stbtt = @import("stbtt");
 const Atlas = @import("Atlas.zig");
+const Batch2D = @import("Batch2D.zig");
+const GLYPH_PADDING = Batch2D.GLYPH_PADDING;
 
 const log = std.log.scoped(.asset_cache);
 
@@ -18,6 +20,8 @@ pub const FontId = u8; // Max 256 fonts.
 pub const FontSize = u16; // Max 65535 pixel height.
 
 pub const ImageId = Atlas.ImageId;
+
+pub const NEAREST_GLYPH_ALPHA_THRESHOLD = 80; // same as raylib
 
 /// A packed struct representing the components of a glyph or special (e.g. white pixel) ImageID.
 /// This allows for type-safe, error-free conversion to and from a u64 ImageID via @bitCast.
@@ -53,9 +57,15 @@ pub const WHITE_PIXEL_ID: ImageId = encodeGlyphId(.{
     .is_glyph_or_special = true,
 });
 
+pub const FilterMode = enum {
+    linear,
+    nearest,
+};
+
 pub const LoadedFont = struct {
     info: stbtt.FontInfo,
     data: []const u8,
+    filter_mode: FilterMode,
 };
 
 pub const LoadedImage = struct {
@@ -103,7 +113,7 @@ pub fn deinit(self: *AssetCache) void {
 }
 
 /// Loads a font from a file path and returns its index.
-pub fn loadFont(self: *AssetCache, path: []const u8) !FontId {
+pub fn loadFont(self: *AssetCache, path: []const u8, filter_mode: FilterMode) !FontId {
     std.debug.assert(self.fonts.items.len < std.math.maxInt(FontId));
 
     const font_data = try std.fs.cwd().readFileAlloc(path, self.allocator, .limited(10 * 1024 * 1024));
@@ -114,7 +124,11 @@ pub fn loadFont(self: *AssetCache, path: []const u8) !FontId {
     std.debug.assert(success);
 
     const font_id: FontId = @intCast(self.fonts.items.len);
-    try self.fonts.append(self.allocator, .{ .data = font_data, .info = font_info });
+    try self.fonts.append(self.allocator, LoadedFont{
+        .data = font_data,
+        .info = font_info,
+        .filter_mode = filter_mode,
+    });
     log.info("loaded font '{s}' with index {d}", .{ path, font_id });
     return font_id;
 }
@@ -185,8 +199,8 @@ pub fn dataProvider(image_id: ImageId, context: Atlas.ProviderContext) ?Atlas.In
         if (grayscale_pixels == null or w == 0 or h == 0) return null;
         defer stbtt.freeBitmap(grayscale_pixels.?, null);
 
-        const padded_w: u32 = @as(u32, @intCast(w)) + (@import("Batch2D.zig").GLYPH_PADDING * 2);
-        const padded_h: u32 = @as(u32, @intCast(h)) + (@import("Batch2D.zig").GLYPH_PADDING * 2);
+        const padded_w: u32 = @as(u32, @intCast(w)) + (GLYPH_PADDING * 2);
+        const padded_h: u32 = @as(u32, @intCast(h)) + (GLYPH_PADDING * 2);
         const master_rgba_padded_pixels = (frame_allocator.alloc(u8, padded_w * padded_h * 4) catch return null);
 
         @memset(master_rgba_padded_pixels, 0x00);
@@ -201,7 +215,7 @@ pub fn dataProvider(image_id: ImageId, context: Atlas.ProviderContext) ?Atlas.In
 
         const original_pitch: usize = @intCast(w);
         const padded_pitch: usize = padded_w * 4;
-        const glyph_padding = @import("Batch2D.zig").GLYPH_PADDING;
+        const glyph_padding = GLYPH_PADDING;
         for (0..@as(usize, @intCast(h))) |row| {
             const src_row = grayscale_pixels.?[(row * original_pitch)..];
             const dst_row_start_idx = ((row + glyph_padding) * padded_pitch) + (glyph_padding * 4);

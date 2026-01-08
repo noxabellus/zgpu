@@ -33,7 +33,7 @@ test "coordinate conversions round-trip" {
         const global_voxel = convert.worldToGlobalVoxel(world_pos);
         try std.testing.expectEqual(vec3i{ -552, 275, 1934 }, global_voxel);
 
-        // 1b. *** NEW: Validate the world-space mapping ***
+        // 1b. *** Validate the world-space mapping ***
         try expectInVoxelVolume(world_pos, global_voxel);
 
         // 1c. Deconstruct into integer parts

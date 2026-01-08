@@ -1932,7 +1932,7 @@ pub fn relativizeToBox(box: BoundingBox, point: vec2) vec2 {
 /// Converts a Clay color ([4]f32, 0-255) to a Batch2D color (struct, 0.0-1.0).
 /// As per Clay's convention, a color of {0,0,0,0} is treated as "no color" or "untinted",
 /// which we map to white for image rendering.
-fn clayColorToBatchColor(c: clay.Color) Batch2D.Color {
+pub fn clayColorToBatchColor(c: clay.Color) Batch2D.Color {
     // Clay convention: {0,0,0,0} means no tint, which is white in multiplicative blending.
     // zig fmt: off
     if (std.math.approxEqAbs(f32, c[0], 0, std.math.floatEps(f32))
