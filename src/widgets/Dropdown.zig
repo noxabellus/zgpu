@@ -14,13 +14,13 @@ test {
 
 pub fn For(comptime T: type) type {
     const TInfo = @typeInfo(T);
-    comptime {
-        if (TInfo != .@"enum") {
-            @compileError("DropdownWidget only supports enum types, but got " ++ @typeName(T));
-        }
-        if (std.meta.fields(T).len == 0) {
-            @compileError("DropdownWidget requires a non-empty enum.");
-        }
+
+    if (TInfo != .@"enum") {
+        @compileError("DropdownWidget only supports enum types, but got " ++ @typeName(T));
+    }
+
+    if (std.meta.fields(T).len == 0) {
+        @compileError("DropdownWidget requires a non-empty enum.");
     }
 
     const field_names = comptime std.meta.fieldNames(T);

@@ -49,8 +49,6 @@ pub fn deinit(self: *CheckboxWidget, ui: *Ui) void {
 }
 
 pub fn bindEvents(self: *CheckboxWidget, ui: *Ui) !void {
-    // A checkbox is "activated" by a click or keyboard interaction.
-    // `activate_end` is the correct event as it fires on release for both.
     try ui.addListener(self.id, .activate_end, CheckboxWidget, onActivate, self);
 }
 
@@ -69,7 +67,6 @@ pub fn onSet(self: *CheckboxWidget, _: *Ui, new_value: *const bool) !void {
 /// Called when the user clicks the checkbox or activates it with the keyboard.
 fn onActivate(self: *CheckboxWidget, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
     self.current_value = !self.current_value;
-    // Push a value_change event to notify the application.
     try ui.pushEvent(self.id, .{ .bool_change = self.current_value }, self);
 }
 

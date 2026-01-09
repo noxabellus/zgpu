@@ -1,4 +1,4 @@
-//! RadioButton widget for selecting one of multiple enum values.
+//! Radio button widget for selecting one of multiple enum values.
 
 const RadioButtonWidget = @This();
 
@@ -16,13 +16,13 @@ test {
 
 pub fn For(comptime T: type) type {
     const TInfo = @typeInfo(T);
-    comptime {
-        if (TInfo != .@"enum") {
-            @compileError("RadioButtonWidget only supports enum types, but got " ++ @typeName(T));
-        }
-        if (std.meta.fieldNames(T).len == 0) {
-            @compileError("RadioButtonWidget requires a non-empty enum.");
-        }
+
+    if (TInfo != .@"enum") {
+        @compileError("RadioButtonWidget only supports enum types, but got " ++ @typeName(T));
+    }
+
+    if (std.meta.fieldNames(T).len == 0) {
+        @compileError("RadioButtonWidget requires a non-empty enum.");
     }
 
     return struct {
