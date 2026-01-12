@@ -26,6 +26,8 @@ sensitivity: f32 = 0.1,
 speed: f32 = 10.0,
 roll_speed: f32 = 60.0,
 
+view_proj: mat4 = linalg.mat4_identity,
+
 pub const Uniform = extern struct {
     view_proj: mat4,
 };
@@ -237,7 +239,7 @@ fn recalcBasis(self: *Camera) void {
     self.up = linalg.normalize(linalg.vec3_cross(self.right, self.front));
 }
 
-pub fn calculateUniform(self: *Camera, window: *glfw.Window) Uniform {
+pub fn calculateViewProj(self: *Camera, window: *glfw.Window) void {
     var width: i32 = 0;
     var height: i32 = 0;
     glfw.getFramebufferSize(window, &width, &height);
@@ -256,7 +258,11 @@ pub fn calculateUniform(self: *Camera, window: *glfw.Window) Uniform {
         self.up,
     );
 
+    self.view_proj = linalg.mat4_mul(proj, view);
+}
+
+pub fn getUniform(self: *Camera) Uniform {
     return Uniform{
-        .view_proj = linalg.mat4_mul(proj, view),
+        .view_proj = self.view_proj,
     };
 }
