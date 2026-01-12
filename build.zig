@@ -237,6 +237,12 @@ pub fn build(b: *std.Build) void {
     exe_mod.addAnonymousImport("shaders/GridRender.wgsl", .{
         .root_source_file = b.path("static/shaders/GridRender.wgsl"),
     });
+    exe_mod.addAnonymousImport("shaders/TerrainMesher.wgsl", .{
+        .root_source_file = b.path("static/shaders/TerrainMesher.wgsl"),
+    });
+    exe_mod.addAnonymousImport("shaders/TerrainRender.wgsl", .{
+        .root_source_file = b.path("static/shaders/TerrainRender.wgsl"),
+    });
 
     b.installArtifact(exe);
 

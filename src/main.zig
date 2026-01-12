@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const example = @import("examples/ui-stylized.zig");
+pub const example = @import("examples/rct.zig");
 
 pub const main = example.main;
 
