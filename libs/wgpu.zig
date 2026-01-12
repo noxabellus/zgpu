@@ -1468,7 +1468,7 @@ pub const ColorTargetState = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
     format: TextureFormat = .undefined,
     blend: ?*const BlendState = null,
-    write_mask: ColorWriteMask = .none,
+    write_mask: ColorWriteMask = .all,
 };
 
 pub const ComputePipelineDescriptor = extern struct {
