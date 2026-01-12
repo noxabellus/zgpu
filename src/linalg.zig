@@ -22,6 +22,9 @@ pub const aabb3u = [2]vec3u;
 pub const vec2 = @Vector(2, f32);
 pub const vec3 = @Vector(3, f32);
 pub const vec4 = @Vector(4, f32);
+pub const vec2d = @Vector(2, f64);
+pub const vec3d = @Vector(3, f64);
+pub const vec4d = @Vector(4, f64);
 pub const vec2i = @Vector(2, i32);
 pub const vec3i = @Vector(3, i32);
 pub const vec4i = @Vector(4, i32);
@@ -186,6 +189,78 @@ pub const mat4_identity =
 
 /// A quaternion representing no rotation.
 pub const quat_identity = quat{ 0, 0, 0, 1 };
+
+/// Transforms a vector by a 4x4 matrix.
+/// If `v` is a vec3, it is treated as a point with w=1.0.
+/// If `v` is a vec4, a standard matrix-vector multiplication is performed.
+pub fn mat4_apply(m: mat4, v: anytype) @TypeOf(v) {
+    const T = @TypeOf(v);
+    const n = comptime numComponents(T);
+
+    if (n == 3) {
+        const x: vec4 = @splat(v[0]);
+        const y: vec4 = @splat(v[1]);
+        const z: vec4 = @splat(v[2]);
+
+        // Treat as point (w=1): col0*x + col1*y + col2*z + col3
+        const res = m[0] * x + m[1] * y + m[2] * z + m[3];
+        return xyz(res);
+    } else if (n == 4) {
+        const x: vec4 = @splat(v[0]);
+        const y: vec4 = @splat(v[1]);
+        const z: vec4 = @splat(v[2]);
+        const w: vec4 = @splat(v[3]);
+
+        // Standard multiplication: col0*x + col1*y + col2*z + col3*w
+        return m[0] * x + m[1] * y + m[2] * z + m[3] * w;
+    } else {
+        @compileError("mat4_apply requires a vec3 or vec4");
+    }
+}
+
+/// Computes the inverse of a 4x4 matrix.
+/// Returns null if the determinant is zero (singular matrix).
+pub fn mat4_inverse(m: mat4) ?mat4 {
+    var out: mat4 = undefined;
+
+    // Calculate only the first column of the adjugate matrix first.
+    // These values correspond to the cofactors of the first row of m,
+    // which allows us to compute the determinant by expanding along that row.
+    out[0][0] = m[1][1] * m[2][2] * m[3][3] - m[1][1] * m[2][3] * m[3][2] - m[2][1] * m[1][2] * m[3][3] + m[2][1] * m[1][3] * m[3][2] + m[3][1] * m[1][2] * m[2][3] - m[3][1] * m[1][3] * m[2][2];
+    out[0][1] = -m[0][1] * m[2][2] * m[3][3] + m[0][1] * m[2][3] * m[3][2] + m[2][1] * m[0][2] * m[3][3] - m[2][1] * m[0][3] * m[3][2] - m[3][1] * m[0][2] * m[2][3] + m[3][1] * m[0][3] * m[2][2];
+    out[0][2] = m[0][1] * m[1][2] * m[3][3] - m[0][1] * m[1][3] * m[3][2] - m[1][1] * m[0][2] * m[3][3] + m[1][1] * m[0][3] * m[3][2] + m[3][1] * m[0][2] * m[1][3] - m[3][1] * m[0][3] * m[1][2];
+    out[0][3] = -m[0][1] * m[1][2] * m[2][3] + m[0][1] * m[1][3] * m[2][2] + m[1][1] * m[0][2] * m[2][3] - m[1][1] * m[0][3] * m[2][2] - m[2][1] * m[0][2] * m[1][3] + m[2][1] * m[0][3] * m[1][2];
+
+    // Compute determinant
+    const det = m[0][0] * out[0][0] + m[1][0] * out[0][1] + m[2][0] * out[0][2] + m[3][0] * out[0][3];
+
+    if (det == 0.0) return null;
+
+    // Calculate the remaining columns of the adjugate matrix
+    out[1][0] = -m[1][0] * m[2][2] * m[3][3] + m[1][0] * m[2][3] * m[3][2] + m[2][0] * m[1][2] * m[3][3] - m[2][0] * m[1][3] * m[3][2] - m[3][0] * m[1][2] * m[2][3] + m[3][0] * m[1][3] * m[2][2];
+    out[1][1] = m[0][0] * m[2][2] * m[3][3] - m[0][0] * m[2][3] * m[3][2] - m[2][0] * m[0][2] * m[3][3] + m[2][0] * m[0][3] * m[3][2] + m[3][0] * m[0][2] * m[2][3] - m[3][0] * m[0][3] * m[2][2];
+    out[1][2] = -m[0][0] * m[1][2] * m[3][3] + m[0][0] * m[1][3] * m[3][2] + m[1][0] * m[0][2] * m[3][3] - m[1][0] * m[0][3] * m[3][2] - m[3][0] * m[0][2] * m[1][3] + m[3][0] * m[0][3] * m[1][2];
+    out[1][3] = m[0][0] * m[1][2] * m[2][3] - m[0][0] * m[1][3] * m[2][2] - m[1][0] * m[0][2] * m[2][3] + m[1][0] * m[0][3] * m[2][2] + m[2][0] * m[0][2] * m[1][3] - m[2][0] * m[0][3] * m[1][2];
+
+    out[2][0] = m[1][0] * m[2][1] * m[3][3] - m[1][0] * m[2][3] * m[3][1] - m[2][0] * m[1][1] * m[3][3] + m[2][0] * m[1][3] * m[3][1] + m[3][0] * m[1][1] * m[2][3] - m[3][0] * m[1][3] * m[2][1];
+    out[2][1] = -m[0][0] * m[2][1] * m[3][3] + m[0][0] * m[2][3] * m[3][1] + m[2][0] * m[0][1] * m[3][3] - m[2][0] * m[0][3] * m[3][1] - m[3][0] * m[0][1] * m[2][3] + m[3][0] * m[0][3] * m[2][1];
+    out[2][2] = m[0][0] * m[1][1] * m[3][3] - m[0][0] * m[1][3] * m[3][1] - m[1][0] * m[0][1] * m[3][3] + m[1][0] * m[0][3] * m[3][1] + m[3][0] * m[0][1] * m[1][3] - m[3][0] * m[0][3] * m[1][1];
+    out[2][3] = -m[0][0] * m[1][1] * m[2][3] + m[0][0] * m[1][3] * m[2][1] + m[1][0] * m[0][1] * m[2][3] - m[1][0] * m[0][3] * m[2][1] - m[2][0] * m[0][1] * m[1][3] + m[2][0] * m[0][3] * m[1][1];
+
+    out[3][0] = -m[1][0] * m[2][1] * m[3][2] + m[1][0] * m[2][2] * m[3][1] + m[2][0] * m[1][1] * m[3][2] - m[2][0] * m[1][2] * m[3][1] - m[3][0] * m[1][1] * m[2][2] + m[3][0] * m[1][2] * m[2][1];
+    out[3][1] = m[0][0] * m[2][1] * m[3][2] - m[0][0] * m[2][2] * m[3][1] - m[2][0] * m[0][1] * m[3][2] + m[2][0] * m[0][2] * m[3][1] + m[3][0] * m[0][1] * m[2][2] - m[3][0] * m[0][2] * m[2][1];
+    out[3][2] = -m[0][0] * m[1][1] * m[3][2] + m[0][0] * m[1][2] * m[3][1] + m[1][0] * m[0][1] * m[3][2] - m[1][0] * m[0][2] * m[3][1] - m[3][0] * m[0][1] * m[1][2] + m[3][0] * m[0][2] * m[1][1];
+    out[3][3] = m[0][0] * m[1][1] * m[2][2] - m[0][0] * m[1][2] * m[2][1] - m[1][0] * m[0][1] * m[2][2] + m[1][0] * m[0][2] * m[2][1] + m[2][0] * m[0][1] * m[1][2] - m[2][0] * m[0][2] * m[1][1];
+
+    const invDet = @as(vec4, @splat(1.0 / det));
+
+    out[0] *= invDet;
+    out[1] *= invDet;
+    out[2] *= invDet;
+    out[3] *= invDet;
+
+    return out;
+}
 
 /// Multiplies two 4x4 matrices (self * other).
 pub fn mat4_mul(m1: mat4, m2: mat4) mat4 {
