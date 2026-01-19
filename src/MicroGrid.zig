@@ -1098,6 +1098,295 @@ pub fn getOrCreateBuffer(self: *Grid, voxeme_index: u32, new_voxel: ?Voxel) !?u3
     return buffer_handle.*;
 }
 
+// ... (Inside Grid struct)
+
+/// Result of a raycast operation.
+pub const RaycastHit = struct {
+    /// The global voxel coordinate of the hit.
+    global_voxel: vec3i,
+    /// The exact world-space position of the intersection.
+    position: vec3,
+    /// The normal vector of the face that was hit.
+    normal: vec3,
+    /// The distance from the ray origin to the intersection.
+    distance: f32,
+    /// The voxel data that was hit.
+    voxel: Voxel,
+};
+
+/// Casts a ray through the grid and returns the first solid voxel hit.
+/// Uses a 3-level Hierarchical DDA to efficiently skip empty pages and voxemes.
+pub fn raycast(self: *const Grid, origin: vec3, direction: vec3, max_dist: f32) ?RaycastHit {
+    const dir = linalg.normalize(direction);
+
+    // Prevent divide by zero / NaNs
+    const inv_dir = vec3{
+        if (dir[0] == 0.0) 1e30 else 1.0 / dir[0],
+        if (dir[1] == 0.0) 1e30 else 1.0 / dir[1],
+        if (dir[2] == 0.0) 1e30 else 1.0 / dir[2],
+    };
+
+    // --- LEVEL 1: PAGE TRAVERSAL ---
+
+    const origin_page = convert.globalVoxelToPageCoord(convert.worldToGlobalVoxel(origin));
+    var page_pos = origin_page;
+
+    const step = vec3i{
+        if (dir[0] > 0) 1 else -1,
+        if (dir[1] > 0) 1 else -1,
+        if (dir[2] > 0) 1 else -1,
+    };
+
+    const t_delta_page = @abs(inv_dir) * @as(vec3, @splat(Grid.page_scale));
+    const page_min_world = @as(vec3, @floatFromInt(page_pos)) * @as(vec3, @splat(Grid.page_scale));
+
+    var t_max = vec3{
+        if (dir[0] > 0) (page_min_world[0] + Grid.page_scale - origin[0]) * inv_dir[0] else (page_min_world[0] - origin[0]) * inv_dir[0],
+        if (dir[1] > 0) (page_min_world[1] + Grid.page_scale - origin[1]) * inv_dir[1] else (page_min_world[1] - origin[1]) * inv_dir[1],
+        if (dir[2] > 0) (page_min_world[2] + Grid.page_scale - origin[2]) * inv_dir[2] else (page_min_world[2] - origin[2]) * inv_dir[2],
+    };
+
+    var last_axis: u2 = 0;
+    var curr_t: f32 = 0.0;
+
+    while (curr_t < max_dist) {
+
+        // 1. Check if the current Page exists
+        const page_index = self.page_indirection.lookup(page_pos);
+
+        if (page_index != sentinel_index) {
+            // Determine intersection intervals for this page to constrain the inner loop
+            const p_min = @as(vec3, @floatFromInt(page_pos)) * @as(vec3, @splat(Grid.page_scale));
+            const p_max = p_min + @as(vec3, @splat(Grid.page_scale));
+
+            const t0 = (p_min - origin) * inv_dir;
+            const t1 = (p_max - origin) * inv_dir;
+            const t_min_v = @min(t0, t1);
+            const t_max_v = @max(t0, t1);
+
+            const t_enter = @max(0.0, @max(@max(t_min_v[0], t_min_v[1]), t_min_v[2]));
+            const t_exit = @min(max_dist, @min(@min(t_max_v[0], t_max_v[1]), t_max_v[2]));
+
+            if (t_enter < t_exit) {
+                if (self.raycastVoxemesInPage(page_index, origin, inv_dir, dir, step, t_enter, t_exit)) |hit| {
+                    return hit;
+                }
+            }
+        }
+
+        // 2. Step to next Page
+        if (t_max[0] < t_max[1]) {
+            if (t_max[0] < t_max[2]) {
+                page_pos[0] += step[0];
+                curr_t = t_max[0];
+                t_max[0] += t_delta_page[0];
+                last_axis = 0;
+            } else {
+                page_pos[2] += step[2];
+                curr_t = t_max[2];
+                t_max[2] += t_delta_page[2];
+                last_axis = 2;
+            }
+        } else {
+            if (t_max[1] < t_max[2]) {
+                page_pos[1] += step[1];
+                curr_t = t_max[1];
+                t_max[1] += t_delta_page[1];
+                last_axis = 1;
+            } else {
+                page_pos[2] += step[2];
+                curr_t = t_max[2];
+                t_max[2] += t_delta_page[2];
+                last_axis = 2;
+            }
+        }
+    }
+
+    return null;
+}
+
+/// Internal helper: Traverses Voxemes within a specific Page (Level 2)
+fn raycastVoxemesInPage(self: *const Grid, page_index: u32, origin: vec3, inv_dir: vec3, dir: vec3, step: vec3i, t_start: f32, t_end: f32) ?RaycastHit {
+    const entry_point = origin + dir * @as(vec3, @splat(t_start + 0.0001)); // epsilon nudging
+
+    const global_vox = convert.worldToGlobalVoxel(entry_point);
+    const start_local = convert.globalVoxelToLocalVoxemeCoord(global_vox);
+
+    var current_local = start_local;
+
+    const t_delta_voxeme = @abs(inv_dir) * @as(vec3, @splat(Grid.voxeme_scale));
+    const page_origin_world = @as(vec3, @floatFromInt(self.pages.items(.coord)[page_index])) * @as(vec3, @splat(Grid.page_scale));
+
+    const voxeme_min_world = page_origin_world + (@as(vec3, @floatFromInt(current_local)) * @as(vec3, @splat(Grid.voxeme_scale)));
+
+    var t_max = vec3{
+        if (dir[0] > 0) (voxeme_min_world[0] + Grid.voxeme_scale - origin[0]) * inv_dir[0] else (voxeme_min_world[0] - origin[0]) * inv_dir[0],
+        if (dir[1] > 0) (voxeme_min_world[1] + Grid.voxeme_scale - origin[1]) * inv_dir[1] else (voxeme_min_world[1] - origin[1]) * inv_dir[1],
+        if (dir[2] > 0) (voxeme_min_world[2] + Grid.voxeme_scale - origin[2]) * inv_dir[2] else (voxeme_min_world[2] - origin[2]) * inv_dir[2],
+    };
+
+    var curr_t = t_start;
+    var last_axis: u2 = 0;
+
+    while (curr_t < t_end) {
+        if (current_local[0] < 0 or current_local[0] >= Grid.page_axis_divisor or
+            current_local[1] < 0 or current_local[1] >= Grid.page_axis_divisor or
+            current_local[2] < 0 or current_local[2] >= Grid.page_axis_divisor) break;
+
+        const voxeme_index = self.pages.items(.voxeme_indirection)[page_index].lookup(current_local);
+        var hit_found: ?RaycastHit = null;
+
+        if (voxeme_index == sentinel_index) {
+            const page_voxel = self.pages.items(.voxel)[page_index];
+            if (page_voxel.material_id != .none) {
+                hit_found = self.createHit(origin, dir, step, curr_t, last_axis, page_voxel);
+            }
+        } else {
+            const buffer_indirection = self.voxemes.items(.buffer_indirection)[voxeme_index];
+
+            if (buffer_indirection == sentinel_index) {
+                const voxeme_voxel = self.voxemes.items(.voxel)[voxeme_index];
+                if (voxeme_voxel.material_id != .none) {
+                    hit_found = self.createHit(origin, dir, step, curr_t, last_axis, voxeme_voxel);
+                }
+            } else {
+                // Heterogeneous Voxeme -> Drill down to Level 3
+                const cur_voxeme_world_min = page_origin_world + (@as(vec3, @floatFromInt(current_local)) * @as(vec3, @splat(Grid.voxeme_scale)));
+                const cur_voxeme_world_max = cur_voxeme_world_min + @as(vec3, @splat(Grid.voxeme_scale));
+
+                const t0 = (cur_voxeme_world_min - origin) * inv_dir;
+                const t1 = (cur_voxeme_world_max - origin) * inv_dir;
+                const t_min_v = @min(t0, t1);
+                const t_max_v = @max(t0, t1);
+
+                const t_enter = @max(curr_t, @max(@max(t_min_v[0], t_min_v[1]), t_min_v[2]));
+                const t_exit = @min(t_end, @min(@min(t_max_v[0], t_max_v[1]), t_max_v[2]));
+
+                if (t_enter < t_exit) {
+                    hit_found = self.raycastVoxelsInVoxeme(buffer_indirection, page_index, current_local, origin, inv_dir, dir, step, t_enter, t_exit);
+                }
+            }
+        }
+
+        if (hit_found) |hit| return hit;
+
+        if (t_max[0] < t_max[1]) {
+            if (t_max[0] < t_max[2]) {
+                current_local[0] += step[0];
+                curr_t = t_max[0];
+                t_max[0] += t_delta_voxeme[0];
+                last_axis = 0;
+            } else {
+                current_local[2] += step[2];
+                curr_t = t_max[2];
+                t_max[2] += t_delta_voxeme[2];
+                last_axis = 2;
+            }
+        } else {
+            if (t_max[1] < t_max[2]) {
+                current_local[1] += step[1];
+                curr_t = t_max[1];
+                t_max[1] += t_delta_voxeme[1];
+                last_axis = 1;
+            } else {
+                current_local[2] += step[2];
+                curr_t = t_max[2];
+                t_max[2] += t_delta_voxeme[2];
+                last_axis = 2;
+            }
+        }
+    }
+    return null;
+}
+
+/// Internal helper: Traverses Voxels within a specific Voxeme Buffer (Level 3)
+fn raycastVoxelsInVoxeme(self: *const Grid, buffer_index: u32, page_index: u32, local_voxeme: vec3i, origin: vec3, inv_dir: vec3, dir: vec3, step: vec3i, t_start: f32, t_end: f32) ?RaycastHit {
+    const entry_point = origin + dir * @as(vec3, @splat(t_start + 0.0001));
+    const global_vox = convert.worldToGlobalVoxel(entry_point);
+    var current_local = convert.globalVoxelToLocalVoxelCoord(global_vox);
+
+    const t_delta_voxel = @abs(inv_dir) * @as(vec3, @splat(Grid.voxel_scale));
+
+    const page_coord = self.pages.items(.coord)[page_index];
+    const voxeme_world_min = convert.globalVoxelToWorld(convert.partsToGlobalVoxel(page_coord, local_voxeme, .{ 0, 0, 0 }));
+    const voxel_min_world = voxeme_world_min + (@as(vec3, @floatFromInt(current_local)) * @as(vec3, @splat(Grid.voxel_scale)));
+
+    var t_max = vec3{
+        if (dir[0] > 0) (voxel_min_world[0] + Grid.voxel_scale - origin[0]) * inv_dir[0] else (voxel_min_world[0] - origin[0]) * inv_dir[0],
+        if (dir[1] > 0) (voxel_min_world[1] + Grid.voxel_scale - origin[1]) * inv_dir[1] else (voxel_min_world[1] - origin[1]) * inv_dir[1],
+        if (dir[2] > 0) (voxel_min_world[2] + Grid.voxel_scale - origin[2]) * inv_dir[2] else (voxel_min_world[2] - origin[2]) * inv_dir[2],
+    };
+
+    var curr_t = t_start;
+    var last_axis: u2 = 0;
+
+    const buffer_voxels = &self.voxels.items(.voxel)[buffer_index];
+
+    while (curr_t < t_end) {
+        if (current_local[0] < 0 or current_local[0] >= Grid.voxeme_axis_divisor or
+            current_local[1] < 0 or current_local[1] >= Grid.voxeme_axis_divisor or
+            current_local[2] < 0 or current_local[2] >= Grid.voxeme_axis_divisor) break;
+
+        const voxel_idx = convert.localVoxelCoordToIndex(current_local);
+        const voxel = buffer_voxels[voxel_idx];
+
+        if (voxel.material_id != .none) {
+            return self.createHit(origin, dir, step, curr_t, last_axis, voxel);
+        }
+
+        if (t_max[0] < t_max[1]) {
+            if (t_max[0] < t_max[2]) {
+                current_local[0] += step[0];
+                curr_t = t_max[0];
+                t_max[0] += t_delta_voxel[0];
+                last_axis = 0;
+            } else {
+                current_local[2] += step[2];
+                curr_t = t_max[2];
+                t_max[2] += t_delta_voxel[2];
+                last_axis = 2;
+            }
+        } else {
+            if (t_max[1] < t_max[2]) {
+                current_local[1] += step[1];
+                curr_t = t_max[1];
+                t_max[1] += t_delta_voxel[1];
+                last_axis = 1;
+            } else {
+                current_local[2] += step[2];
+                curr_t = t_max[2];
+                t_max[2] += t_delta_voxel[2];
+                last_axis = 2;
+            }
+        }
+    }
+    return null;
+}
+
+/// Helper to construct a hit, dealing with Vector indexing restrictions.
+fn createHit(self: *const Grid, origin: vec3, dir: vec3, step: vec3i, t: f32, axis: u2, voxel: Voxel) RaycastHit {
+    _ = self;
+    const pos = origin + dir * @as(vec3, @splat(t));
+
+    var normal: vec3 = @splat(0.0);
+
+    // FIX: Use switch to avoid runtime indexing on the vector
+    switch (axis) {
+        0 => normal[0] = if (step[0] > 0) -1.0 else 1.0,
+        1 => normal[1] = if (step[1] > 0) -1.0 else 1.0,
+        2 => normal[2] = if (step[2] > 0) -1.0 else 1.0,
+        3 => unreachable, // u2 can cover 0-3, but we only use 0-2
+    }
+
+    return RaycastHit{
+        .global_voxel = convert.worldToGlobalVoxel(pos - (normal * @as(vec3, @splat(0.001)))),
+        .position = pos,
+        .normal = normal,
+        .distance = t,
+        .voxel = voxel,
+    };
+}
+
 /// namespace for voxel coordinate conversions
 pub const convert = struct {
     // --- High-Level to Low-Level (Drilling Down) ---

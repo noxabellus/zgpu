@@ -312,6 +312,7 @@ pub fn main() !void {
     // 2. Define the sphere materials
     const stone_mat = try manager.front().grid.registerMaterial(.{ .color = .{ .r = 128, .g = 128, .b = 128, .a = 255 }, .flags = .{ .is_opaque = true } });
     const dirt_mat = try manager.front().grid.registerMaterial(.{ .color = .{ .r = 139, .g = 90, .b = 43, .a = 255 }, .flags = .{ .is_opaque = true } });
+    // const red_mat = try manager.front().grid.registerMaterial(.{ .color = .{ .r = 255, .g = 0, .b = 0, .a = 255 }, .flags = .{ .is_opaque = true } });
 
     // 3. Define the sphere geometry.
 
@@ -518,12 +519,15 @@ pub fn main() !void {
     log.info("startup completed in {d} ms", .{startup_ms});
 
     var frame_timer = try std.time.Timer.start();
+    var last_button = glfw.KeyState32.release;
 
     // --- Main Loop ---
     main_loop: while (!glfw.windowShouldClose(app.window)) {
         glfw.pollEvents();
         _ = arena_state.reset(.free_all);
         defer debug.lap();
+
+        defer manager.endFrame();
 
         // --- Delta time calculation ---
         const ns_since_start = frame_timer.read();
@@ -571,6 +575,74 @@ pub fn main() !void {
             camera_uniform.view_proj = linalg.mat4_mul(proj, view);
         }
         app.gpu.writeBuffer(camera_buffer, 0, &camera_uniform);
+
+        // --- RAYCASTING (Left Click) ---
+        const button = glfw.getMouseButton(app.window, .button_1);
+        defer last_button = button;
+        if (button == .release and button != last_button) {
+            // 1. Get Mouse Coordinates
+            var xpos: f64 = 0;
+            var ypos: f64 = 0;
+            glfw.getCursorPos(app.window, &xpos, &ypos);
+
+            // 2. Get Window Dimensions (for aspect ratio)
+            var width: i32 = 0;
+            var height: i32 = 0;
+            glfw.getFramebufferSize(app.window, &width, &height);
+
+            if (width > 0 and height > 0) {
+                // 3. Convert Mouse to Normalized Device Coordinates (NDC)
+                // Range: [-1, 1]. Y is up in 3D, but down in screen coords.
+                const x_ndc = (2.0 * @as(f32, @floatCast(xpos)) / @as(f32, @floatFromInt(width))) - 1.0;
+                const y_ndc = 1.0 - (2.0 * @as(f32, @floatCast(ypos)) / @as(f32, @floatFromInt(height)));
+
+                // 4. Calculate Image Plane Scale based on FOV
+                // Match the FOV used in the projection matrix (60 degrees)
+                const fov_rad = linalg.deg_to_rad * 60.0;
+                const aspect = @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(height));
+
+                // The height of the image plane at distance 1.0 from camera
+                const image_plane_height = std.math.tan(fov_rad / 2.0);
+                const image_plane_width = image_plane_height * aspect;
+
+                // 5. Construct Ray Direction
+                // Start with the camera's forward vector, then offset by the mouse position
+                // scaled by the camera's Right and Up vectors.
+                const ray_dir_local = demo.camera_front +
+                    (demo.camera_right * @as(vec3, @splat(x_ndc * image_plane_width))) +
+                    (demo.camera_up * @as(vec3, @splat(y_ndc * image_plane_height)));
+
+                const ray_dir = linalg.normalize(ray_dir_local);
+
+                log.info("Casting ray (Screen: {d:.0},{d:.0} -> Dir: {d:.2})", .{ xpos, ypos, ray_dir });
+
+                // 6. Perform Raycast
+                if (manager.front().grid.raycast(demo.camera_pos, ray_dir, 200.0)) |hit| {
+                    log.info("Hit:", .{});
+                    log.info("   Voxel:    {d}", .{hit.global_voxel});
+                    log.info("   Material: {}", .{hit.voxel.material_id});
+                    log.info("   Dist:     {d:.3}", .{hit.distance});
+
+                    // Identify the face
+                    var face: []const u8 = "Internal";
+                    if (hit.normal[0] > 0.5) face = "+X (East)";
+                    if (hit.normal[0] < -0.5) face = "-X (West)";
+                    if (hit.normal[1] > 0.5) face = "+Y (North)";
+                    if (hit.normal[1] < -0.5) face = "-Y (South)";
+                    if (hit.normal[2] > 0.5) face = "+Z (Top)";
+                    if (hit.normal[2] < -0.5) face = "-Z (Bottom)";
+                    log.info("   Face:     {s}", .{face});
+
+                    // 7. Modify the voxel that was hit (set to red material)
+                    // try manager.queueCommands(&.{.{ .set_voxel = .{
+                    //     .global_voxel = hit.global_voxel,
+                    //     .voxel = Grid.Voxel{ .material_id = red_mat },
+                    // } }});
+                } else {
+                    log.info("   Miss", .{});
+                }
+            }
+        }
 
         {
             const frame_view = app.gpu.beginFrame() orelse continue :main_loop;
