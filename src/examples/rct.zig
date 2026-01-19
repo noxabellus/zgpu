@@ -47,19 +47,54 @@ const Demo = struct {
     map_dirty: bool = true, // Start dirty to generate initial mesh
 
     // CPU side copy of map to modify
-    map_data: []u32,
+    map_data: []Cell,
     cursor_pos_world: vec2u = .{ 0xFFFFFFFF, 0xFFFFFFFF }, // OOB by default
 
     drag_active: bool = false,
     drag_target: vec2u = .{ 0, 0 },
     drag_start_y: f64 = 0.0,
-    drag_start_val: u32 = 0,
+    drag_start_val: Cell = .{},
 };
 
 const CameraUniform = extern struct {
     view_proj: mat4,
     cursor_pos_world: vec2u,
 };
+
+const Corner = enum(u2) {
+    BottomLeft = 0,
+    BottomRight = 1,
+    TopRight = 2,
+    TopLeft = 3,
+};
+
+const Cell = extern struct {
+    corners: [4]u8 align(4) = [1]u8{0} ** 4,
+
+    pub fn getCorner(self: Cell, corner: Corner) u8 {
+        return self.corners[@intFromEnum(corner)];
+    }
+
+    pub fn setCorner(self: *Cell, corner: Corner, value: u8) void {
+        self.corners[@intFromEnum(corner)] = value;
+    }
+
+    pub fn eql(self: Cell, other: Cell) bool {
+        return std.mem.eql(u8, &self.corners, &other.corners);
+    }
+};
+
+fn gridIndex(i: usize, j: usize) usize {
+    return i + j * MAP_SIZE;
+}
+
+const MAP_HEIGHT: f32 = @floatFromInt(std.math.maxInt(u8));
+
+fn wave(i: f32, j: f32) u8 {
+    const f = @abs(std.math.cos((i + 1) / 4) * std.math.sin((j + 5) / 4));
+
+    return @intFromFloat(@floor(f * 15));
+}
 
 pub fn main() !void {
     var tsa = std.heap.ThreadSafeAllocator{ .child_allocator = std.heap.page_allocator };
@@ -70,20 +105,19 @@ pub fn main() !void {
 
     // Initialize Map Data (CPU)
     // Format: 0xAABBCCDD -> AA=Corner3, BB=Corner2, CC=Corner1, DD=Corner0
-    var map_data = try gpa.alloc(u32, MAP_SIZE * MAP_SIZE);
+    var map_data = try gpa.alloc(Cell, MAP_SIZE * MAP_SIZE);
     defer gpa.free(map_data);
 
     // Init with some interesting terrain (sine wave hills)
-    for (0..MAP_SIZE) |y| {
-        for (0..MAP_SIZE) |x| {
-            const fx = @as(f32, @floatFromInt(x));
-            const fy = @as(f32, @floatFromInt(y));
-            // Create a basic hill shape
-            const h = @as(u32, @intFromFloat(5.0 + 3.0 * std.math.sin(fx * 0.1) + 2.0 * std.math.cos(fy * 0.1)));
+    for (0..MAP_SIZE) |i| {
+        for (0..MAP_SIZE) |j| {
+            const fx: f32 = @floatFromInt(i);
+            const fy: f32 = @floatFromInt(j);
 
-            // Set all 4 corners to height 'h' (flat tile)
-            // C3(TL), C2(TR), C1(BR), C0(BL)
-            map_data[x + y * MAP_SIZE] = (h << 24) | (h << 16) | (h << 8) | h;
+            map_data[gridIndex(i, j)].setCorner(.TopLeft, wave(fx + 0.0, fy + 0.0));
+            map_data[gridIndex(i, j)].setCorner(.TopRight, wave(fx + 1.0, fy + 0.0));
+            map_data[gridIndex(i, j)].setCorner(.BottomLeft, wave(fx + 0.0, fy + 1.0));
+            map_data[gridIndex(i, j)].setCorner(.BottomRight, wave(fx + 1.0, fy + 1.0));
         }
     }
 
@@ -238,29 +272,25 @@ pub fn main() !void {
                 const height_diff: i32 = @intFromFloat(delta_y * sensitivity);
 
                 // Apply diff to the original starting value
-                var new_packed: u32 = 0;
+                var new_packed: Cell = .{};
 
                 // Unpack, add diff, clamp, repack for all 4 corners
-                // Format: 0xAABBCCDD -> AA=Corner3, BB=Corner2, CC=Corner1, DD=Corner0
-                inline for (0..4) |i| {
-                    const shift = i * 8;
-                    const mask = 0xFF;
-
-                    // Extract byte as i32
-                    const base_h: i32 = @intCast((demo.drag_start_val >> shift) & mask);
+                inline for (comptime std.meta.fieldNames(Corner)) |corner_name| {
+                    const corner = comptime @field(Corner, corner_name);
+                    const base_h: i32 = @intCast(demo.drag_start_val.getCorner(corner));
 
                     // Add delta and clamp to u8 range
-                    const new_h = std.math.clamp(base_h + height_diff, 0, 255);
+                    const new_h = std.math.clamp(base_h + height_diff, 0, std.math.maxInt(u8));
 
                     // Repack
-                    new_packed |= @as(u32, @intCast(new_h)) << shift;
+                    new_packed.setCorner(corner, @intCast(new_h));
                 }
 
                 // Update Map Data
                 const tile_idx = demo.drag_target[0] + demo.drag_target[1] * MAP_SIZE;
 
                 // Optimization: Only mark dirty if value actually changed
-                if (demo.map_data[tile_idx] != new_packed) {
+                if (!demo.map_data[tile_idx].eql(new_packed)) {
                     demo.map_data[tile_idx] = new_packed;
                     demo.map_dirty = true;
                 }
@@ -323,14 +353,14 @@ pub fn main() !void {
     }
 }
 
-fn get_heights(map: []u32, x: usize, y: usize) [4]f32 {
+fn get_heights(map: []Cell, x: usize, y: usize) [4]f32 {
     if (x >= 64 or y >= 64) return .{ 0, 0, 0, 0 };
     const raw = map[x + y * 64];
     return .{
-        @floatFromInt(raw & 0xFF), // BL
-        @floatFromInt((raw >> 8) & 0xFF), // BR
-        @floatFromInt((raw >> 16) & 0xFF), // TR
-        @floatFromInt((raw >> 24) & 0xFF), // TL
+        @floatFromInt(raw.getCorner(.BottomLeft)),
+        @floatFromInt(raw.getCorner(.BottomRight)),
+        @floatFromInt(raw.getCorner(.TopRight)),
+        @floatFromInt(raw.getCorner(.TopLeft)),
     };
 }
 

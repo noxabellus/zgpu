@@ -23,7 +23,12 @@ fn get_idx(x: u32, y: u32) -> u32 {
 fn get_heights(x: u32, y: u32) -> vec4<u32> {
     if (x >= SIZE || y >= SIZE) { return vec4<u32>(0u); }
     let raw = map[get_idx(x, y)];
-    return vec4<u32>(raw & 0xFFu, (raw >> 8u) & 0xFFu, (raw >> 16u) & 0xFFu, (raw >> 24u) & 0xFFu);
+    return vec4<u32>(
+        (raw >> 24u) & 0xFFu,
+        (raw >> 16u) & 0xFFu,
+        (raw >> 8u) & 0xFFu,
+        raw & 0xFFu,
+    );
 }
 
 fn pack(x: u32, y: u32, z: u32, n: u32) -> u32 {
