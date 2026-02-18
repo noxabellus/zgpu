@@ -28,6 +28,11 @@ pub const Gpu = struct {
     config: wgpu.SurfaceConfiguration,
     capabilities: wgpu.SurfaceCapabilities,
     queue: wgpu.Queue,
+    msaa: struct {
+        sample_count: u32 = 4,
+        texture: wgpu.Texture = null,
+        view: wgpu.TextureView = null,
+    },
 
     pub fn init(self: *Gpu) !void {
         const window = self.getApp().window;
@@ -90,6 +95,7 @@ pub const Gpu = struct {
                 app.gpu.config.width = @intCast(width);
                 app.gpu.config.height = @intCast(height);
                 wgpu.surfaceConfigure(app.gpu.surface, &app.gpu.config);
+                app.gpu.recreateMsaaTexture();
                 app.gpu.recreateDepthTexture();
             }
         }.handle_glfw_framebuffer_size);
@@ -200,12 +206,15 @@ pub const Gpu = struct {
             log.info("got window size", .{});
             self.config.width = @intCast(width);
             self.config.height = @intCast(height);
+
+            self.msaa = .{};
         }
 
         wgpu.surfaceConfigure(self.surface, &self.config);
 
         log.info("configured wgpu surface", .{});
 
+        self.recreateMsaaTexture();
         self.recreateDepthTexture();
     }
 
@@ -225,6 +234,32 @@ pub const Gpu = struct {
         return @fieldParentPtr("gpu", self);
     }
 
+    fn recreateMsaaTexture(gpu: *Gpu) void {
+        if (gpu.msaa.view != null) wgpu.textureViewRelease(gpu.msaa.view);
+        if (gpu.msaa.texture != null) wgpu.textureRelease(gpu.msaa.texture);
+
+        if (gpu.msaa.sample_count <= 1) {
+            gpu.msaa.texture = null;
+            gpu.msaa.view = null;
+            return;
+        }
+
+        const msaa_descriptor = wgpu.TextureDescriptor{
+            .label = .fromSlice("msaa_texture"),
+            .size = .{ .width = gpu.config.width, .height = gpu.config.height, .depth_or_array_layers = 1 },
+            .mip_level_count = 1,
+            .sample_count = gpu.msaa.sample_count,
+            .dimension = .@"2d",
+            .format = gpu.config.format,
+            .usage = wgpu.TextureUsage{ .render_attachment = true },
+        };
+
+        gpu.msaa.texture = wgpu.deviceCreateTexture(gpu.device, &msaa_descriptor);
+        std.debug.assert(gpu.msaa.texture != null);
+        gpu.msaa.view = wgpu.textureCreateView(gpu.msaa.texture, null);
+        std.debug.assert(gpu.msaa.view != null);
+    }
+
     fn recreateDepthTexture(gpu: *Gpu) void {
         if (gpu.depth_view) |v| wgpu.textureViewRelease(v);
         if (gpu.depth_texture) |t| wgpu.textureRelease(t);
@@ -237,7 +272,7 @@ pub const Gpu = struct {
                 .depth_or_array_layers = 1,
             },
             .mip_level_count = 1,
-            .sample_count = 1,
+            .sample_count = gpu.msaa.sample_count,
             .dimension = .@"2d",
             .format = DEPTH_FORMAT,
             .usage = wgpu.TextureUsage.renderAttachmentUsage,
@@ -374,6 +409,7 @@ pub const Gpu = struct {
                     self.config.width = @intCast(width);
                     self.config.height = @intCast(height);
                     wgpu.surfaceConfigure(self.surface, &self.config);
+                    self.recreateMsaaTexture();
                     self.recreateDepthTexture();
                 }
                 return null;
