@@ -31,6 +31,11 @@
             .url = "git+https://github.com/nicbarker/clay#b25a31c1a152915cd7dd6796e6592273e5a10aac",
             .hash = "N-V-__8AALPgZwA7tLqRlkCCL7OrkEhj4xZ3y_0FxgR42t0W",
         },
+
+        .nfd = .{
+            .url = "git+https://github.com/mlabbe/nativefiledialog#67345b80ebb429ecc2aeda94c478b3bcc5f7888e",
+            .hash = "N-V-__8AAJ1tBgDybOXQlEr2tm9ybvwwZuarwk1RXCOZ7zLd",
+        },
     },
 
     .paths = .{

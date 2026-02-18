@@ -1,11 +1,13 @@
 /// build.zig
 const std = @import("std");
 
-/// This helper function is the key to Nix integration.
-/// It reads the NIX_CFLAGS_COMPILE environment variable set by the dev shell,
-/// parses the `-I` flags, and adds them as include paths for a C library artifact.
-fn addSystemCFlags(b: *std.Build, lib: *std.Build.Step.Compile) void {
-    if (std.process.getEnvVarOwned(b.allocator, "NIX_CFLAGS_COMPILE")) |cflags| {
+fn addSystemCFlags(b: *std.Build, mod: *std.Build.Module) void {
+    addSystemCFlagsFromEnv(b, mod, "NIX_CFLAGS_COMPILE");
+    addSystemCFlagsFromEnv(b, mod, "CFLAGS");
+}
+
+fn addSystemCFlagsFromEnv(b: *std.Build, mod: *std.Build.Module, env_var: []const u8) void {
+    if (std.process.getEnvVarOwned(b.allocator, env_var)) |cflags| {
         defer b.allocator.free(cflags);
 
         var it = std.mem.splitAny(u8, cflags, " \n");
@@ -16,36 +18,36 @@ fn addSystemCFlags(b: *std.Build, lib: *std.Build.Step.Compile) void {
                 const path = flag[2..];
                 // Handle both -I/path and -I /path
                 if (path.len > 0) {
-                    addIncludePath(b, lib, path);
+                    addIncludePath(b, mod, path);
                 } else if (it.next()) |next_path| {
-                    addIncludePath(b, lib, next_path);
+                    addIncludePath(b, mod, next_path);
                 }
             } else if (std.mem.eql(u8, flag, "-isystem")) {
                 if (it.next()) |path| {
-                    addIncludePath(b, lib, path);
+                    addIncludePath(b, mod, path);
                 } else {
                     std.debug.print("Warning: -isystem flag without a path\n", .{});
                 }
             } else {
-                // std.debug.print("Warning: ignoring unsupported NIX_CFLAGS_COMPILE flag: {s}\n", .{flag});
+                // std.debug.print("Warning: ignoring unsupported {s} flag: {s}\n", .{env_var, flag});
             }
         }
     } else |err| {
         if (err != error.EnvironmentVariableNotFound) {
-            std.debug.print("Warning: could not read NIX_CFLAGS_COMPILE: {s}; if you are not on nix, ignore this.\n", .{@errorName(err)});
+            std.debug.print("Warning: could not read {s}: {s}; if you are not on nix, ignore this.\n", .{ env_var, @errorName(err) });
         }
     }
 }
 
 /// Helper to add a path, detecting if it's absolute or relative.
-fn addIncludePath(b: *std.Build, lib: *std.Build.Step.Compile, path: []const u8) void {
+fn addIncludePath(b: *std.Build, mod: *std.Build.Module, path: []const u8) void {
     if (std.fs.path.isAbsolute(path)) {
         // std.debug.print("Adding absolute system include path: {s}\n", .{path});
-        lib.addIncludePath(.{ .cwd_relative = path });
+        mod.addIncludePath(.{ .cwd_relative = path });
     } else {
         // This case is unlikely with Nix but good to have.
         // std.debug.print("Adding relative system include path: {s}\n", .{path});
-        lib.addIncludePath(b.path(path));
+        mod.addIncludePath(b.path(path));
     }
 }
 
@@ -76,6 +78,7 @@ pub fn build(b: *std.Build) void {
     const stb_dep = b.dependency("stb", .{});
     const glfw_dep = b.dependency("glfw", .{});
     const clay_dep = b.dependency("clay", .{});
+    const nfd_dep = b.dependency("nfd", .{});
 
     // --- WGPU Module ---
     const wgpu_mod = b.createModule(.{
@@ -162,6 +165,25 @@ pub fn build(b: *std.Build) void {
         .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
     });
 
+    // --- tilefiledialogs module ---
+    const nfd_mod = b.createModule(.{
+        .root_source_file = b.path("libs/nfd.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    const nfd_test = b.addTest(.{ .root_module = nfd_mod });
+    check_step.dependOn(&nfd_test.step);
+    test_step.dependOn(&b.addRunArtifact(nfd_test).step);
+
+    nfd_mod.addIncludePath(nfd_dep.path("src/include"));
+    nfd_mod.addIncludePath(nfd_dep.path("src/"));
+    nfd_mod.addCSourceFile(.{
+        .file = nfd_dep.path("src/nfd_common.c"),
+        .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
+    });
+
     // --- GLFW Module (Zig bindings) ---
     const glfw_mod = b.createModule(.{
         .root_source_file = b.path("libs/glfw.zig"),
@@ -182,8 +204,6 @@ pub fn build(b: *std.Build) void {
 
     glfw_mod.linkLibrary(glfw_lib);
 
-    if (!is_windows) addSystemCFlags(b, glfw_lib);
-
     glfw_lib.addIncludePath(glfw_dep.path("include"));
     glfw_lib.addCSourceFiles(.{
         .files = &.{
@@ -194,7 +214,6 @@ pub fn build(b: *std.Build) void {
         },
         .root = glfw_dep.path("src"),
     });
-
     // --- Gltf loader module ---
     const gltf_mod = b.createModule(.{
         .root_source_file = b.path("libs/gltf.zig"),
@@ -223,6 +242,7 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("stbtt", stbtt_mod);
     exe_mod.addImport("stbrp", stbrp_mod);
     exe_mod.addImport("clay", clay_mod);
+    exe_mod.addImport("nfd", nfd_mod);
     exe_mod.addImport("glfw", glfw_mod);
     exe_mod.addImport("gltf", gltf_mod);
     exe_mod.addAnonymousImport("shaders/GltfMultiPurpose.wgsl", .{
@@ -242,6 +262,9 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addAnonymousImport("shaders/TerrainRender.wgsl", .{
         .root_source_file = b.path("static/shaders/TerrainRender.wgsl"),
+    });
+    exe_mod.addAnonymousImport("shaders/MarchingSquares.wgsl", .{
+        .root_source_file = b.path("static/shaders/MarchingSquares.wgsl"),
     });
 
     b.installArtifact(exe);
@@ -277,7 +300,15 @@ pub fn build(b: *std.Build) void {
         const dll_needed = wgpu_dep.path("lib/wgpu_native.dll");
         const install = b.addInstallFile(dll_needed, "bin/wgpu_native.dll");
         install_step.dependOn(&install.step);
+
+        exe.linkSystemLibrary("ole32");
+        nfd_mod.addCSourceFile(.{
+            .file = nfd_dep.path("src/nfd_win.cpp"),
+            .flags = &.{"-fno-sanitize=undefined"},
+        });
     } else {
+        addSystemCFlags(b, glfw_lib.root_module);
+
         glfw_lib.root_module.addCMacro("_GLFW_X11", "");
         glfw_lib.addCSourceFiles(.{
             .files = &.{
@@ -298,5 +329,17 @@ pub fn build(b: *std.Build) void {
         exe.linkSystemLibrary("Xinerama");
         exe.linkSystemLibrary("Xi");
         exe.linkSystemLibrary("Xcursor");
+
+        // for nfd
+        exe.linkSystemLibrary("gtk-3");
+        exe.linkSystemLibrary("glib-2.0");
+        exe.linkSystemLibrary("gobject-2.0");
+
+        nfd_mod.addCSourceFile(.{
+            .file = nfd_dep.path("src/nfd_gtk.c"),
+            .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
+        });
+
+        addSystemCFlags(b, nfd_mod);
     }
 }
