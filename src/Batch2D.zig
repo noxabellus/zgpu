@@ -256,7 +256,7 @@ pub fn init(
     };
 
     const pipeline = wgpu.deviceCreateRenderPipeline(device, &wgpu.RenderPipelineDescriptor{
-        .label = .fromSlice("render_pipeline"),
+        .label = .fromSlice("batch2d_render_pipeline"),
         .layout = pipeline_layout,
         .vertex = .{
             .module = shader_module,
