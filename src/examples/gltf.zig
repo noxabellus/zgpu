@@ -130,10 +130,6 @@ pub const Model = struct {
     }
 };
 
-const CameraUniform = extern struct {
-    view_proj: mat4,
-};
-
 const SkinUniforms = extern struct {
     joint_matrices: [MAX_JOINTS]mat4,
 };
@@ -905,7 +901,7 @@ pub fn main() !void {
                 .binding = 0,
                 .buffer = camera_buffer,
                 .offset = 0,
-                .size = @sizeOf(CameraUniform),
+                .size = @sizeOf(Camera.Uniform),
             },
         },
     });
@@ -1044,7 +1040,8 @@ pub fn main() !void {
             const encoder = app.gpu.getCommandEncoder("main_encoder");
 
             // --- Update camera uniform ---
-            app.gpu.writeBuffer(camera_buffer, 0, &demo.camera.calculateUniform(app.window));
+            demo.camera.calculateViewProj(app.window);
+            app.gpu.writeBuffer(camera_buffer, 0, &demo.camera.getUniform());
 
             {
                 const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
