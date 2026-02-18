@@ -7,10 +7,16 @@ const wgpu = @import("wgpu");
 const glfw = @import("glfw");
 const gltf = @import("gltf");
 const stbi = @import("stbi");
+const nfd = @import("nfd");
 
 const Application = @import("../Application.zig");
 const Camera = @import("../Camera.zig");
 const debug = @import("../debug.zig");
+const Batch2D = @import("../Batch2D.zig");
+const AssetCache = @import("../AssetCache.zig");
+const InputState = @import("../InputState.zig");
+const BindingState = @import("../BindingState.zig");
+const Ui = @import("../Ui.zig");
 const linalg = @import("../linalg.zig");
 const vec2 = linalg.vec2;
 const vec3 = linalg.vec3;
@@ -30,8 +36,35 @@ test {
 
 const Demo = struct {
     app: *Application,
+
     camera: Camera,
+
+    model: ?Model = null,
+    anim_state: ?AnimationState = null,
+    anim_index: u32 = 0,
+    anim_time: f32 = 0.0,
 };
+
+var FONT_ID_BODY: AssetCache.FontId = undefined;
+var FONT_ID_TITLE: AssetCache.FontId = undefined;
+var FONT_ID_MONO: AssetCache.FontId = undefined;
+
+const COLOR_LIGHT = Ui.Color.fromLinearU8(244, 235, 230, 255);
+const COLOR_LIGHT_HOVER = Ui.Color.fromLinearU8(224, 215, 210, 255);
+const COLOR_BUTTON_HOVER = Ui.Color.fromLinearU8(238, 227, 225, 255);
+const COLOR_BROWN = Ui.Color.fromLinearU8(61, 26, 5, 255);
+const COLOR_GREYBROWN = Ui.Color.fromLinearU8(54, 48, 33, 255);
+const COLOR_TAN = Ui.Color.fromLinearU8(128, 113, 77, 255);
+const COLOR_PHOSPHOR = Ui.Color.fromLinearU8(0xff, 0xd4, 0x77, 0xff);
+const COLOR_RED = Ui.Color.fromLinearU8(168, 66, 28, 255);
+const COLOR_RED_HOVER = Ui.Color.fromLinearU8(148, 46, 8, 255);
+const COLOR_ORANGE = Ui.Color.fromLinearU8(225, 138, 50, 255);
+const COLOR_BLUE = Ui.Color.fromLinearU8(111, 173, 162, 255);
+const COLOR_TEAL = Ui.Color.fromLinearU8(111, 173, 162, 255);
+const COLOR_BLUE_DARK = Ui.Color.fromLinearU8(2, 32, 82, 255);
+const COLOR_NONE = Ui.Color.fromLinearU8(0, 0, 0, 255);
+const COLOR_WHITE = Ui.Color.fromLinearU8(255, 255, 255, 255);
+const COLOR_BLACK = Ui.Color.fromLinearU8(0, 0, 0, 255);
 
 const MAX_JOINTS = 128;
 
@@ -115,6 +148,8 @@ pub const Model = struct {
         self.allocator.free(self.skins);
 
         for (self.animations) |*a| {
+            if (a.name) |n| self.allocator.free(n);
+
             for (a.samplers) |s| {
                 self.allocator.free(s.input);
                 self.allocator.free(s.output);
@@ -638,7 +673,7 @@ fn loadGltfModel(
         }
 
         try animations.append(allocator, .{
-            .name = gltf_anim.name,
+            .name = if (gltf_anim.name) |n| try allocator.dupe(u8, n) else null,
             .samplers = try anim_samplers.toOwnedSlice(allocator),
             .duration = max_time,
             .translation_channels = try translation_channels.toOwnedSlice(allocator),
@@ -803,13 +838,134 @@ fn updateAnimation(
     }
 }
 
+fn createLayout(ui: *Ui, demo: *const Demo) !void {
+    {
+        try ui.openElement(.{
+            .id = .fromSlice("OuterContainer"),
+            .layout = .{
+                .sizing = .{
+                    .w = .fit,
+                    .h = .grow,
+                },
+                .direction = .top_to_bottom,
+                .child_alignment = .center,
+                .padding = .all(10),
+            },
+        });
+        defer ui.closeElement();
+
+        {
+            try ui.openElement(.{
+                .id = .fromSlice("MenuContainer"),
+                .layout = .{
+                    .sizing = .{
+                        .w = .fit,
+                        .h = .fit,
+                    },
+                    .direction = .top_to_bottom,
+                    .child_alignment = .center,
+                    .child_gap = 10,
+                    .padding = .all(10),
+                },
+                .background_color = COLOR_GREYBROWN,
+                .corner_radius = .all(10),
+            });
+            defer ui.closeElement();
+
+            {
+                try ui.beginElement(.fromSlice("TitleText"));
+                defer ui.closeElement();
+
+                try ui.configureElement(.{
+                    .layout = .{
+                        .sizing = .fit,
+                    },
+                });
+
+                try ui.text("Animation", .{
+                    .font_id = FONT_ID_TITLE,
+                    .font_size = 32,
+                    .color = COLOR_PHOSPHOR,
+                });
+            }
+
+            if (demo.model) |*model| {
+                if (model.animations.len > 0) {
+                    {
+                        try ui.beginElement(.fromSlice("NameText"));
+                        defer ui.closeElement();
+
+                        try ui.configureElement(.{
+                            .layout = .{
+                                .sizing = .fit,
+                            },
+                        });
+
+                        try ui.text(model.animations[demo.anim_index].name orelse "[unnamed]", .{
+                            .font_id = FONT_ID_BODY,
+                            .font_size = 16,
+                            .color = COLOR_PHOSPHOR,
+                        });
+                    }
+
+                    {
+                        try ui.beginElement(.fromSlice("animIndexSlider"));
+                        defer ui.closeElement();
+
+                        try ui.configureElement(.{
+                            .layout = .{
+                                .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+                            },
+                            .widget = true,
+                            .state = .flags(.{
+                                .click = true,
+                                .drag = true,
+                                .focus = true,
+                                .keyboard = true,
+                            }),
+                        });
+
+                        try ui.bindSlider(u32, .{
+                            .default = 0,
+                            .min = 0,
+                            .max = if (demo.model != null and demo.model.?.animations.len > 0) @intCast(demo.model.?.animations.len - 1) else 0,
+                            .track_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                            .handle_color = COLOR_PHOSPHOR,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn main() !void {
     var timer = try std.time.Timer.start();
 
     const gpa = std.heap.page_allocator;
 
+    // --- Application and UI Library Initialization ---
+    var arena_state = std.heap.ArenaAllocator.init(gpa);
+    defer arena_state.deinit();
+
+    const frame_arena = arena_state.allocator();
+
+    // Init Asset Cache
+    var asset_cache = AssetCache.init(gpa);
+    defer asset_cache.deinit();
+
     const app = try Application.init(gpa, "zgpu gltf example");
     defer app.deinit();
+
+    const renderer = try Batch2D.init(
+        gpa,
+        app.gpu.device,
+        app.gpu.queue,
+        app.gpu.surface_format,
+        &asset_cache,
+        app.gpu.msaa.sample_count,
+    );
+    defer renderer.deinit();
 
     var demo = Demo{
         .app = app,
@@ -907,13 +1063,56 @@ pub fn main() !void {
     });
     defer wgpu.bindGroupRelease(camera_bind_group);
 
-    var model = try loadGltfModel(gpa, &app.gpu, "assets/models/greenman.glb", texture_bind_group_layout);
-    defer model.deinit();
+    // Init Ui
 
-    const anim_index = 2;
+    var inputs = InputState.init(demo.app.window);
+    inputs.listenAllGlfw();
+
+    var bindings = BindingState.init(gpa, &inputs);
+    defer bindings.deinit();
+
+    try bindings.bind(.toggle_debugger, .{ .key = .{ .bind_point = .d, .modifiers = .ctrlMod } });
+    try bindings.bind(.dump_atlas, .{ .key = .{ .bind_point = .a, .modifiers = .altMod } });
+    try bindings.bind(.open_context_menu, .{ .mouse = .{ .bind_point = .button_2 } });
+
+    var ui = try Ui.init(gpa, frame_arena, renderer, &asset_cache, &bindings);
+    defer ui.deinit();
+
+    FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/quicksand/semibold.ttf", .linear);
+    FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/calistoga/regular.ttf", .linear);
+    FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/dejavu/sans-mono.ttf", .linear);
+
+    // LOAD MODEL //
+
+    demo.model = if (try nfd.openDialog("glb,gltf", ".")) |p| try loadGltfModel(gpa, &app.gpu, p, texture_bind_group_layout) else null;
+    defer if (demo.model) |*m| m.deinit();
+
+    try ui.addListener(
+        .fromSlice("animIndexSlider"),
+        .uint_change,
+        Demo,
+        &struct {
+            pub fn slider_value_listener(d: *Demo, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.uint_change)) anyerror!void {
+                if (d.model) |*model| {
+                    d.anim_index = @intCast(new_value);
+
+                    if (d.anim_state) |*st| st.deinit();
+
+                    d.anim_state = try AnimationState.init(gpa, model, d.anim_index);
+                    d.anim_time = 0.0;
+                }
+            }
+        }.slider_value_listener,
+        &demo,
+    );
     const anim_speed = 2.0; // Playback speed multiplier
-    var anim_state = try AnimationState.init(gpa, &model, anim_index);
-    defer anim_state.deinit();
+    demo.anim_state = if (demo.model != null and demo.model.?.animations.len > 0) try AnimationState.init(gpa, &demo.model.?, demo.anim_index) else none: {
+        const skin_uniforms: SkinUniforms = .{ .joint_matrices = [1]mat4{linalg.mat4_identity} ** 128 };
+        app.gpu.writeBuffer(skin_uniform_buffer, 0, &skin_uniforms);
+
+        break :none null;
+    };
+    defer if (demo.anim_state) |*x| x.deinit();
 
     const shader_module = try app.gpu.loadShaderText("GltfMultiPurpose.wgsl", shader_text);
     defer wgpu.shaderModuleRelease(shader_module);
@@ -930,7 +1129,7 @@ pub fn main() !void {
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
 
     const render_pipeline = app.gpu.createPipeline(&wgpu.RenderPipelineDescriptor{
-        .label = .fromSlice("render_pipeline"),
+        .label = .fromSlice("main_render_pipeline"),
         .layout = pipeline_layout,
         .vertex = .{
             .module = shader_module,
@@ -971,9 +1170,8 @@ pub fn main() !void {
             .depth_bias_clamp = 0.0,
         },
         .multisample = .{
-            .count = 1,
+            .count = app.gpu.msaa.sample_count,
             .mask = 0xFFFFFFFF,
-            .alpha_to_coverage_enabled = .False,
         },
         .fragment = &wgpu.FragmentState{
             .module = shader_module,
@@ -990,13 +1188,9 @@ pub fn main() !void {
     });
     defer wgpu.renderPipelineRelease(render_pipeline);
 
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-
     const startup_ms = debug.start(&timer);
     log.info("startup completed in {d} ms", .{startup_ms});
 
-    var animation_time: f32 = 0.0;
     var last_frame_time = glfw.getTime();
     main_loop: while (!glfw.windowShouldClose(app.window)) {
         const current_time = glfw.getTime();
@@ -1009,29 +1203,47 @@ pub fn main() !void {
         _ = arena_state.reset(.retain_capacity);
 
         // --- Update Animation ---
-        if (model.animations.len > anim_index) {
-            animation_time += delta_time * anim_speed;
-            const anim = &model.animations[anim_index];
-            if (animation_time > anim.duration) {
-                animation_time -= anim.duration;
-                @memset(anim_state.channel_key_cache, 0); // Reset key cache on loop
+        if (demo.model) |*model| {
+            if (demo.anim_state) |*st| {
+                demo.anim_time += delta_time * anim_speed;
+                const anim = &model.animations[demo.anim_index];
+                if (demo.anim_time > anim.duration) {
+                    demo.anim_time -= anim.duration;
+                    @memset(st.channel_key_cache, 0); // Reset key cache on loop
+                }
+
+                var skin_uniforms: SkinUniforms = .{ .joint_matrices = undefined };
+
+                updateAnimation(
+                    model,
+                    demo.anim_index,
+                    demo.anim_time,
+                    st,
+                    &skin_uniforms.joint_matrices,
+                );
+
+                app.gpu.writeBuffer(skin_uniform_buffer, 0, &skin_uniforms);
             }
-
-            var skin_uniforms: SkinUniforms = .{ .joint_matrices = undefined };
-
-            updateAnimation(
-                &model,
-                anim_index,
-                animation_time,
-                &anim_state,
-                &skin_uniforms.joint_matrices,
-            );
-
-            app.gpu.writeBuffer(skin_uniform_buffer, 0, &skin_uniforms);
         }
 
         // --- Process keyboard input ---
         demo.camera.update(app.window, delta_time);
+
+        inputs.collectAllGlfw();
+
+        // Generate the UI layout and cache rendering commands
+        {
+            try ui.beginLayout(
+                .{ @floatFromInt(app.gpu.config.width), @floatFromInt(app.gpu.config.height) },
+                delta_time,
+            );
+
+            try createLayout(ui, &demo);
+
+            try ui.endLayout();
+        }
+
+        try ui.dispatchEvents();
 
         {
             const frame_view = app.gpu.beginFrame() orelse continue :main_loop;
@@ -1043,13 +1255,13 @@ pub fn main() !void {
             demo.camera.calculateViewProj(app.window);
             app.gpu.writeBuffer(camera_buffer, 0, &demo.camera.getUniform());
 
-            {
+            if (demo.model) |*model| {
                 const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
                     .label = .fromSlice("main_render_pass"),
                     .color_attachment_count = 1,
                     .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
-                        .view = frame_view,
-                        .resolve_target = null,
+                        .view = if (app.gpu.msaa.view != null) app.gpu.msaa.view else frame_view,
+                        .resolve_target = if (app.gpu.msaa.view != null) frame_view else null,
                         .load_op = .clear,
                         .store_op = .store,
                         .clear_value = wgpu.Color{ .r = 0.1, .g = 0.2, .b = 0.3, .a = 1 },
@@ -1068,9 +1280,7 @@ pub fn main() !void {
                 wgpu.renderPassEncoderSetBindGroup(render_pass, 0, camera_bind_group, 0, null);
                 for (model.primitives) |primitive| {
                     wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
-                    if (primitive.skin_index != null) {
-                        wgpu.renderPassEncoderSetBindGroup(render_pass, 2, skin_bind_group, 0, null);
-                    }
+                    wgpu.renderPassEncoderSetBindGroup(render_pass, 2, skin_bind_group, 0, null);
                     wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
                     wgpu.renderPassEncoderSetIndexBuffer(render_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
                     wgpu.renderPassEncoderDrawIndexed(render_pass, primitive.index_count, 1, 0, 0, 0);
@@ -1078,6 +1288,36 @@ pub fn main() !void {
                 wgpu.renderPassEncoderEnd(render_pass);
             }
 
+            // --- Queue all draws to screen buffer ---
+            {
+                const proj = linalg.mat4_ortho(0, @floatFromInt(app.gpu.config.width), @floatFromInt(app.gpu.config.height), 0, -1, 1);
+                renderer.beginFrame(proj, app.gpu.config.width, app.gpu.config.height);
+
+                try ui.render();
+
+                try debug.drawFpsChart(renderer, .{ 0, 0 });
+
+                try renderer.endFrame();
+            }
+
+            // --- Draw UI ---
+            {
+                const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
+                    .label = .fromSlice("ui_render_pass"),
+                    .color_attachment_count = 1,
+                    .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
+                        .view = if (app.gpu.msaa.view != null) app.gpu.msaa.view else frame_view,
+                        .resolve_target = if (app.gpu.msaa.view != null) frame_view else null,
+                        .load_op = .load,
+                        .store_op = .store,
+                    }},
+                });
+                defer wgpu.renderPassEncoderRelease(render_pass);
+                try renderer.render(render_pass);
+                wgpu.renderPassEncoderEnd(render_pass);
+            }
+
+            // --- WGPU Command Submission ---
             const cmd = app.gpu.finalizeCommandEncoder(encoder);
 
             app.gpu.submitCommands(&.{cmd});
