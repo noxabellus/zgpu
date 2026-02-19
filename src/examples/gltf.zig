@@ -9,7 +9,10 @@ const gltf = @import("gltf");
 const stbi = @import("stbi");
 const nfd = @import("nfd");
 
+const Gpu = @import("../Gpu.zig");
 const Application = @import("../Application.zig");
+const RenderTexture = @import("../RenderTexture.zig");
+const Compositor = @import("../Compositor.zig");
 const Camera = @import("../Camera.zig");
 const debug = @import("../debug.zig");
 const Batch2D = @import("../Batch2D.zig");
@@ -43,6 +46,12 @@ const Demo = struct {
     anim_state: ?AnimationState = null,
     anim_index: u32 = 0,
     anim_time: f32 = 0.0,
+
+    gltf_color: RenderTexture,
+    gltf_depth: RenderTexture,
+    ui_msaa: RenderTexture,
+    ui_color: RenderTexture,
+    compositor: Compositor,
 };
 
 var FONT_ID_BODY: AssetCache.FontId = undefined;
@@ -174,7 +183,7 @@ const shader_text = @embedFile("shaders/GltfMultiPurpose.wgsl");
 /// Loads a glTF model from the given path, creating WGPU buffers and optimized runtime structures.
 fn loadGltfModel(
     allocator: std.mem.Allocator,
-    gpu: *Application.Gpu,
+    gpu: *Gpu,
     model_path: []const u8,
     texture_bind_group_layout: wgpu.BindGroupLayout,
 ) !Model {
@@ -939,6 +948,9 @@ fn createLayout(ui: *Ui, demo: *const Demo) !void {
     }
 }
 
+const UI_MSAA_SAMPLES = 4;
+const DEPTH_FORMAT = wgpu.TextureFormat.depth32_float;
+
 pub fn main() !void {
     var timer = try std.time.Timer.start();
 
@@ -963,7 +975,7 @@ pub fn main() !void {
         app.gpu.queue,
         app.gpu.surface_format,
         &asset_cache,
-        app.gpu.msaa.sample_count,
+        UI_MSAA_SAMPLES,
     );
     defer renderer.deinit();
 
@@ -974,7 +986,45 @@ pub fn main() !void {
             vec3{ 0, 1.0, 0.0 },
             vec3{ 0.0, 1.0, 0.0 },
         ),
+        .gltf_color = try RenderTexture.init(&app.gpu, .{
+            .label = "gltf_color",
+            .width = app.gpu.config.width,
+            .height = app.gpu.config.height,
+            .format = app.gpu.surface_format,
+            .usage = .{ .render_attachment = true, .texture_binding = true },
+            .sample_count = 1,
+        }),
+        .gltf_depth = try RenderTexture.init(&app.gpu, .{
+            .label = "gltf_depth",
+            .width = app.gpu.config.width,
+            .height = app.gpu.config.height,
+            .format = DEPTH_FORMAT,
+            .usage = .{ .render_attachment = true },
+            .sample_count = 1,
+        }),
+        .ui_msaa = try RenderTexture.init(&app.gpu, .{
+            .label = "ui_msaa",
+            .width = app.gpu.config.width,
+            .height = app.gpu.config.height,
+            .format = app.gpu.surface_format,
+            .usage = .{ .render_attachment = true },
+            .sample_count = UI_MSAA_SAMPLES,
+        }),
+        .ui_color = try RenderTexture.init(&app.gpu, .{
+            .label = "ui_color",
+            .width = app.gpu.config.width,
+            .height = app.gpu.config.height,
+            .format = app.gpu.surface_format,
+            .usage = .{ .render_attachment = true, .texture_binding = true },
+            .sample_count = 1,
+        }),
+        .compositor = try Compositor.init(&app.gpu),
     };
+    defer demo.gltf_color.deinit();
+    defer demo.gltf_depth.deinit();
+    defer demo.ui_msaa.deinit();
+    defer demo.ui_color.deinit();
+    defer demo.compositor.deinit();
 
     app.user_data = &demo;
 
@@ -1158,7 +1208,7 @@ pub fn main() !void {
             .front_face = .ccw,
         },
         .depth_stencil = &wgpu.DepthStencilState{
-            .format = Application.DEPTH_FORMAT,
+            .format = DEPTH_FORMAT,
             .depth_write_enabled = .true,
             .depth_compare = .less,
             .stencil_front = .{},
@@ -1168,10 +1218,6 @@ pub fn main() !void {
             .depth_bias = 0,
             .depth_bias_slope_scale = 0.0,
             .depth_bias_clamp = 0.0,
-        },
-        .multisample = .{
-            .count = app.gpu.msaa.sample_count,
-            .mask = 0xFFFFFFFF,
         },
         .fragment = &wgpu.FragmentState{
             .module = shader_module,
@@ -1249,25 +1295,34 @@ pub fn main() !void {
             const frame_view = app.gpu.beginFrame() orelse continue :main_loop;
             defer app.gpu.endFrame(frame_view);
 
+            // 1. Sync Render Targets to current window size
+            const w = app.gpu.config.width;
+            const h = app.gpu.config.height;
+            try demo.gltf_color.resize(&app.gpu, w, h);
+            try demo.gltf_depth.resize(&app.gpu, w, h);
+            try demo.ui_msaa.resize(&app.gpu, w, h);
+            try demo.ui_color.resize(&app.gpu, w, h);
+
             const encoder = app.gpu.getCommandEncoder("main_encoder");
 
-            // --- Update camera uniform ---
+            // --- Pass 1: GLTF Model (NO MSAA, Depth) ---
             demo.camera.calculateViewProj(app.window);
             app.gpu.writeBuffer(camera_buffer, 0, &demo.camera.getUniform());
 
-            if (demo.model) |*model| {
+            {
+                // Always begin the pass to clear the background, even if no model is loaded.
                 const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
                     .label = .fromSlice("main_render_pass"),
                     .color_attachment_count = 1,
                     .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
-                        .view = if (app.gpu.msaa.view != null) app.gpu.msaa.view else frame_view,
-                        .resolve_target = if (app.gpu.msaa.view != null) frame_view else null,
+                        .view = demo.gltf_color.view,
+                        .resolve_target = null,
                         .load_op = .clear,
                         .store_op = .store,
                         .clear_value = wgpu.Color{ .r = 0.1, .g = 0.2, .b = 0.3, .a = 1 },
                     }},
                     .depth_stencil_attachment = &wgpu.RenderPassDepthStencilAttachment{
-                        .view = app.gpu.depth_view,
+                        .view = demo.gltf_depth.view,
                         .depth_load_op = .clear,
                         .depth_store_op = .store,
                         .depth_clear_value = 1.0,
@@ -1276,40 +1331,38 @@ pub fn main() !void {
                 });
                 defer wgpu.renderPassEncoderRelease(render_pass);
 
-                wgpu.renderPassEncoderSetPipeline(render_pass, render_pipeline);
-                wgpu.renderPassEncoderSetBindGroup(render_pass, 0, camera_bind_group, 0, null);
-                for (model.primitives) |primitive| {
-                    wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
-                    wgpu.renderPassEncoderSetBindGroup(render_pass, 2, skin_bind_group, 0, null);
-                    wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
-                    wgpu.renderPassEncoderSetIndexBuffer(render_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
-                    wgpu.renderPassEncoderDrawIndexed(render_pass, primitive.index_count, 1, 0, 0, 0);
+                if (demo.model) |*model| {
+                    wgpu.renderPassEncoderSetPipeline(render_pass, render_pipeline);
+                    wgpu.renderPassEncoderSetBindGroup(render_pass, 0, camera_bind_group, 0, null);
+                    for (model.primitives) |primitive| {
+                        wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
+                        wgpu.renderPassEncoderSetBindGroup(render_pass, 2, skin_bind_group, 0, null);
+                        wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
+                        wgpu.renderPassEncoderSetIndexBuffer(render_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
+                        wgpu.renderPassEncoderDrawIndexed(render_pass, primitive.index_count, 1, 0, 0, 0);
+                    }
                 }
                 wgpu.renderPassEncoderEnd(render_pass);
             }
 
-            // --- Queue all draws to screen buffer ---
+            // --- Pass 2: UI (MSAA resolving to UI Color) ---
             {
-                const proj = linalg.mat4_ortho(0, @floatFromInt(app.gpu.config.width), @floatFromInt(app.gpu.config.height), 0, -1, 1);
-                renderer.beginFrame(proj, app.gpu.config.width, app.gpu.config.height);
-
+                const proj = linalg.mat4_ortho(0, @floatFromInt(w), @floatFromInt(h), 0, -1, 1);
+                renderer.beginFrame(proj, w, h);
                 try ui.render();
-
                 try debug.drawFpsChart(renderer, .{ 0, 0 });
-
                 try renderer.endFrame();
-            }
 
-            // --- Draw UI ---
-            {
                 const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
                     .label = .fromSlice("ui_render_pass"),
                     .color_attachment_count = 1,
                     .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
-                        .view = if (app.gpu.msaa.view != null) app.gpu.msaa.view else frame_view,
-                        .resolve_target = if (app.gpu.msaa.view != null) frame_view else null,
-                        .load_op = .load,
+                        .view = demo.ui_msaa.view,
+                        .resolve_target = demo.ui_color.view,
+                        .load_op = .clear,
                         .store_op = .store,
+                        // IMPORTANT: Clear to transparent black so it alpha blends nicely over the GLTF layer
+                        .clear_value = wgpu.Color{ .r = 0, .g = 0, .b = 0, .a = 0 },
                     }},
                 });
                 defer wgpu.renderPassEncoderRelease(render_pass);
@@ -1317,9 +1370,16 @@ pub fn main() !void {
                 wgpu.renderPassEncoderEnd(render_pass);
             }
 
+            // --- Pass 3: Composition ---
+
+            // Draw the base 3D scene (Clears the swapchain)
+            demo.compositor.draw(&app.gpu, encoder, &demo.gltf_color, frame_view, .clear, wgpu.Color{ .r = 0, .g = 0, .b = 0, .a = 1 });
+
+            // Draw the anti-aliased UI over it (Loads the swapchain and Alpha Blends)
+            demo.compositor.draw(&app.gpu, encoder, &demo.ui_color, frame_view, .load, wgpu.Color{ .r = 0, .g = 0, .b = 0, .a = 0 });
+
             // --- WGPU Command Submission ---
             const cmd = app.gpu.finalizeCommandEncoder(encoder);
-
             app.gpu.submitCommands(&.{cmd});
         }
     }

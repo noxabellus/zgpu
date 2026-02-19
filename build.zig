@@ -263,6 +263,9 @@ pub fn build(b: *std.Build) void {
     exe_mod.addAnonymousImport("shaders/TerrainRender.wgsl", .{
         .root_source_file = b.path("static/shaders/TerrainRender.wgsl"),
     });
+    exe_mod.addAnonymousImport("shaders/BlitCompositor.wgsl", .{
+        .root_source_file = b.path("static/shaders/BlitCompositor.wgsl"),
+    });
 
     b.installArtifact(exe);
 
