@@ -190,6 +190,12 @@ pub fn update(self: *Camera, window: *glfw.Window, delta: f32) void {
     const frame_speed: vec3 = @splat(self.speed * delta);
     const roll_step = self.roll_speed * delta;
 
+    const mouse = glfw.getMouseButton(window, .middle);
+    if (mouse != .press and mouse != .repeat) {
+        // If the middle mouse isn't held, we don't want to process keyboard input for movement/roll
+        return;
+    }
+
     if (glfw.getKey(window, .w) == .press) {
         self.pos += self.front * frame_speed;
     }
