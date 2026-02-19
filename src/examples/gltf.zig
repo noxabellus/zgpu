@@ -52,6 +52,9 @@ const Demo = struct {
     ui_msaa: RenderTexture,
     ui_color: RenderTexture,
     compositor: Compositor,
+
+    texture_bind_group_layout: wgpu.BindGroupLayout = null,
+    skin_uniform_buffer: wgpu.Buffer = null,
 };
 
 var FONT_ID_BODY: AssetCache.FontId = undefined;
@@ -184,7 +187,7 @@ pub fn main() !void {
     });
     defer wgpu.bindGroupLayoutRelease(camera_bind_group_layout);
 
-    const texture_bind_group_layout = app.gpu.createBindGroupLayout(&.{
+    demo.texture_bind_group_layout = app.gpu.createBindGroupLayout(&.{
         .label = .fromSlice("texture_bind_group_layout"),
         .entry_count = 2,
         .entries = &.{
@@ -192,13 +195,14 @@ pub fn main() !void {
             .{ .binding = 1, .visibility = wgpu.ShaderStage.fragmentStage, .sampler = .{ .type = .filtering } },
         },
     });
-    defer wgpu.bindGroupLayoutRelease(texture_bind_group_layout);
-    const skin_uniform_buffer = app.gpu.createBuffer(&.{
+    defer wgpu.bindGroupLayoutRelease(demo.texture_bind_group_layout);
+
+    demo.skin_uniform_buffer = app.gpu.createBuffer(&.{
         .label = .fromSlice("skin_uniform_buffer"),
         .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
         .size = @sizeOf(Model.SkinUniforms),
     });
-    defer wgpu.bufferRelease(skin_uniform_buffer);
+    defer wgpu.bufferRelease(demo.skin_uniform_buffer);
 
     const skin_bind_group_layout = app.gpu.createBindGroupLayout(&.{
         .label = .fromSlice("skin_bind_group_layout"),
@@ -220,7 +224,7 @@ pub fn main() !void {
         .entries = &.{
             .{
                 .binding = 0,
-                .buffer = skin_uniform_buffer,
+                .buffer = demo.skin_uniform_buffer,
                 .size = @sizeOf(Model.SkinUniforms),
             },
         },
@@ -261,10 +265,8 @@ pub fn main() !void {
     FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/calistoga/regular.ttf", .linear);
     FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/dejavu/sans-mono.ttf", .linear);
 
-    // LOAD MODEL //
-
-    demo.model = if (try nfd.openDialog("glb,gltf", ".")) |p| try Model.loadGltf(gpa, &app.gpu, p, texture_bind_group_layout) else null;
     defer if (demo.model) |*m| m.deinit();
+    defer if (demo.anim_state) |*x| x.deinit();
 
     try ui.addListener(
         .fromSlice("animIndexSlider"),
@@ -284,14 +286,59 @@ pub fn main() !void {
         }.slider_value_listener,
         &demo,
     );
+
+    try ui.addListener(
+        .fromSlice("LoadButton"),
+        .activate_end,
+        Demo,
+        &struct {
+            pub fn load_button_listener(d: *Demo, u: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void {
+                const path = try nfd.openDialog("glb,gltf", ".");
+                if (path) |p| {
+                    // Deinit old model if it exists
+                    if (d.model) |*m| m.deinit();
+
+                    d.model = try Model.loadGltf(gpa, &d.app.gpu, p, d.texture_bind_group_layout);
+
+                    if (d.anim_state) |*st| st.deinit();
+
+                    if (d.model.?.animations.len > 0) {
+                        d.anim_state = try Model.AnimationState.init(gpa, &d.model.?, d.anim_index);
+                    } else {
+                        d.anim_state = null;
+                        d.app.gpu.writeBuffer(d.skin_uniform_buffer, 0, &[1]mat4{linalg.mat4_identity} ** 128);
+                    }
+                    d.anim_index = 0;
+                    d.anim_time = 0.0;
+
+                    try u.setWidgetState(.fromSlice("animIndexSlider"), u32, 0);
+                }
+            }
+        }.load_button_listener,
+        &demo,
+    );
+
+    try ui.addListener(
+        .fromSlice("UnloadButton"),
+        .activate_end,
+        Demo,
+        &struct {
+            pub fn unload_button_listener(d: *Demo, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void {
+                if (d.model) |*m| m.deinit();
+                d.model = null;
+
+                if (d.anim_state) |*st| st.deinit();
+                d.anim_state = null;
+                d.anim_index = 0;
+                d.anim_time = 0.0;
+
+                d.app.gpu.writeBuffer(d.skin_uniform_buffer, 0, &[1]mat4{linalg.mat4_identity} ** 128);
+            }
+        }.unload_button_listener,
+        &demo,
+    );
+
     const anim_speed = 2.0; // Playback speed multiplier
-    demo.anim_state = if (demo.model != null and demo.model.?.animations.len > 0) try Model.AnimationState.init(gpa, &demo.model.?, demo.anim_index) else none: {
-        app.gpu.writeBuffer(skin_uniform_buffer, 0, &[1]mat4{linalg.mat4_identity} ** 128);
-
-        break :none null;
-    };
-    defer if (demo.anim_state) |*x| x.deinit();
-
     const shader_module = try app.gpu.loadShaderText("GltfMultiPurpose.wgsl", shader_text);
     defer wgpu.shaderModuleRelease(shader_module);
 
@@ -300,7 +347,7 @@ pub fn main() !void {
         .bind_group_layout_count = 3,
         .bind_group_layouts = &.{
             camera_bind_group_layout,
-            texture_bind_group_layout,
+            demo.texture_bind_group_layout,
             skin_bind_group_layout,
         },
     });
@@ -392,7 +439,7 @@ pub fn main() !void {
                     demo.anim_time,
                 );
 
-                app.gpu.writeBuffer(skin_uniform_buffer, 0, st.matrices);
+                app.gpu.writeBuffer(demo.skin_uniform_buffer, 0, st.matrices);
             }
         }
 
@@ -400,6 +447,8 @@ pub fn main() !void {
         demo.camera.update(app.window, delta_time);
 
         inputs.collectAllGlfw();
+
+        try ui.dispatchEvents();
 
         // Generate the UI layout and cache rendering commands
         {
@@ -442,24 +491,109 @@ pub fn main() !void {
                     defer ui.closeElement();
 
                     {
-                        try ui.beginElement(.fromSlice("TitleText"));
-                        defer ui.closeElement();
-
-                        try ui.configureElement(.{
+                        try ui.openElement(.{
+                            .id = .fromSlice("ButtonRow"),
                             .layout = .{
-                                .sizing = .fit,
+                                .sizing = .{
+                                    .w = .grow,
+                                    .h = .fit,
+                                },
+                                .direction = .left_to_right,
+                                .child_alignment = .{
+                                    .x = .left,
+                                    .y = .center,
+                                },
+                                .child_gap = 10,
                             },
                         });
+                        defer ui.closeElement();
 
-                        try ui.text("Animation", .{
-                            .font_id = FONT_ID_TITLE,
-                            .font_size = 32,
-                            .color = COLOR_PHOSPHOR,
-                        });
+                        {
+                            try ui.beginElement(.fromSlice("LoadButton"));
+                            defer ui.closeElement();
+
+                            try ui.configureElement(.{
+                                .layout = .{
+                                    .sizing = .{
+                                        .w = .fit,
+                                        .h = .fit,
+                                    },
+                                    .child_alignment = .center,
+                                    .padding = .axes(10, 5),
+                                },
+                                .background_color = if (ui.active()) COLOR_PHOSPHOR else if (ui.hovered()) COLOR_TAN else if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                                .border = .{
+                                    .width = .all(1),
+                                    .color = COLOR_PHOSPHOR,
+                                },
+                                .corner_radius = .all(5),
+                                .state = .flags(.{
+                                    .click = true,
+                                    .focus = true,
+                                    .activate = true,
+                                }),
+                            });
+
+                            try ui.text("Load Model", .{
+                                .font_id = FONT_ID_BODY,
+                                .font_size = 16,
+                                .color = if (!ui.active()) COLOR_PHOSPHOR else COLOR_GREYBROWN,
+                            });
+                        }
+
+                        {
+                            try ui.beginElement(.fromSlice("UnloadButton"));
+                            defer ui.closeElement();
+
+                            try ui.configureElement(.{
+                                .layout = .{
+                                    .sizing = .{
+                                        .w = .fit,
+                                        .h = .fit,
+                                    },
+                                    .child_alignment = .center,
+                                    .padding = .axes(10, 5),
+                                },
+                                .background_color = if (demo.model != null) if (ui.active()) COLOR_RED_HOVER else if (ui.hovered()) COLOR_RED else if (ui.focused()) COLOR_RED else COLOR_BROWN else COLOR_TAN,
+                                .border = .{
+                                    .width = .all(1),
+                                    .color = if (demo.model != null) COLOR_PHOSPHOR else COLOR_BROWN,
+                                },
+                                .corner_radius = .all(5),
+                                .state = if (demo.model != null) .flags(.{
+                                    .click = true,
+                                    .focus = true,
+                                    .activate = true,
+                                }) else .flags(.{}),
+                            });
+
+                            try ui.text("Unload Model", .{
+                                .font_id = FONT_ID_BODY,
+                                .font_size = 16,
+                                .color = if (demo.model != null) if (!ui.active()) COLOR_PHOSPHOR else COLOR_GREYBROWN else COLOR_BROWN,
+                            });
+                        }
                     }
 
                     if (demo.model) |*model| {
                         if (model.animations.len > 0) {
+                            {
+                                try ui.beginElement(.fromSlice("TitleText"));
+                                defer ui.closeElement();
+
+                                try ui.configureElement(.{
+                                    .layout = .{
+                                        .sizing = .fit,
+                                    },
+                                });
+
+                                try ui.text("Animation", .{
+                                    .font_id = FONT_ID_TITLE,
+                                    .font_size = 32,
+                                    .color = COLOR_PHOSPHOR,
+                                });
+                            }
+
                             {
                                 try ui.beginElement(.fromSlice("NameText"));
                                 defer ui.closeElement();
@@ -509,8 +643,6 @@ pub fn main() !void {
 
             try ui.endLayout();
         }
-
-        try ui.dispatchEvents();
 
         {
             const frame_view = app.gpu.beginFrame() orelse continue :main_loop;
@@ -594,10 +726,10 @@ pub fn main() !void {
             // --- Pass 3: Composition ---
 
             // Draw the base 3D scene (Clears the swapchain)
-            demo.compositor.draw(&app.gpu, encoder, &demo.gltf_color, frame_view, .clear, wgpu.Color{ .r = 0, .g = 0, .b = 0, .a = 1 });
+            demo.compositor.draw(&app.gpu, encoder, &demo.gltf_color, frame_view, .clear, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
 
             // Draw the anti-aliased UI over it (Loads the swapchain and Alpha Blends)
-            demo.compositor.draw(&app.gpu, encoder, &demo.ui_color, frame_view, .load, wgpu.Color{ .r = 0, .g = 0, .b = 0, .a = 0 });
+            demo.compositor.draw(&app.gpu, encoder, &demo.ui_color, frame_view, .load, .{});
 
             // --- WGPU Command Submission ---
             const cmd = app.gpu.finalizeCommandEncoder(encoder);
