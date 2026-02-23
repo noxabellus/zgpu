@@ -18,8 +18,9 @@ pub fn main() !void {
 
         const x = try nfd.openDialogMultiple("glb,gltf", ".");
         if (x) |paths| {
+            var it = std.mem.tokenizeScalar(u8, paths, ';');
             std.debug.print("Selected files:\n", .{});
-            for (paths) |path| {
+            while (it.next()) |path| {
                 std.debug.print("- {s}\n", .{path});
             }
         } else {

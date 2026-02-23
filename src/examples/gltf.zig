@@ -55,6 +55,8 @@ const Demo = struct {
 
     texture_bind_group_layout: wgpu.BindGroupLayout = null,
     skin_uniform_buffer: wgpu.Buffer = null,
+
+    path_to_load: error{DialogFailed}!?[]const u8 = null,
 };
 
 var FONT_ID_BODY: AssetCache.FontId = undefined;
@@ -100,6 +102,9 @@ pub fn main() !void {
 
     const app = try Application.init(gpa, "zgpu gltf example");
     defer app.deinit();
+
+    try nfd.initAsync();
+    defer nfd.deinitAsync();
 
     const renderer = try Batch2D.init(
         gpa,
@@ -292,27 +297,8 @@ pub fn main() !void {
         .activate_end,
         Demo,
         &struct {
-            pub fn load_button_listener(d: *Demo, u: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void {
-                const path = try nfd.openDialog("glb,gltf", ".");
-                if (path) |p| {
-                    // Deinit old model if it exists
-                    if (d.model) |*m| m.deinit();
-
-                    d.model = try Model.loadGltf(gpa, &d.app.gpu, p, d.texture_bind_group_layout);
-
-                    if (d.anim_state) |*st| st.deinit();
-
-                    if (d.model.?.animations.len > 0) {
-                        d.anim_state = try Model.AnimationState.init(gpa, &d.model.?, d.anim_index);
-                    } else {
-                        d.anim_state = null;
-                        d.app.gpu.writeBuffer(d.skin_uniform_buffer, 0, &[1]mat4{linalg.mat4_identity} ** 128);
-                    }
-                    d.anim_index = 0;
-                    d.anim_time = 0.0;
-
-                    try u.setWidgetState(.fromSlice("animIndexSlider"), u32, 0);
-                }
+            pub fn load_button_listener(d: *Demo, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void {
+                try nfd.openDialogAsync("glb,gltf", ".", &d.path_to_load);
             }
         }.load_button_listener,
         &demo,
@@ -422,6 +408,31 @@ pub fn main() !void {
 
         glfw.pollEvents();
         _ = arena_state.reset(.retain_capacity);
+
+        if (demo.path_to_load) |maybe_path| {
+            if (maybe_path) |p| {
+                // Deinit old model if it exists
+                if (demo.model) |*m| m.deinit();
+
+                demo.model = try Model.loadGltf(gpa, &demo.app.gpu, p, demo.texture_bind_group_layout);
+
+                if (demo.anim_state) |*st| st.deinit();
+
+                if (demo.model.?.animations.len > 0) {
+                    demo.anim_state = try Model.AnimationState.init(gpa, &demo.model.?, demo.anim_index);
+                } else {
+                    demo.anim_state = null;
+                    demo.app.gpu.writeBuffer(demo.skin_uniform_buffer, 0, &[1]mat4{linalg.mat4_identity} ** 128);
+                }
+                demo.anim_index = 0;
+                demo.anim_time = 0.0;
+
+                try ui.setWidgetState(.fromSlice("animIndexSlider"), u32, 0);
+            }
+        } else |err| {
+            log.err("Failed to load model: {s}\n", .{@errorName(err)});
+        }
+        demo.path_to_load = null;
 
         // --- Update Animation ---
         if (demo.model) |*model| {
