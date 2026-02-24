@@ -43,7 +43,7 @@ const Demo = struct {
     camera: Camera,
 
     model: ?Model = null,
-    animator: ?Model.Animator = null,
+    animator: Model.Animator = .{},
     anim_state: Model.AnimationState = .{},
 
     gltf_color: RenderTexture,
@@ -190,7 +190,6 @@ pub fn main() !void {
     FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/dejavu/sans-mono.ttf", .linear);
 
     defer if (demo.model) |*m| m.deinit();
-    defer if (demo.animator) |*x| x.deinit();
 
     try ui.addListener(
         .fromSlice("animIndexSlider"),
@@ -198,14 +197,7 @@ pub fn main() !void {
         Demo,
         &struct {
             pub fn slider_value_listener(d: *Demo, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.uint_change)) anyerror!void {
-                if (d.model) |*model| {
-                    d.anim_state.index = @intCast(new_value);
-
-                    if (d.animator) |*am| am.deinit();
-
-                    d.animator = try Model.Animator.init(gpa, model, d.anim_state.index);
-                    d.anim_state.time = 0.0;
-                }
+                d.anim_state.setIndex(@intCast(new_value));
             }
         }.slider_value_listener,
         &demo,
@@ -232,10 +224,8 @@ pub fn main() !void {
                 if (d.model) |*m| m.deinit();
                 d.model = null;
 
-                if (d.animator) |*am| am.deinit();
-                d.animator = null;
+                d.anim_state.clearCache();
                 d.anim_state.clearMatrices();
-
                 d.anim_state.sync(&d.app.gpu);
             }
         }.unload_button_listener,
@@ -309,17 +299,9 @@ pub fn main() !void {
 
                 demo.model = try Model.loadGltf(gpa, &demo.app.gpu, p);
 
-                if (demo.animator) |*st| st.deinit();
-
-                if (demo.model.?.animations.len > 0) {
-                    demo.animator = try Model.Animator.init(gpa, &demo.model.?, demo.anim_state.index);
-                } else {
-                    demo.animator = null;
-                    demo.anim_state.clearMatrices();
-                    demo.anim_state.sync(&demo.app.gpu);
-                }
-                demo.anim_state.index = 0;
-                demo.anim_state.time = 0.0;
+                demo.anim_state.setIndex(0);
+                demo.anim_state.clearMatrices();
+                demo.anim_state.sync(&demo.app.gpu);
 
                 try ui.setWidgetState(.fromSlice("animIndexSlider"), u32, 0);
             }
@@ -330,15 +312,13 @@ pub fn main() !void {
 
         // --- Update Animation ---
         if (demo.model) |*model| {
-            if (demo.animator) |*am| {
-                am.updateAnimation(
-                    model,
-                    &demo.anim_state,
-                    delta_time,
-                );
+            demo.animator.updateAnimation(
+                model,
+                &demo.anim_state,
+                delta_time,
+            );
 
-                demo.anim_state.sync(&demo.app.gpu);
-            }
+            demo.anim_state.sync(&demo.app.gpu);
         }
 
         // --- Process keyboard input ---

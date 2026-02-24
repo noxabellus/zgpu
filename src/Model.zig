@@ -594,6 +594,7 @@ pub fn loadGltf(
 }
 
 pub const MAX_JOINTS = 128;
+pub const MAX_CHANNELS = MAX_JOINTS * 3;
 
 pub const Vertex = extern struct {
     position: vec3,
@@ -667,9 +668,9 @@ pub const Animation = struct {
 
 /// An intermediate struct to hold TRS components before composing matrices.
 pub const JointPose = struct {
-    translation: vec3,
-    rotation: vec4,
-    scale: vec3,
+    translation: vec3 = .{ 0.0, 0.0, 0.0 },
+    rotation: quat = .{ 0.0, 0.0, 0.0, 1.0 },
+    scale: vec3 = .{ 1.0, 1.0, 1.0 },
 };
 
 pub const AnimationState = struct {
@@ -677,8 +678,19 @@ pub const AnimationState = struct {
     time: f32 = 0.0,
     speed: f32 = 1.0,
     matrices: SkinUniforms = [1]mat4{linalg.mat4_identity} ** MAX_JOINTS,
+    key_cache: [MAX_CHANNELS]u32 = [1]u32{0} ** MAX_CHANNELS, // Cache for current keyframe indices per channel to optimize lookups
     buffer: wgpu.Buffer = null,
     bind_group: wgpu.BindGroup = null,
+
+    pub fn setIndex(self: *AnimationState, index: u32) void {
+        self.index = index;
+        self.time = 0.0;
+        self.clearCache();
+    }
+
+    pub fn clearCache(self: *AnimationState) void {
+        self.key_cache = [1]u32{0} ** MAX_CHANNELS;
+    }
 
     pub fn clearMatrices(self: *AnimationState) void {
         self.matrices = [1]mat4{linalg.mat4_identity} ** MAX_JOINTS;
@@ -736,34 +748,9 @@ pub const AnimationState = struct {
 
 /// State management holding pre-allocated buffers for animation, avoiding per-frame allocations.
 pub const Animator = struct {
-    allocator: std.mem.Allocator,
-
-    poses: []JointPose,
-    local_transforms: []mat4,
-    global_transforms: []mat4,
-    channel_key_cache: []u32,
-
-    pub fn init(allocator: std.mem.Allocator, model: *const Model, anim_idx: u32) !Animator {
-        const joint_count = model.joints.len;
-        const anim = &model.animations[anim_idx];
-        const channel_count = anim.translation_channels.len + anim.rotation_channels.len + anim.scale_channels.len;
-        const out = Animator{
-            .poses = try allocator.alloc(JointPose, joint_count),
-            .local_transforms = try allocator.alloc(mat4, joint_count),
-            .global_transforms = try allocator.alloc(mat4, joint_count),
-            .channel_key_cache = try allocator.alloc(u32, channel_count),
-            .allocator = allocator,
-        };
-        @memset(out.channel_key_cache, 0);
-        return out;
-    }
-
-    pub fn deinit(self: *Animator) void {
-        self.allocator.free(self.poses);
-        self.allocator.free(self.local_transforms);
-        self.allocator.free(self.global_transforms);
-        self.allocator.free(self.channel_key_cache);
-    }
+    poses: [MAX_JOINTS]JointPose = [1]JointPose{.{}} ** MAX_JOINTS,
+    local_transforms: [MAX_JOINTS]mat4 = [1]mat4{linalg.mat4_identity} ** MAX_JOINTS,
+    global_transforms: [MAX_JOINTS]mat4 = [1]mat4{linalg.mat4_identity} ** MAX_JOINTS,
 
     pub fn updateAnimation(
         self: *Animator,
@@ -777,7 +764,7 @@ pub const Animator = struct {
 
         if (state.time > animation.duration) {
             state.time -= animation.duration;
-            @memset(self.channel_key_cache, 0); // Reset key cache on loop
+            state.clearCache();
         }
 
         for (model.joints, 0..) |joint, i| {
@@ -792,9 +779,9 @@ pub const Animator = struct {
         for (animation.translation_channels, 0..) |channel, i| {
             const sampler = &animation.samplers[channel.sampler_index];
             const cache_idx = key_cache_offset + @as(u32, @intCast(i));
-            var current_key: usize = self.channel_key_cache[cache_idx];
+            var current_key: usize = state.key_cache[cache_idx];
             while (current_key < sampler.input.len - 1 and sampler.input[current_key + 1] < state.time) current_key += 1;
-            self.channel_key_cache[cache_idx] = @intCast(current_key);
+            state.key_cache[cache_idx] = @intCast(current_key);
             const prev_key = current_key;
             const next_key = if (current_key == sampler.input.len - 1) 0 else current_key + 1;
             const time_diff = sampler.input[next_key] - sampler.input[prev_key];
@@ -809,9 +796,9 @@ pub const Animator = struct {
         for (animation.rotation_channels, 0..) |channel, i| {
             const sampler = &animation.samplers[channel.sampler_index];
             const cache_idx = key_cache_offset + @as(u32, @intCast(i));
-            var current_key: usize = self.channel_key_cache[cache_idx];
+            var current_key: usize = state.key_cache[cache_idx];
             while (current_key < sampler.input.len - 1 and sampler.input[current_key + 1] < state.time) current_key += 1;
-            self.channel_key_cache[cache_idx] = @intCast(current_key);
+            state.key_cache[cache_idx] = @intCast(current_key);
             const prev_key = current_key;
             const next_key = if (current_key == sampler.input.len - 1) 0 else current_key + 1;
             const time_diff = sampler.input[next_key] - sampler.input[prev_key];
@@ -826,9 +813,9 @@ pub const Animator = struct {
         for (animation.scale_channels, 0..) |channel, i| {
             const sampler = &animation.samplers[channel.sampler_index];
             const cache_idx = key_cache_offset + @as(u32, @intCast(i));
-            var current_key: usize = self.channel_key_cache[cache_idx];
+            var current_key: usize = state.key_cache[cache_idx];
             while (current_key < sampler.input.len - 1 and sampler.input[current_key + 1] < state.time) current_key += 1;
-            self.channel_key_cache[cache_idx] = @intCast(current_key);
+            state.key_cache[cache_idx] = @intCast(current_key);
             const prev_key = current_key;
             const next_key = if (current_key == sampler.input.len - 1) 0 else current_key + 1;
             const time_diff = sampler.input[next_key] - sampler.input[prev_key];
