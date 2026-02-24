@@ -2,7 +2,9 @@ const Camera = @This();
 
 const std = @import("std");
 const glfw = @import("glfw");
+const wgpu = @import("wgpu");
 
+const Gpu = @import("Gpu.zig");
 const Application = @import("Application.zig");
 const linalg = @import("linalg.zig");
 const vec2 = linalg.vec2;
@@ -28,9 +30,29 @@ roll_speed: f32 = 60.0,
 
 view_proj: mat4 = linalg.mat4_identity,
 
-pub const Uniform = extern struct {
-    view_proj: mat4,
-};
+buffer: wgpu.Buffer = null,
+bind_group: wgpu.BindGroup = null,
+
+pub const Uniform = mat4;
+
+var BIND_GROUP_LAYOUT: wgpu.BindGroupLayout = null;
+pub fn getBindGroupLayout(gpu: *Gpu) wgpu.BindGroupLayout {
+    if (BIND_GROUP_LAYOUT) |p| return p;
+
+    BIND_GROUP_LAYOUT = gpu.createBindGroupLayout(&.{
+        .label = .fromSlice("Camera:bind_group_layout"),
+        .entry_count = 1,
+        .entries = &.{
+            .{
+                .binding = 0,
+                .visibility = wgpu.ShaderStage.vertexStage,
+                .buffer = .{ .type = .uniform },
+            },
+        },
+    });
+
+    return BIND_GROUP_LAYOUT;
+}
 
 pub fn fromFrontUp(pos: vec3, front: vec3, up: vec3, world_up: vec3) Camera {
     var self = Camera{
@@ -65,6 +87,37 @@ pub fn fromLookAt(pos: vec3, target: vec3, world_up: vec3) Camera {
     self.deriveState();
 
     return self;
+}
+
+pub fn deinit(self: *Camera) void {
+    if (self.buffer) |p| wgpu.bufferRelease(p);
+    if (self.bind_group) |p| wgpu.bindGroupRelease(p);
+}
+
+pub fn sync(self: *Camera, gpu: *Gpu) void {
+    if (self.buffer == null) {
+        self.buffer = gpu.createBuffer(&.{
+            .usage = .{ .uniform = true, .copy_dst = true },
+            .size = @sizeOf(Camera.Uniform),
+        });
+    }
+    if (self.bind_group == null) {
+        self.bind_group = gpu.createBindGroup(&.{
+            .label = .fromSlice("Camera:bind_group"),
+            .layout = getBindGroupLayout(gpu),
+            .entry_count = 1,
+            .entries = &.{
+                .{
+                    .binding = 0,
+                    .buffer = self.buffer,
+                    .offset = 0,
+                    .size = @sizeOf(Camera.Uniform),
+                },
+            },
+        });
+    }
+
+    gpu.writeBuffer(self.buffer, 0, &self.view_proj);
 }
 
 pub fn deduceWorldForward(world_up: vec3) vec3 {
@@ -265,10 +318,4 @@ pub fn calculateViewProj(self: *Camera, window: *glfw.Window) void {
     );
 
     self.view_proj = linalg.mat4_mul(proj, view);
-}
-
-pub fn getUniform(self: *Camera) Uniform {
-    return Uniform{
-        .view_proj = self.view_proj,
-    };
 }

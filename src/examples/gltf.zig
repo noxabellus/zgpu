@@ -43,18 +43,14 @@ const Demo = struct {
     camera: Camera,
 
     model: ?Model = null,
-    anim_state: ?Model.AnimationState = null,
-    anim_index: u32 = 0,
-    anim_time: f32 = 0.0,
+    animator: ?Model.Animator = null,
+    anim_state: Model.AnimationState = .{},
 
     gltf_color: RenderTexture,
     gltf_depth: RenderTexture,
     ui_msaa: RenderTexture,
     ui_color: RenderTexture,
     compositor: Compositor,
-
-    texture_bind_group_layout: wgpu.BindGroupLayout = null,
-    skin_uniform_buffer: wgpu.Buffer = null,
 
     path_to_load: error{DialogFailed}!?[]const u8 = null,
 };
@@ -162,14 +158,9 @@ pub fn main() !void {
     defer demo.ui_msaa.deinit();
     defer demo.ui_color.deinit();
     defer demo.compositor.deinit();
+    defer demo.anim_state.deinit();
 
     app.user_data = &demo;
-
-    const camera_buffer = app.gpu.createBuffer(&.{
-        .usage = .{ .uniform = true, .copy_dst = true },
-        .size = @sizeOf(Camera.Uniform),
-    });
-    defer wgpu.bufferRelease(camera_buffer);
 
     _ = glfw.setCursorPosCallback(app.window, struct {
         pub fn mouse_handler(w: *glfw.Window, xpos: f64, ypos: f64) callconv(.c) void {
@@ -178,78 +169,6 @@ pub fn main() !void {
             d.camera.handle_mouse_move(w, vec2{ @floatCast(xpos), @floatCast(ypos) });
         }
     }.mouse_handler);
-
-    const camera_bind_group_layout = app.gpu.createBindGroupLayout(&.{
-        .label = .fromSlice("camera_bind_group_layout"),
-        .entry_count = 1,
-        .entries = &.{
-            .{
-                .binding = 0,
-                .visibility = wgpu.ShaderStage.vertexStage,
-                .buffer = .{ .type = .uniform },
-            },
-        },
-    });
-    defer wgpu.bindGroupLayoutRelease(camera_bind_group_layout);
-
-    demo.texture_bind_group_layout = app.gpu.createBindGroupLayout(&.{
-        .label = .fromSlice("texture_bind_group_layout"),
-        .entry_count = 2,
-        .entries = &.{
-            .{ .binding = 0, .visibility = wgpu.ShaderStage.fragmentStage, .texture = .{ .sample_type = .float, .view_dimension = .@"2d" } },
-            .{ .binding = 1, .visibility = wgpu.ShaderStage.fragmentStage, .sampler = .{ .type = .filtering } },
-        },
-    });
-    defer wgpu.bindGroupLayoutRelease(demo.texture_bind_group_layout);
-
-    demo.skin_uniform_buffer = app.gpu.createBuffer(&.{
-        .label = .fromSlice("skin_uniform_buffer"),
-        .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
-        .size = @sizeOf(Model.SkinUniforms),
-    });
-    defer wgpu.bufferRelease(demo.skin_uniform_buffer);
-
-    const skin_bind_group_layout = app.gpu.createBindGroupLayout(&.{
-        .label = .fromSlice("skin_bind_group_layout"),
-        .entry_count = 1,
-        .entries = &.{
-            .{
-                .binding = 0,
-                .visibility = wgpu.ShaderStage.vertexStage,
-                .buffer = .{ .type = .uniform },
-            },
-        },
-    });
-    defer wgpu.bindGroupLayoutRelease(skin_bind_group_layout);
-
-    const skin_bind_group = app.gpu.createBindGroup(&.{
-        .label = .fromSlice("skin_bind_group"),
-        .layout = skin_bind_group_layout,
-        .entry_count = 1,
-        .entries = &.{
-            .{
-                .binding = 0,
-                .buffer = demo.skin_uniform_buffer,
-                .size = @sizeOf(Model.SkinUniforms),
-            },
-        },
-    });
-    defer wgpu.bindGroupRelease(skin_bind_group);
-
-    const camera_bind_group = app.gpu.createBindGroup(&.{
-        .label = .fromSlice("camera_bind_group"),
-        .layout = camera_bind_group_layout,
-        .entry_count = 1,
-        .entries = &.{
-            .{
-                .binding = 0,
-                .buffer = camera_buffer,
-                .offset = 0,
-                .size = @sizeOf(Camera.Uniform),
-            },
-        },
-    });
-    defer wgpu.bindGroupRelease(camera_bind_group);
 
     // Init Ui
 
@@ -271,7 +190,7 @@ pub fn main() !void {
     FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/dejavu/sans-mono.ttf", .linear);
 
     defer if (demo.model) |*m| m.deinit();
-    defer if (demo.anim_state) |*x| x.deinit();
+    defer if (demo.animator) |*x| x.deinit();
 
     try ui.addListener(
         .fromSlice("animIndexSlider"),
@@ -280,12 +199,12 @@ pub fn main() !void {
         &struct {
             pub fn slider_value_listener(d: *Demo, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.uint_change)) anyerror!void {
                 if (d.model) |*model| {
-                    d.anim_index = @intCast(new_value);
+                    d.anim_state.index = @intCast(new_value);
 
-                    if (d.anim_state) |*st| st.deinit();
+                    if (d.animator) |*am| am.deinit();
 
-                    d.anim_state = try Model.AnimationState.init(gpa, model, d.anim_index);
-                    d.anim_time = 0.0;
+                    d.animator = try Model.Animator.init(gpa, model, d.anim_state.index);
+                    d.anim_state.time = 0.0;
                 }
             }
         }.slider_value_listener,
@@ -313,18 +232,16 @@ pub fn main() !void {
                 if (d.model) |*m| m.deinit();
                 d.model = null;
 
-                if (d.anim_state) |*st| st.deinit();
-                d.anim_state = null;
-                d.anim_index = 0;
-                d.anim_time = 0.0;
+                if (d.animator) |*am| am.deinit();
+                d.animator = null;
+                d.anim_state.clearMatrices();
 
-                d.app.gpu.writeBuffer(d.skin_uniform_buffer, 0, &[1]mat4{linalg.mat4_identity} ** 128);
+                d.anim_state.sync(&d.app.gpu);
             }
         }.unload_button_listener,
         &demo,
     );
 
-    const anim_speed = 2.0; // Playback speed multiplier
     const shader_module = try app.gpu.loadShaderText("GltfMultiPurpose.wgsl", shader_text);
     defer wgpu.shaderModuleRelease(shader_module);
 
@@ -332,9 +249,9 @@ pub fn main() !void {
         .label = .fromSlice("pipeline_layout"),
         .bind_group_layout_count = 3,
         .bind_group_layouts = &.{
-            camera_bind_group_layout,
-            demo.texture_bind_group_layout,
-            skin_bind_group_layout,
+            Camera.getBindGroupLayout(&app.gpu),
+            Model.getTextureBindGroupLayout(&app.gpu),
+            Model.AnimationState.getBindGroupLayout(&app.gpu),
         },
     });
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
@@ -346,25 +263,10 @@ pub fn main() !void {
             .module = shader_module,
             .entry_point = .fromSlice("vs_main"),
             .buffer_count = 1,
-            .buffers = &.{
-                wgpu.VertexBufferLayout{
-                    .array_stride = @sizeOf(Model.Vertex),
-                    .step_mode = .vertex,
-                    .attribute_count = 6,
-                    .attributes = &.{
-                        .{ .shaderLocation = 0, .offset = @offsetOf(Model.Vertex, "position"), .format = .float32x3 },
-                        .{ .shaderLocation = 1, .offset = @offsetOf(Model.Vertex, "normal"), .format = .float32x3 },
-                        .{ .shaderLocation = 2, .offset = @offsetOf(Model.Vertex, "color"), .format = .float32x4 },
-                        .{ .shaderLocation = 3, .offset = @offsetOf(Model.Vertex, "tex_coord"), .format = .float32x2 },
-                        .{ .shaderLocation = 4, .offset = @offsetOf(Model.Vertex, "joint_indices"), .format = .uint32x4 },
-                        .{ .shaderLocation = 5, .offset = @offsetOf(Model.Vertex, "joint_weights"), .format = .float32x4 },
-                    },
-                },
-            },
+            .buffers = &.{Model.Vertex.buffer_layout},
         },
         .primitive = .{
             .topology = .triangle_list,
-            .strip_index_format = .undefined,
             .cull_mode = .back,
             .front_face = .ccw,
         },
@@ -372,13 +274,6 @@ pub fn main() !void {
             .format = DEPTH_FORMAT,
             .depth_write_enabled = .true,
             .depth_compare = .less,
-            .stencil_front = .{},
-            .stencil_back = .{},
-            .stencil_read_mask = 0,
-            .stencil_write_mask = 0,
-            .depth_bias = 0,
-            .depth_bias_slope_scale = 0.0,
-            .depth_bias_clamp = 0.0,
         },
         .fragment = &wgpu.FragmentState{
             .module = shader_module,
@@ -387,8 +282,6 @@ pub fn main() !void {
             .targets = &.{
                 wgpu.ColorTargetState{
                     .format = app.gpu.surface_format,
-                    .blend = null,
-                    .write_mask = .all,
                 },
             },
         },
@@ -414,18 +307,19 @@ pub fn main() !void {
                 // Deinit old model if it exists
                 if (demo.model) |*m| m.deinit();
 
-                demo.model = try Model.loadGltf(gpa, &demo.app.gpu, p, demo.texture_bind_group_layout);
+                demo.model = try Model.loadGltf(gpa, &demo.app.gpu, p);
 
-                if (demo.anim_state) |*st| st.deinit();
+                if (demo.animator) |*st| st.deinit();
 
                 if (demo.model.?.animations.len > 0) {
-                    demo.anim_state = try Model.AnimationState.init(gpa, &demo.model.?, demo.anim_index);
+                    demo.animator = try Model.Animator.init(gpa, &demo.model.?, demo.anim_state.index);
                 } else {
-                    demo.anim_state = null;
-                    demo.app.gpu.writeBuffer(demo.skin_uniform_buffer, 0, &[1]mat4{linalg.mat4_identity} ** 128);
+                    demo.animator = null;
+                    demo.anim_state.clearMatrices();
+                    demo.anim_state.sync(&demo.app.gpu);
                 }
-                demo.anim_index = 0;
-                demo.anim_time = 0.0;
+                demo.anim_state.index = 0;
+                demo.anim_state.time = 0.0;
 
                 try ui.setWidgetState(.fromSlice("animIndexSlider"), u32, 0);
             }
@@ -436,21 +330,14 @@ pub fn main() !void {
 
         // --- Update Animation ---
         if (demo.model) |*model| {
-            if (demo.anim_state) |*st| {
-                demo.anim_time += delta_time * anim_speed;
-                const anim = &model.animations[demo.anim_index];
-                if (demo.anim_time > anim.duration) {
-                    demo.anim_time -= anim.duration;
-                    @memset(st.channel_key_cache, 0); // Reset key cache on loop
-                }
-
-                st.updateAnimation(
+            if (demo.animator) |*am| {
+                am.updateAnimation(
                     model,
-                    demo.anim_index,
-                    demo.anim_time,
+                    &demo.anim_state,
+                    delta_time,
                 );
 
-                app.gpu.writeBuffer(demo.skin_uniform_buffer, 0, st.matrices);
+                demo.anim_state.sync(&demo.app.gpu);
             }
         }
 
@@ -615,7 +502,7 @@ pub fn main() !void {
                                     },
                                 });
 
-                                try ui.text(model.animations[demo.anim_index].name orelse "[unnamed]", .{
+                                try ui.text(model.animations[demo.anim_state.index].name orelse "[unnamed]", .{
                                     .font_id = FONT_ID_BODY,
                                     .font_size = 16,
                                     .color = COLOR_PHOSPHOR,
@@ -659,7 +546,7 @@ pub fn main() !void {
             const frame_view = app.gpu.beginFrame() orelse continue :main_loop;
             defer app.gpu.endFrame(frame_view);
 
-            // 1. Sync Render Targets to current window size
+            // Sync Render Targets to current window size
             const w = app.gpu.config.width;
             const h = app.gpu.config.height;
             try demo.gltf_color.resize(&app.gpu, w, h);
@@ -671,16 +558,14 @@ pub fn main() !void {
 
             // --- Pass 1: GLTF Model (NO MSAA, Depth) ---
             demo.camera.calculateViewProj(app.window);
-            app.gpu.writeBuffer(camera_buffer, 0, &demo.camera.getUniform());
+            demo.camera.sync(&app.gpu);
 
             {
-                // Always begin the pass to clear the background, even if no model is loaded.
                 const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
                     .label = .fromSlice("main_render_pass"),
                     .color_attachment_count = 1,
                     .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
                         .view = demo.gltf_color.view,
-                        .resolve_target = null,
                         .load_op = .clear,
                         .store_op = .store,
                         .clear_value = wgpu.Color{ .r = 0.1, .g = 0.2, .b = 0.3, .a = 1 },
@@ -690,17 +575,16 @@ pub fn main() !void {
                         .depth_load_op = .clear,
                         .depth_store_op = .store,
                         .depth_clear_value = 1.0,
-                        .depth_read_only = .False,
                     },
                 });
                 defer wgpu.renderPassEncoderRelease(render_pass);
 
                 if (demo.model) |*model| {
                     wgpu.renderPassEncoderSetPipeline(render_pass, render_pipeline);
-                    wgpu.renderPassEncoderSetBindGroup(render_pass, 0, camera_bind_group, 0, null);
+                    wgpu.renderPassEncoderSetBindGroup(render_pass, 0, demo.camera.bind_group, 0, null);
                     for (model.primitives) |primitive| {
                         wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
-                        wgpu.renderPassEncoderSetBindGroup(render_pass, 2, skin_bind_group, 0, null);
+                        wgpu.renderPassEncoderSetBindGroup(render_pass, 2, demo.anim_state.bind_group, 0, null);
                         wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
                         wgpu.renderPassEncoderSetIndexBuffer(render_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
                         wgpu.renderPassEncoderDrawIndexed(render_pass, primitive.index_count, 1, 0, 0, 0);
@@ -725,7 +609,6 @@ pub fn main() !void {
                         .resolve_target = demo.ui_color.view,
                         .load_op = .clear,
                         .store_op = .store,
-                        // IMPORTANT: Clear to transparent black so it alpha blends nicely over the GLTF layer
                         .clear_value = wgpu.Color{ .r = 0, .g = 0, .b = 0, .a = 0 },
                     }},
                 });
@@ -736,10 +619,7 @@ pub fn main() !void {
 
             // --- Pass 3: Composition ---
 
-            // Draw the base 3D scene (Clears the swapchain)
             demo.compositor.draw(&app.gpu, encoder, &demo.gltf_color, frame_view, .clear, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
-
-            // Draw the anti-aliased UI over it (Loads the swapchain and Alpha Blends)
             demo.compositor.draw(&app.gpu, encoder, &demo.ui_color, frame_view, .load, .{});
 
             // --- WGPU Command Submission ---

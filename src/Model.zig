@@ -56,12 +56,28 @@ pub fn deinit(self: *Model) void {
     self.allocator.free(self.joints);
 }
 
+var TEXTURE_BIND_GROUP_LAYOUT: wgpu.BindGroupLayout = null;
+
+pub fn getTextureBindGroupLayout(gpu: *Gpu) wgpu.BindGroupLayout {
+    if (TEXTURE_BIND_GROUP_LAYOUT) |p| return p;
+
+    TEXTURE_BIND_GROUP_LAYOUT = gpu.createBindGroupLayout(&.{
+        .label = .fromSlice("Model:texture_bind_group_layout"),
+        .entry_count = 2,
+        .entries = &.{
+            .{ .binding = 0, .visibility = wgpu.ShaderStage.fragmentStage, .texture = .{ .sample_type = .float, .view_dimension = .@"2d" } },
+            .{ .binding = 1, .visibility = wgpu.ShaderStage.fragmentStage, .sampler = .{ .type = .filtering } },
+        },
+    });
+
+    return TEXTURE_BIND_GROUP_LAYOUT;
+}
+
 /// Loads a glTF model from the given path, creating WGPU buffers and optimized runtime structures.
 pub fn loadGltf(
     allocator: std.mem.Allocator,
     gpu: *Gpu,
     model_path: []const u8,
-    texture_bind_group_layout: wgpu.BindGroupLayout,
 ) !Model {
     stbi.setFlipVerticallyOnLoad(false);
 
@@ -418,7 +434,7 @@ pub fn loadGltf(
                 .min_filter = .linear,
             });
             const prim_bind_group = gpu.createBindGroup(&.{
-                .layout = texture_bind_group_layout,
+                .layout = getTextureBindGroupLayout(gpu),
                 .entry_count = 2,
                 .entries = &.{
                     .{ .binding = 0, .texture_view = prim_texture_view },
@@ -586,6 +602,20 @@ pub const Vertex = extern struct {
     tex_coord: vec2,
     joint_indices: vec4u,
     joint_weights: vec4,
+
+    pub const buffer_layout = wgpu.VertexBufferLayout{
+        .array_stride = @sizeOf(Vertex),
+        .step_mode = .vertex,
+        .attribute_count = 6,
+        .attributes = &.{
+            .{ .shaderLocation = 0, .offset = @offsetOf(Vertex, "position"), .format = .float32x3 },
+            .{ .shaderLocation = 1, .offset = @offsetOf(Vertex, "normal"), .format = .float32x3 },
+            .{ .shaderLocation = 2, .offset = @offsetOf(Vertex, "color"), .format = .float32x4 },
+            .{ .shaderLocation = 3, .offset = @offsetOf(Vertex, "tex_coord"), .format = .float32x2 },
+            .{ .shaderLocation = 4, .offset = @offsetOf(Vertex, "joint_indices"), .format = .uint32x4 },
+            .{ .shaderLocation = 5, .offset = @offsetOf(Vertex, "joint_weights"), .format = .float32x4 },
+        },
+    };
 };
 
 pub const MeshPrimitive = struct {
@@ -642,25 +672,85 @@ pub const JointPose = struct {
     scale: vec3,
 };
 
-/// State management holding pre-allocated buffers for animation, avoiding per-frame allocations.
 pub const AnimationState = struct {
+    index: u32 = 0,
+    time: f32 = 0.0,
+    speed: f32 = 1.0,
+    matrices: SkinUniforms = [1]mat4{linalg.mat4_identity} ** MAX_JOINTS,
+    buffer: wgpu.Buffer = null,
+    bind_group: wgpu.BindGroup = null,
+
+    pub fn clearMatrices(self: *AnimationState) void {
+        self.matrices = [1]mat4{linalg.mat4_identity} ** MAX_JOINTS;
+    }
+
+    pub fn sync(self: *AnimationState, gpu: *Gpu) void {
+        if (self.buffer == null) {
+            self.buffer = gpu.createBuffer(&.{
+                .label = .fromSlice("Model:AnimationState:skin_uniform_buffer"),
+                .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
+                .size = @sizeOf(SkinUniforms),
+            });
+        }
+        if (self.bind_group == null) {
+            self.bind_group = gpu.createBindGroup(&.{
+                .label = .fromSlice("Model:AnimationState:skin_bind_group"),
+                .layout = getBindGroupLayout(gpu),
+                .entry_count = 1,
+                .entries = &.{
+                    .{
+                        .binding = 0,
+                        .buffer = self.buffer,
+                        .size = @sizeOf(SkinUniforms),
+                    },
+                },
+            });
+        }
+        gpu.writeBuffer(self.buffer, 0, &self.matrices);
+    }
+
+    pub fn deinit(self: *AnimationState) void {
+        if (self.buffer) |p| wgpu.bufferRelease(p);
+        if (self.bind_group) |p| wgpu.bindGroupRelease(p);
+    }
+
+    var BIND_GROUP_LAYOUT: wgpu.BindGroupLayout = null;
+    pub fn getBindGroupLayout(gpu: *Gpu) wgpu.BindGroupLayout {
+        if (BIND_GROUP_LAYOUT) |p| return p;
+
+        BIND_GROUP_LAYOUT = gpu.createBindGroupLayout(&.{
+            .label = .fromSlice("Model:AnimationState:skin_bind_group_layout"),
+            .entry_count = 1,
+            .entries = &.{
+                .{
+                    .binding = 0,
+                    .visibility = wgpu.ShaderStage.vertexStage,
+                    .buffer = .{ .type = .uniform },
+                },
+            },
+        });
+
+        return BIND_GROUP_LAYOUT;
+    }
+};
+
+/// State management holding pre-allocated buffers for animation, avoiding per-frame allocations.
+pub const Animator = struct {
     allocator: std.mem.Allocator,
 
     poses: []JointPose,
-    matrices: []mat4,
     local_transforms: []mat4,
     global_transforms: []mat4,
     channel_key_cache: []u32,
 
-    pub fn init(allocator: std.mem.Allocator, model: *const Model, anim_idx: u32) !AnimationState {
+    pub fn init(allocator: std.mem.Allocator, model: *const Model, anim_idx: u32) !Animator {
         const joint_count = model.joints.len;
         const anim = &model.animations[anim_idx];
         const channel_count = anim.translation_channels.len + anim.rotation_channels.len + anim.scale_channels.len;
-        const out = AnimationState{
+        const out = Animator{
             .poses = try allocator.alloc(JointPose, joint_count),
             .local_transforms = try allocator.alloc(mat4, joint_count),
             .global_transforms = try allocator.alloc(mat4, joint_count),
-            .matrices = try allocator.alloc(mat4, joint_count),
             .channel_key_cache = try allocator.alloc(u32, channel_count),
             .allocator = allocator,
         };
@@ -668,7 +758,7 @@ pub const AnimationState = struct {
         return out;
     }
 
-    pub fn deinit(self: *AnimationState) void {
+    pub fn deinit(self: *Animator) void {
         self.allocator.free(self.poses);
         self.allocator.free(self.local_transforms);
         self.allocator.free(self.global_transforms);
@@ -676,12 +766,19 @@ pub const AnimationState = struct {
     }
 
     pub fn updateAnimation(
-        self: *AnimationState,
+        self: *Animator,
         model: *const Model,
-        anim_idx: u32,
-        time: f32,
+        state: *AnimationState,
+        delta_time: f32,
     ) void {
-        const animation = &model.animations[anim_idx];
+        const animation = &model.animations[state.index];
+
+        state.time += delta_time * state.speed;
+
+        if (state.time > animation.duration) {
+            state.time -= animation.duration;
+            @memset(self.channel_key_cache, 0); // Reset key cache on loop
+        }
 
         for (model.joints, 0..) |joint, i| {
             self.poses[i] = .{
@@ -696,12 +793,12 @@ pub const AnimationState = struct {
             const sampler = &animation.samplers[channel.sampler_index];
             const cache_idx = key_cache_offset + @as(u32, @intCast(i));
             var current_key: usize = self.channel_key_cache[cache_idx];
-            while (current_key < sampler.input.len - 1 and sampler.input[current_key + 1] < time) current_key += 1;
+            while (current_key < sampler.input.len - 1 and sampler.input[current_key + 1] < state.time) current_key += 1;
             self.channel_key_cache[cache_idx] = @intCast(current_key);
             const prev_key = current_key;
             const next_key = if (current_key == sampler.input.len - 1) 0 else current_key + 1;
             const time_diff = sampler.input[next_key] - sampler.input[prev_key];
-            const factor = if (time_diff > 0) (time - sampler.input[prev_key]) / time_diff else 0;
+            const factor = if (time_diff > 0) (state.time - sampler.input[prev_key]) / time_diff else 0;
             const clamped_factor = @min(@max(factor, 0.0), 1.0);
             const prev_val = sampler.output[prev_key];
             const next_val = sampler.output[next_key];
@@ -713,12 +810,12 @@ pub const AnimationState = struct {
             const sampler = &animation.samplers[channel.sampler_index];
             const cache_idx = key_cache_offset + @as(u32, @intCast(i));
             var current_key: usize = self.channel_key_cache[cache_idx];
-            while (current_key < sampler.input.len - 1 and sampler.input[current_key + 1] < time) current_key += 1;
+            while (current_key < sampler.input.len - 1 and sampler.input[current_key + 1] < state.time) current_key += 1;
             self.channel_key_cache[cache_idx] = @intCast(current_key);
             const prev_key = current_key;
             const next_key = if (current_key == sampler.input.len - 1) 0 else current_key + 1;
             const time_diff = sampler.input[next_key] - sampler.input[prev_key];
-            const factor = if (time_diff > 0) (time - sampler.input[prev_key]) / time_diff else 0;
+            const factor = if (time_diff > 0) (state.time - sampler.input[prev_key]) / time_diff else 0;
             const clamped_factor = @min(@max(factor, 0.0), 1.0);
             const prev_val = sampler.output[prev_key];
             const next_val = sampler.output[next_key];
@@ -730,12 +827,12 @@ pub const AnimationState = struct {
             const sampler = &animation.samplers[channel.sampler_index];
             const cache_idx = key_cache_offset + @as(u32, @intCast(i));
             var current_key: usize = self.channel_key_cache[cache_idx];
-            while (current_key < sampler.input.len - 1 and sampler.input[current_key + 1] < time) current_key += 1;
+            while (current_key < sampler.input.len - 1 and sampler.input[current_key + 1] < state.time) current_key += 1;
             self.channel_key_cache[cache_idx] = @intCast(current_key);
             const prev_key = current_key;
             const next_key = if (current_key == sampler.input.len - 1) 0 else current_key + 1;
             const time_diff = sampler.input[next_key] - sampler.input[prev_key];
-            const factor = if (time_diff > 0) (time - sampler.input[prev_key]) / time_diff else 0;
+            const factor = if (time_diff > 0) (state.time - sampler.input[prev_key]) / time_diff else 0;
             const clamped_factor = @min(@max(factor, 0.0), 1.0);
             const prev_val = sampler.output[prev_key];
             const next_val = sampler.output[next_key];
@@ -755,16 +852,16 @@ pub const AnimationState = struct {
         if (model.skins.len > 0) {
             const skin = &model.skins[0];
             for (skin.joints, 0..) |joint_joint_idx, joint_idx| {
-                if (joint_idx >= self.matrices.len) continue;
+                if (joint_idx >= state.matrices.len) continue;
                 const global_joint_transform = self.global_transforms[joint_joint_idx];
                 const ibm = skin.inverse_bind_matrices[joint_idx];
-                self.matrices[joint_idx] = linalg.mat4_mul(global_joint_transform, ibm);
+                state.matrices[joint_idx] = linalg.mat4_mul(global_joint_transform, ibm);
             }
         }
     }
 
     fn updateJointHierarchyRecursive(
-        self: *AnimationState,
+        self: *Animator,
         joint_idx: u32,
         parent_transform: mat4,
         model: *const Model,
