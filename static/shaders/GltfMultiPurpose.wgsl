@@ -1,3 +1,5 @@
+const MAX_JOINTS = 128;
+
 struct CameraUniform {
     view_proj: mat4x4<f32>,
 };
@@ -12,7 +14,7 @@ var t_diffuse: texture_2d<f32>;
 var s_diffuse: sampler;
 
 struct SkinUniforms {
-    joint_matrices: array<mat4x4<f32>, 128>, // Must match MAX_JOINTS
+    joint_matrices: array<mat4x4<f32>, MAX_JOINTS>,
 };
 
 @group(2) @binding(0)
@@ -47,8 +49,6 @@ fn vs_main(model: VertexInput) -> VertexOutput {
     
     // Add the influence of each of the 4 joints.
     // Note: This assumes joint_weights sum to 1.0, which they should.
-    // If a primitive is not skinned, joint_indices will be 0 and weights will be (1,0,0,0),
-    // effectively using the matrix of the root joint (which will be the node's world transform).
     let i0 = model.joint_indices[0];
     let i1 = model.joint_indices[1];
     let i2 = model.joint_indices[2];
@@ -86,15 +86,21 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.75));
-    let light_color = vec3<f32>(1.0, 1.0, 1.0);
     let light_intensity = 1.0;
-    let texture_color = textureSample(t_diffuse, s_diffuse, in.tex_coord);
-    let base_color = texture_color.rgb * in.color.rgb;
-    let normal = normalize(in.normal);
-    let diffuse_strength = max(dot(normal, light_dir), 0.0);
-    let diffuse_contribution = base_color * light_color * light_intensity * diffuse_strength;
+    let light_color = vec3<f32>(1.0, 1.0, 1.0);
     let ambient_color = vec3<f32>(0.1, 0.1, 0.1);
+
+    let normal = normalize(in.normal);
+    let texture_color = textureSample(t_diffuse, s_diffuse, in.tex_coord);
+
+    let diffuse_strength = max(dot(normal, light_dir), 0.0);
+
+    let base_color = texture_color.rgb * in.color.rgb;
+
+    let diffuse_contribution = base_color * light_color * light_intensity * diffuse_strength;
     let ambient_contribution = base_color * ambient_color;
+
     let final_color = ambient_contribution + diffuse_contribution;
+
     return vec4<f32>(final_color, texture_color.a);
 }

@@ -20,9 +20,9 @@ pub fn init(gpu: *Gpu) !Compositor {
         .address_mode_u = .clamp_to_edge,
         .address_mode_v = .clamp_to_edge,
         .address_mode_w = .clamp_to_edge,
-        .mag_filter = .linear,
-        .min_filter = .linear,
-        .mipmap_filter = .linear,
+        .mag_filter = .nearest,
+        .min_filter = .nearest,
+        .mipmap_filter = .nearest,
     });
 
     // Create Bind Group Layout (Texture @ 0, Sampler @ 1)

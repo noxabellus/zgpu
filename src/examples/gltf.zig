@@ -75,6 +75,7 @@ const COLOR_BLUE_DARK = Ui.Color.fromLinearU8(2, 32, 82, 255);
 const COLOR_NONE = Ui.Color.fromLinearU8(0, 0, 0, 255);
 const COLOR_WHITE = Ui.Color.fromLinearU8(255, 255, 255, 255);
 const COLOR_BLACK = Ui.Color.fromLinearU8(0, 0, 0, 255);
+const SCALE_DIVISOR = 3;
 
 const shader_text = @embedFile("shaders/GltfMultiPurpose.wgsl");
 
@@ -121,16 +122,16 @@ pub fn main() !void {
         ),
         .gltf_color = try RenderTexture.init(&app.gpu, .{
             .label = "gltf_color",
-            .width = app.gpu.config.width,
-            .height = app.gpu.config.height,
+            .width = @divFloor(app.gpu.config.width, SCALE_DIVISOR),
+            .height = @divFloor(app.gpu.config.height, SCALE_DIVISOR),
             .format = app.gpu.surface_format,
             .usage = .{ .render_attachment = true, .texture_binding = true },
             .sample_count = 1,
         }),
         .gltf_depth = try RenderTexture.init(&app.gpu, .{
             .label = "gltf_depth",
-            .width = app.gpu.config.width,
-            .height = app.gpu.config.height,
+            .width = @divFloor(app.gpu.config.width, SCALE_DIVISOR),
+            .height = @divFloor(app.gpu.config.height, SCALE_DIVISOR),
             .format = DEPTH_FORMAT,
             .usage = .{ .render_attachment = true },
             .sample_count = 1,
@@ -529,8 +530,8 @@ pub fn main() !void {
             // Sync Render Targets to current window size
             const w = app.gpu.config.width;
             const h = app.gpu.config.height;
-            try demo.gltf_color.resize(&app.gpu, w, h);
-            try demo.gltf_depth.resize(&app.gpu, w, h);
+            try demo.gltf_color.resize(&app.gpu, @divFloor(app.gpu.config.width, SCALE_DIVISOR), @divFloor(app.gpu.config.height, SCALE_DIVISOR));
+            try demo.gltf_depth.resize(&app.gpu, @divFloor(app.gpu.config.width, SCALE_DIVISOR), @divFloor(app.gpu.config.height, SCALE_DIVISOR));
             try demo.ui_msaa.resize(&app.gpu, w, h);
             try demo.ui_color.resize(&app.gpu, w, h);
 

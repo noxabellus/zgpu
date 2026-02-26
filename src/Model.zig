@@ -510,7 +510,8 @@ pub fn loadGltf(
             const time_bin = binary_buffers.items[time_bv.buffer];
             var time_iter = time_acc.iterator(f32, &gltf_data, time_bin);
             if (gltf_sampler.interpolation != .linear) {
-                log.warn("non-linear interpolation mode specified for model {s} animation {s}/{} sampler {}", .{
+                log.warn("non-linear interpolation mode {s} specified for model {s} animation {s}/{} sampler {}", .{
+                    @tagName(gltf_sampler.interpolation),
                     model_path,
                     gltf_anim.name orelse "unnamed",
                     anim_index,
