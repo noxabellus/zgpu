@@ -517,6 +517,17 @@ pub fn loadGltf(
                     anim_index,
                     sampler_index,
                 });
+
+                for (gltf_anim.channels) |c| {
+                    if (c.sampler == sampler_index) {
+                        const node = gltf_data.data.nodes[c.target.node];
+                        log.warn("sampler used in channel targeting node {s}/{} property {s}", .{
+                            node.name orelse "unnamed",
+                            c.target.node,
+                            @tagName(c.target.property),
+                        });
+                    }
+                }
             }
             var times = try std.ArrayList(f32).initCapacity(allocator, time_acc.count);
             errdefer times.deinit(allocator);
