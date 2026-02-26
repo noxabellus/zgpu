@@ -13,6 +13,7 @@ const Application = @import("../Application.zig");
 const RenderTexture = @import("../RenderTexture.zig");
 const Compositor = @import("../Compositor.zig");
 const Camera = @import("../Camera.zig");
+const EnvironmentLight = @import("../EnvironmentLight.zig");
 const debug = @import("../debug.zig");
 const Batch2D = @import("../Batch2D.zig");
 const AssetCache = @import("../AssetCache.zig");
@@ -41,6 +42,7 @@ const Demo = struct {
     app: *Application,
 
     camera: Camera,
+    light: EnvironmentLight = .{},
 
     model: ?Model = null,
     animator: Model.Animator = .{},
@@ -233,16 +235,30 @@ pub fn main() !void {
         &demo,
     );
 
+    try ui.addListener(
+        .fromSlice("lightBrightnessSlider"),
+        .float_change,
+        Demo,
+        &struct {
+            pub fn brightness_slider_listener(d: *Demo, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.float_change)) anyerror!void {
+                d.light.config.brightness = @floatCast(new_value);
+                std.debug.print("New Light Values: {any}\n", .{d.light.config});
+            }
+        }.brightness_slider_listener,
+        &demo,
+    );
+
     const shader_module = try app.gpu.loadShaderText("GltfMultiPurpose.wgsl", shader_text);
     defer wgpu.shaderModuleRelease(shader_module);
 
     const pipeline_layout = app.gpu.createPipelineLayout(&.{
         .label = .fromSlice("pipeline_layout"),
-        .bind_group_layout_count = 3,
+        .bind_group_layout_count = 4,
         .bind_group_layouts = &.{
             Camera.getBindGroupLayout(&app.gpu),
             Model.getTextureBindGroupLayout(&app.gpu),
             Model.AnimationState.getBindGroupLayout(&app.gpu),
+            EnvironmentLight.getBindGroupLayout(&app.gpu),
         },
     });
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
@@ -517,6 +533,70 @@ pub fn main() !void {
                             }
                         }
                     }
+
+                    {
+                        {
+                            try ui.beginElement(.fromSlice("TitleText2"));
+                            defer ui.closeElement();
+
+                            try ui.configureElement(.{
+                                .layout = .{
+                                    .sizing = .fit,
+                                },
+                            });
+
+                            try ui.text("Light", .{
+                                .font_id = FONT_ID_TITLE,
+                                .font_size = 32,
+                                .color = COLOR_PHOSPHOR,
+                            });
+                        }
+
+                        {
+                            try ui.beginElement(.fromSlice("BrightnessText"));
+                            defer ui.closeElement();
+
+                            try ui.configureElement(.{
+                                .layout = .{
+                                    .sizing = .fit,
+                                },
+                            });
+
+                            var buf: [128]u8 = undefined;
+                            try ui.text(try std.fmt.bufPrint(&buf, "{d:0.2}", .{demo.light.config.brightness}), .{
+                                .font_id = FONT_ID_BODY,
+                                .font_size = 16,
+                                .color = COLOR_PHOSPHOR,
+                            });
+                        }
+
+                        {
+                            try ui.beginElement(.fromSlice("lightBrightnessSlider"));
+                            defer ui.closeElement();
+
+                            try ui.configureElement(.{
+                                .layout = .{
+                                    .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
+                                },
+                                .widget = true,
+                                .state = .flags(.{
+                                    .click = true,
+                                    .drag = true,
+                                    .focus = true,
+                                    .keyboard = true,
+                                }),
+                            });
+
+                            try ui.bindSlider(f32, .{
+                                .default = demo.light.config.brightness,
+                                .min = 0.0,
+                                .max = 3.0,
+
+                                .track_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                                .handle_color = COLOR_PHOSPHOR,
+                            });
+                        }
+                    }
                 }
             }
 
@@ -541,6 +621,8 @@ pub fn main() !void {
             demo.camera.calculateViewProj(app.window);
             demo.camera.sync(&app.gpu);
 
+            demo.light.sync(&app.gpu);
+
             {
                 const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
                     .label = .fromSlice("main_render_pass"),
@@ -562,10 +644,11 @@ pub fn main() !void {
 
                 if (demo.model) |*model| {
                     wgpu.renderPassEncoderSetPipeline(render_pass, render_pipeline);
-                    wgpu.renderPassEncoderSetBindGroup(render_pass, 0, demo.camera.bind_group, 0, null);
                     for (model.primitives) |primitive| {
+                        wgpu.renderPassEncoderSetBindGroup(render_pass, 0, demo.camera.bind_group, 0, null);
                         wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
                         wgpu.renderPassEncoderSetBindGroup(render_pass, 2, demo.anim_state.bind_group, 0, null);
+                        wgpu.renderPassEncoderSetBindGroup(render_pass, 3, demo.light.bind_group, 0, null);
                         wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
                         wgpu.renderPassEncoderSetIndexBuffer(render_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
                         wgpu.renderPassEncoderDrawIndexed(render_pass, primitive.index_count, 1, 0, 0, 0);

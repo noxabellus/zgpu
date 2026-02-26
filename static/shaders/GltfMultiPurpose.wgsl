@@ -4,21 +4,16 @@ struct CameraUniform {
     view_proj: mat4x4<f32>,
 };
 
-@group(0) @binding(0)
-var<uniform> u_camera: CameraUniform;
-
-@group(1) @binding(0)
-var t_diffuse: texture_2d<f32>;
-
-@group(1) @binding(1)
-var s_diffuse: sampler;
-
 struct SkinUniforms {
     joint_matrices: array<mat4x4<f32>, MAX_JOINTS>,
 };
 
-@group(2) @binding(0)
-var<uniform> u_skin: SkinUniforms;
+struct LightUniforms {
+    brightness: f32,
+    direction: vec3<f32>,
+    color: vec3<f32>,
+    ambient_color: vec3<f32>,
+};
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
@@ -35,6 +30,20 @@ struct VertexOutput {
     @location(1) color: vec4<f32>,
     @location(2) tex_coord: vec2<f32>,
 };
+
+@group(0) @binding(0)
+var<uniform> u_camera: CameraUniform;
+
+@group(1) @binding(0)
+var t_diffuse: texture_2d<f32>;
+@group(1) @binding(1)
+var s_diffuse: sampler;
+
+@group(2) @binding(0)
+var<uniform> u_skin: SkinUniforms;
+
+@group(3) @binding(0)
+var<uniform> u_light: LightUniforms;
 
 @vertex
 fn vs_main(model: VertexInput) -> VertexOutput {
@@ -85,10 +94,10 @@ fn vs_main(model: VertexInput) -> VertexOutput {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    let light_dir = normalize(vec3<f32>(0.5, 1.0, 0.75));
-    let light_intensity = 1.0;
-    let light_color = vec3<f32>(1.0, 1.0, 1.0);
-    let ambient_color = vec3<f32>(0.1, 0.1, 0.1);
+    let light_dir = u_light.direction;
+    let light_intensity = u_light.brightness;
+    let light_color = u_light.color;
+    let ambient_color = u_light.ambient_color;
 
     let normal = normalize(in.normal);
     let texture_color = textureSample(t_diffuse, s_diffuse, in.tex_coord);
