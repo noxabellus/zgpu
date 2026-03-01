@@ -3052,29 +3052,14 @@ fn draw(self: *Ui) !void {
                     .bottom_right = data.corner_radius.bottom_right,
                     .bottom_left = data.corner_radius.bottom_left,
                 };
+                const w = Batch2D.BorderWidth{
+                    .top = @floatFromInt(data.width.top),
+                    .right = @floatFromInt(data.width.right),
+                    .bottom = @floatFromInt(data.width.bottom),
+                    .left = @floatFromInt(data.width.left),
+                };
 
-                // Clay borders are drawn inset. Our drawRoundedRectLine function does this.
-                // However, Clay supports different widths per side, which our function does not.
-                // We will draw each side as a separate component.
-
-                // Top bar
-                try self.renderer.drawRect(.{ pos[0] + r.top_left, pos[1] }, .{ size[0] - r.top_left - r.top_right, @floatFromInt(data.width.top) }, color);
-                // Bottom bar
-                try self.renderer.drawRect(.{ pos[0] + r.bottom_left, pos[1] + size[1] - @as(f32, @floatFromInt(data.width.bottom)) }, .{ size[0] - r.bottom_left - r.bottom_right, @floatFromInt(data.width.bottom) }, color);
-                // Left bar
-                try self.renderer.drawRect(.{ pos[0], pos[1] + r.top_left }, .{ @floatFromInt(data.width.left), size[1] - r.top_left - r.bottom_left }, color);
-                // Right bar
-                try self.renderer.drawRect(.{ pos[0] + size[0] - @as(f32, @floatFromInt(data.width.right)), pos[1] + r.top_right }, .{ @floatFromInt(data.width.right), size[1] - r.top_right - r.bottom_right }, color);
-
-                const pi = std.math.pi;
-                // Top-left corner
-                try self.renderer.drawArcLine(.{ pos[0] + r.top_left, pos[1] + r.top_left }, r.top_left, pi, 1.5 * pi, @max(@as(f32, @floatFromInt(data.width.top)), @as(f32, @floatFromInt(data.width.left))), color);
-                // Top-right corner
-                try self.renderer.drawArcLine(.{ pos[0] + size[0] - r.top_right, pos[1] + r.top_right }, r.top_right, 1.5 * pi, 2.0 * pi, @max(@as(f32, @floatFromInt(data.width.top)), @as(f32, @floatFromInt(data.width.right))), color);
-                // Bottom-right corner
-                try self.renderer.drawArcLine(.{ pos[0] + size[0] - r.bottom_right, pos[1] + size[1] - r.bottom_right }, r.bottom_right, 0, 0.5 * pi, @max(@as(f32, @floatFromInt(data.width.bottom)), @as(f32, @floatFromInt(data.width.right))), color);
-                // Bottom-left corner
-                try self.renderer.drawArcLine(.{ pos[0] + r.bottom_left, pos[1] + size[1] - r.bottom_left }, r.bottom_left, 0.5 * pi, pi, @max(@as(f32, @floatFromInt(data.width.bottom)), @as(f32, @floatFromInt(data.width.left))), color);
+                try self.renderer.drawRoundedRectLine(pos, size, r, w, color);
             },
             .text => {
                 const data = cmd.render_data.text;

@@ -22,7 +22,7 @@ struct QuadInstance {
     @location(3) uv_max: vec2<f32>,
     @location(4) color: vec4<f32>,
     @location(5) radii: vec4<f32>, // tl, tr, br, bl
-    @location(6) border_thickness: f32,
+    @location(6) border_thickness: vec4<f32>, // top, right, bottom, left
     @location(7) edge_softness: f32,
     @location(8) encoded_params: u32,
 };
@@ -35,7 +35,7 @@ struct VertexOutput {
     @location(3) local_pos: vec2<f32>,
     @location(4) size: vec2<f32>,
     @location(5) @interpolate(flat) radii: vec4<f32>,
-    @location(6) @interpolate(flat) border_thickness: f32,
+    @location(6) @interpolate(flat) border_thickness: vec4<f32>,
     @location(7) @interpolate(flat) edge_softness: f32,
 };
 
@@ -91,16 +91,36 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let d = sdRoundRect(in.local_pos, in.size, in.radii);
     var sdf_val = d;
 
-    // Inner stroke offset mapping
-    if (in.border_thickness > 0.0) {
-        sdf_val = abs(d + in.border_thickness * 0.5) - in.border_thickness * 0.5;
+    // 2. Smoothly Interpolated Border Thickness
+    // border_thickness: x=top, y=right, z=bottom, w=left [cite: 28]
+    if (any(in.border_thickness > vec4<f32>(0.0))) {
+        // Calculate normalized coordinates from 0.0 to 1.0 across the quad
+        let st = in.local_pos / in.size;
+
+        // Calculate weights for each side. 
+        // These are highest (1.0) at the edge and 0.0 at the opposite edge.
+        let w_top    = 1.0 - st.y;
+        let w_bottom = st.y;
+        let w_left   = 1.0 - st.x;
+        let w_right  = st.x;
+
+        // Use a power function or smoothstep to sharpen the transition 
+        // toward the corners, ensuring the correct thickness "wins" at the edge.
+        let blend = pow(vec4<f32>(w_top, w_right, w_bottom, w_left), vec4<f32>(4.0));
+        let total_w = blend.x + blend.y + blend.z + blend.w;
+        
+        // Final interpolated thickness
+        let t = dot(in.border_thickness, blend) / total_w;
+
+        // Apply thickness to the SDF
+        sdf_val = abs(d + t * 0.5) - t * 0.5;
     }
 
     // Alpha Anti-Aliasing falloff
     let alpha_factor = 1.0 - smoothstep(-in.edge_softness, in.edge_softness, sdf_val);
     if (alpha_factor <= 0.0) { discard; }
 
-    // 2. Sample Atlas (Identical to Triangles pipeline)
+    // 3. Sample Atlas (Identical to Triangles pipeline)
     let image_id = in.encoded_params & IMAGE_ID_MASK;
     let use_nearest = (in.encoded_params & USE_NEAREST_MASK) != 0u;
 
@@ -134,7 +154,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         sampled_color = mix(color_floor, color_ceil, lod_fract);
     }
 
-    // 3. Blend Alpha & Tint
+    // 4. Blend Alpha & Tint
     var final_color = sampled_color * in.color;
     final_color.a *= alpha_factor;
     final_color.r *= final_color.a;

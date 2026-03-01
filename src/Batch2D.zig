@@ -81,6 +81,72 @@ pub const Color = struct {
     }
 };
 
+pub const CornerRadius = struct {
+    top_left: f32 = 0.0,
+    top_right: f32 = 0.0,
+    bottom_right: f32 = 0.0,
+    bottom_left: f32 = 0.0,
+
+    pub fn all(radius: f32) CornerRadius {
+        return .{ .top_left = radius, .top_right = radius, .bottom_right = radius, .bottom_left = radius };
+    }
+
+    pub fn nonUniform(top_left: f32, top_right: f32, bottom_right: f32, bottom_left: f32) CornerRadius {
+        return .{ .top_left = top_left, .top_right = top_right, .bottom_right = bottom_right, .bottom_left = bottom_left };
+    }
+};
+
+pub const BorderWidth = struct {
+    top: f32 = 0.0,
+    right: f32 = 0.0,
+    bottom: f32 = 0.0,
+    left: f32 = 0.0,
+
+    pub fn x(w: f32) BorderWidth {
+        return .{ .top = 0, .right = w, .bottom = 0, .left = w };
+    }
+
+    pub fn y(h: f32) BorderWidth {
+        return .{ .top = h, .right = 0, .bottom = h, .left = 0 };
+    }
+
+    pub fn xy(w: f32, h: f32) BorderWidth {
+        return .{ .top = h, .right = w, .bottom = h, .left = w };
+    }
+
+    pub fn all(width: f32) BorderWidth {
+        return .{ .top = width, .right = width, .bottom = width, .left = width };
+    }
+
+    pub fn nonUniform(top: f32, right: f32, bottom: f32, left: f32) BorderWidth {
+        return .{ .top = top, .right = right, .bottom = bottom, .left = left };
+    }
+
+    pub fn withTop(self: *const BorderWidth, w: f32) BorderWidth {
+        return .{ .top = w, .right = self.right, .bottom = self.bottom, .left = self.left };
+    }
+
+    pub fn withRight(self: *const BorderWidth, w: f32) BorderWidth {
+        return .{ .top = self.top, .right = w, .bottom = self.bottom, .left = self.left };
+    }
+
+    pub fn withBottom(self: *const BorderWidth, w: f32) BorderWidth {
+        return .{ .top = self.top, .right = self.right, .bottom = w, .left = self.left };
+    }
+
+    pub fn withLeft(self: *const BorderWidth, w: f32) BorderWidth {
+        return .{ .top = self.top, .right = self.right, .bottom = self.bottom, .left = w };
+    }
+
+    pub fn withX(self: *const BorderWidth, w: f32) BorderWidth {
+        return .{ .top = self.top, .right = w, .bottom = self.bottom, .left = w };
+    }
+
+    pub fn withY(self: *const BorderWidth, h: f32) BorderWidth {
+        return .{ .top = h, .right = self.right, .bottom = h, .left = self.left };
+    }
+};
+
 // --- Internal Structs ---
 const USE_NEAREST_MASK: u32 = 0x80000000;
 const IMAGE_ID_MASK: u32 = 0x7FFFFFFF;
@@ -116,13 +182,12 @@ const Quad = extern struct {
     uv_max: [2]f32,
     color: [4]f32,
     radii: [4]f32,
-    border_thickness: f32,
+    border_thickness: [4]f32,
     edge_softness: f32,
     /// Encoded rendering parameters passed to the shader.
     /// - Bit 31: Use Nearest Filter flag (for text, solid colors, etc.)
     /// - Bits 0-30: Logical Image ID (index into the indirection table storage buffer)
     encoded_params: u32,
-    _pad: u32 = 0, // 16-byte alignment
 };
 
 const Uniforms = extern struct {
@@ -348,7 +413,7 @@ pub fn init(
                     .{ .shaderLocation = 3, .offset = @offsetOf(Quad, "uv_max"), .format = .float32x2 },
                     .{ .shaderLocation = 4, .offset = @offsetOf(Quad, "color"), .format = .float32x4 },
                     .{ .shaderLocation = 5, .offset = @offsetOf(Quad, "radii"), .format = .float32x4 },
-                    .{ .shaderLocation = 6, .offset = @offsetOf(Quad, "border_thickness"), .format = .float32 },
+                    .{ .shaderLocation = 6, .offset = @offsetOf(Quad, "border_thickness"), .format = .float32x4 },
                     .{ .shaderLocation = 7, .offset = @offsetOf(Quad, "edge_softness"), .format = .float32 },
                     .{ .shaderLocation = 8, .offset = @offsetOf(Quad, "encoded_params"), .format = .uint32 },
                 },
@@ -749,59 +814,48 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
     }
 }
 
-pub const CornerRadius = struct {
-    top_left: f32 = 0.0,
-    top_right: f32 = 0.0,
-    bottom_right: f32 = 0.0,
-    bottom_left: f32 = 0.0,
-
-    pub fn all(radius: f32) CornerRadius {
-        return .{ .top_left = radius, .top_right = radius, .bottom_right = radius, .bottom_left = radius };
-    }
-
-    pub fn nonUniform(top_left: f32, top_right: f32, bottom_right: f32, bottom_left: f32) CornerRadius {
-        return .{ .top_left = top_left, .top_right = top_right, .bottom_right = bottom_right, .bottom_left = bottom_left };
-    }
-};
-
 /// Draws a filled rectangle. This is a convenience wrapper around drawQuad.
 pub fn drawRect(self: *Batch2D, pos: vec2, size: vec2, tint: Color) !void {
-    try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, .{}, 0.0, tint);
+    try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, .{}, .all(0.0), tint);
 }
 
 /// Draws the outline of a rectangle with a specified thickness.
-pub fn drawRectLine(self: *Batch2D, pos: vec2, size: vec2, thickness: f32, tint: Color) !void {
+pub fn drawRectLine(self: *Batch2D, pos: vec2, size: vec2, thickness: BorderWidth, tint: Color) !void {
     // Ensure thickness isn't larger than the rectangle itself
-    const t = @min(thickness, @min(size[0] / 2.0, size[1] / 2.0));
-    if (t <= 0.0) return;
+    inline for (comptime std.meta.fieldNames(BorderWidth)) |fieldName| {
+        const t = @min(@field(thickness, fieldName), @min(size[0] / 2.0, size[1] / 2.0));
+        if (t <= 0.0) return;
+    }
 
     try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, .{}, thickness, tint);
 }
 
 /// Draws a filled rectangle with potentially different radii for each corner.
 pub fn drawRoundedRect(self: *Batch2D, pos: vec2, size: vec2, radius: CornerRadius, tint: Color) !void {
-    try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, radius, 0.0, tint);
+    try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, radius, .all(0.0), tint);
 }
 
 /// Draws the outline of a rectangle with potentially different radii for each corner,
 /// drawn inwards from the specified boundary.
 /// `pos` and `size` define the outer bounding box. `radius` defines the outer corner radii.
-pub fn drawRoundedRectLine(self: *Batch2D, pos: vec2, size: vec2, radius: CornerRadius, thickness: f32, tint: Color) !void {
+pub fn drawRoundedRectLine(self: *Batch2D, pos: vec2, size: vec2, radius: CornerRadius, thickness: BorderWidth, tint: Color) !void {
     // Ensure thickness isn't larger than the rectangle itself
-    const t = @min(thickness, @min(size[0] / 2.0, size[1] / 2.0));
-    if (t <= 0.0) return;
+    inline for (comptime std.meta.fieldNames(BorderWidth)) |fieldName| {
+        const t = @min(@field(thickness, fieldName), @min(size[0] / 2.0, size[1] / 2.0));
+        if (t <= 0.0) return;
+    }
 
     try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, radius, thickness, tint);
 }
 
 pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size: vec2, src_rect: ?UvRect, tint: Color) !void {
-    try self.pushTexturedQuad(image_id, pos, size, src_rect, .{}, 0.0, tint);
+    try self.pushTexturedQuad(image_id, pos, size, src_rect, .{}, .all(0.0), tint);
 }
 
 /// Draws a textured quad with rounded corners, using a 9-slice method.
 /// The `src_rect` defines the texture area, and `radius` defines the screen-space corner size.
 pub fn drawRoundedTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size: vec2, radius: CornerRadius, src_rect: ?UvRect, tint: Color) !void {
-    try self.pushTexturedQuad(image_id, pos, size, src_rect, radius, 0.0, tint);
+    try self.pushTexturedQuad(image_id, pos, size, src_rect, radius, .all(0.0), tint);
 }
 
 pub fn drawTriangle(self: *Batch2D, v1: vec2, v2: vec2, v3: vec2, tint: Color) !void {
@@ -810,9 +864,10 @@ pub fn drawTriangle(self: *Batch2D, v1: vec2, v2: vec2, v3: vec2, tint: Color) !
     try self.pushTexturedTriangle(AssetCache.WHITE_PIXEL_ID, v1, uv, v2, uv, v3, uv, tint);
 }
 
-pub fn pushTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size: vec2, uv_rect: ?UvRect, corner_radius: CornerRadius, border_thickness: f32, tint: Color) !void {
+pub fn pushTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size: vec2, uv_rect: ?UvRect, corner_radius: CornerRadius, border_thickness: BorderWidth, tint: Color) !void {
     const uv_min, const uv_max = if (uv_rect) |r| r else .{ .{ 0, 0 }, .{ 1, 1 } };
     const radii = [4]f32{ @max(0.0, corner_radius.top_left), @max(0.0, corner_radius.top_right), @max(0.0, corner_radius.bottom_right), @max(0.0, corner_radius.bottom_left) };
+    const thickness = [4]f32{ @max(0.0, border_thickness.top), @max(0.0, border_thickness.right), @max(0.0, border_thickness.bottom), @max(0.0, border_thickness.left) };
 
     const location = self.atlas.query(image_id, self.provider_context) catch |err| {
         if (err == error.ImageNotYetPacked) {
@@ -826,7 +881,7 @@ pub fn pushTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size
                 .count = 1,
             });
             // 2. Push a placeholder quad with `encoded_params = 0` and the ORIGINAL image-relative UVs.
-            return self.pushQuad(0, pos, size, uv_min, uv_max, tint, radii, border_thickness);
+            return self.pushQuad(0, pos, size, uv_min, uv_max, tint, radii, thickness);
         }
         return err;
     };
@@ -848,7 +903,7 @@ pub fn pushTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size
     const encoded_params = use_nearest_flag | (location.indirection_table_index & IMAGE_ID_MASK);
 
     // 2. Push the triangle with the final `encoded_params` and the ORIGINAL image-relative UVs.
-    try self.pushQuad(encoded_params, pos, size, uv_min, uv_max, tint, radii, border_thickness);
+    try self.pushQuad(encoded_params, pos, size, uv_min, uv_max, tint, radii, thickness);
 }
 
 pub fn pushTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, v1: vec2, uv1: vec2, v2: vec2, uv2: vec2, v3: vec2, uv3: vec2, tint: Color) !void {
@@ -1332,7 +1387,7 @@ pub fn preAtlasAllImages(renderer: *Batch2D) !void {
     log.info("Finished pre-atlasing all images in {:.2}ms.", .{duration_ms});
 }
 
-fn pushQuad(self: *Batch2D, encoded_params: u32, pos: vec2, size: vec2, uv_min: vec2, uv_max: vec2, tint: Color, radii: [4]f32, border_thickness: f32) !void {
+fn pushQuad(self: *Batch2D, encoded_params: u32, pos: vec2, size: vec2, uv_min: vec2, uv_max: vec2, tint: Color, radii: [4]f32, border_thickness: [4]f32) !void {
     try self.ensurePipeline(.quad);
 
     // We can map 1.0 to pixel density later if we support DPI scaling

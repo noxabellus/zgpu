@@ -382,6 +382,16 @@ pub fn main() !void {
                         },
                         .background_color = COLOR_GREYBROWN,
                         .corner_radius = .all(10),
+
+                        .border = .{
+                            .color = COLOR_PHOSPHOR,
+                            .width = .{
+                                .top = 1,
+                                .right = 3,
+                                .bottom = 6,
+                                .left = 9,
+                            },
+                        },
                     });
                     defer ui.closeElement();
 
