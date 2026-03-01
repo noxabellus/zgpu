@@ -248,8 +248,11 @@ pub fn build(b: *std.Build) void {
     exe_mod.addAnonymousImport("shaders/GltfMultiPurpose.wgsl", .{
         .root_source_file = b.path("static/shaders/GltfMultiPurpose.wgsl"),
     });
-    exe_mod.addAnonymousImport("shaders/Renderer.wgsl", .{
-        .root_source_file = b.path("static/shaders/Renderer.wgsl"),
+    exe_mod.addAnonymousImport("shaders/2d/Quads.wgsl", .{
+        .root_source_file = b.path("static/shaders/2d/Quads.wgsl"),
+    });
+    exe_mod.addAnonymousImport("shaders/2d/Triangles.wgsl", .{
+        .root_source_file = b.path("static/shaders/2d/Triangles.wgsl"),
     });
     exe_mod.addAnonymousImport("shaders/GridMesher.wgsl", .{
         .root_source_file = b.path("static/shaders/GridMesher.wgsl"),

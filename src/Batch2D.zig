@@ -93,8 +93,9 @@ const ScissorRect = extern struct {
 };
 
 const RenderBatch = struct {
-    vertex_start: usize,
-    vertex_count: usize,
+    pipeline: PipelineKind,
+    start_index: usize,
+    count: usize,
     scissor: ScissorRect,
 };
 
@@ -108,14 +109,36 @@ const Vertex = extern struct {
     encoded_params: u32,
 };
 
+const Quad = extern struct {
+    position: [2]f32,
+    size: [2]f32,
+    uv_min: [2]f32,
+    uv_max: [2]f32,
+    color: [4]f32,
+    radii: [4]f32,
+    border_thickness: f32,
+    edge_softness: f32,
+    /// Encoded rendering parameters passed to the shader.
+    /// - Bit 31: Use Nearest Filter flag (for text, solid colors, etc.)
+    /// - Bits 0-30: Logical Image ID (index into the indirection table storage buffer)
+    encoded_params: u32,
+    _pad: u32 = 0, // 16-byte alignment
+};
+
 const Uniforms = extern struct {
     projection: mat4,
 };
 
 const Patch = struct {
+    kind: PipelineKind,
     image_id: Atlas.ImageId,
-    vertex_start_index: usize,
-    vertex_count: usize,
+    start_index: usize,
+    count: usize,
+};
+
+const PipelineKind = enum {
+    tri,
+    quad,
 };
 
 pub const DataProvider = Atlas.DataProvider;
@@ -125,8 +148,10 @@ pub const ProviderContext = Atlas.ProviderContext;
 allocator: std.mem.Allocator,
 device: wgpu.Device,
 queue: wgpu.Queue,
-pipeline: wgpu.RenderPipeline,
 uniform_buffer: wgpu.Buffer,
+
+tri_pipeline: wgpu.RenderPipeline,
+quad_pipeline: wgpu.RenderPipeline,
 
 // Viewport State
 viewport_width: u32,
@@ -139,6 +164,13 @@ vertex_staging_buffer: wgpu.Buffer,
 vertex_staging_buffer_capacity: usize,
 vertices: std.ArrayList(Vertex),
 
+// Quad buffers
+quad_buffer: wgpu.Buffer,
+quad_buffer_capacity: usize,
+quad_staging_buffer: wgpu.Buffer,
+quad_staging_buffer_capacity: usize,
+quads: std.ArrayList(Quad),
+
 // Drawing State
 asset_cache: *AssetCache,
 atlas: *Atlas,
@@ -150,7 +182,9 @@ nearest_sampler: wgpu.Sampler,
 patch_list: std.ArrayList(Patch),
 batch_list: std.ArrayList(RenderBatch),
 scissor_stack: std.ArrayList(ScissorRect),
-current_batch_vertex_start: usize,
+
+current_pipeline: ?PipelineKind,
+current_batch_start: usize,
 
 // Indirection Table Buffers
 indirection_buffer: wgpu.Buffer,
@@ -172,8 +206,11 @@ pub fn init(
     const atlas = try Atlas.init(allocator, device, queue, 2048, 2048, Atlas.MAX_MIP_LEVELS);
     errdefer atlas.deinit();
 
-    const shader_module = try wgpu.loadShaderText(device, "Renderer", @embedFile("shaders/Renderer.wgsl"));
-    defer wgpu.shaderModuleRelease(shader_module);
+    const tri_shader_module = try wgpu.loadShaderText(device, "static/shaders/2d/Triangles.wgsl", @embedFile("shaders/2d/Triangles.wgsl"));
+    defer wgpu.shaderModuleRelease(tri_shader_module);
+
+    const quad_shader_module = try wgpu.loadShaderText(device, "static/shaders/2d/Quads.wgsl", @embedFile("shaders/2d/Quads.wgsl"));
+    defer wgpu.shaderModuleRelease(quad_shader_module);
 
     const uniform_buffer = wgpu.deviceCreateBuffer(device, &.{
         .label = .fromSlice("uniform_buffer"),
@@ -207,6 +244,14 @@ pub fn init(
         .size = initial_vertex_capacity_bytes,
     });
     errdefer wgpu.bufferRelease(vertex_staging_buffer);
+
+    const initial_quad_capacity_bytes = 4096 * @sizeOf(Quad);
+    const quad_staging_buffer = wgpu.deviceCreateBuffer(device, &.{
+        .label = .fromSlice("quad_staging_buffer"),
+        .usage = .{ .map_write = true, .copy_src = true },
+        .size = initial_quad_capacity_bytes,
+    });
+    errdefer wgpu.bufferRelease(quad_staging_buffer);
 
     const linear_sampler = wgpu.deviceCreateSampler(device, &.{
         .label = .fromSlice("linear_sampler"),
@@ -255,11 +300,11 @@ pub fn init(
         .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .one_minus_src_alpha },
     };
 
-    const pipeline = wgpu.deviceCreateRenderPipeline(device, &wgpu.RenderPipelineDescriptor{
-        .label = .fromSlice("batch2d_render_pipeline"),
+    const tri_pipeline = wgpu.deviceCreateRenderPipeline(device, &wgpu.RenderPipelineDescriptor{
+        .label = .fromSlice("batch2d_tri_render_pipeline"),
         .layout = pipeline_layout,
         .vertex = .{
-            .module = shader_module,
+            .module = tri_shader_module,
             .entry_point = .fromSlice("vs_main"),
             .buffer_count = 1,
             .buffers = &.{.{
@@ -275,7 +320,7 @@ pub fn init(
             }},
         },
         .fragment = &wgpu.FragmentState{
-            .module = shader_module,
+            .module = tri_shader_module,
             .entry_point = .fromSlice("fs_main"),
             .target_count = 1,
             .targets = &.{.{ .format = surface_format, .blend = &blend_state, .write_mask = .all }},
@@ -283,14 +328,49 @@ pub fn init(
         .primitive = .{ .topology = .triangle_list },
         .multisample = .{ .count = sample_count, .mask = 0xFFFFFFFF },
     });
-    std.debug.assert(pipeline != null);
+    std.debug.assert(tri_pipeline != null);
 
-    const initial_capacity = 4096;
+    const quad_pipeline = wgpu.deviceCreateRenderPipeline(device, &wgpu.RenderPipelineDescriptor{
+        .label = .fromSlice("batch2d_quad_render_pipeline"),
+        .layout = pipeline_layout,
+        .vertex = .{
+            .module = quad_shader_module,
+            .entry_point = .fromSlice("vs_main"),
+            .buffer_count = 1,
+            .buffers = &.{.{
+                .array_stride = @sizeOf(Quad),
+                .step_mode = .instance,
+                .attribute_count = 9,
+                .attributes = &[_]wgpu.VertexAttribute{
+                    .{ .shaderLocation = 0, .offset = @offsetOf(Quad, "position"), .format = .float32x2 },
+                    .{ .shaderLocation = 1, .offset = @offsetOf(Quad, "size"), .format = .float32x2 },
+                    .{ .shaderLocation = 2, .offset = @offsetOf(Quad, "uv_min"), .format = .float32x2 },
+                    .{ .shaderLocation = 3, .offset = @offsetOf(Quad, "uv_max"), .format = .float32x2 },
+                    .{ .shaderLocation = 4, .offset = @offsetOf(Quad, "color"), .format = .float32x4 },
+                    .{ .shaderLocation = 5, .offset = @offsetOf(Quad, "radii"), .format = .float32x4 },
+                    .{ .shaderLocation = 6, .offset = @offsetOf(Quad, "border_thickness"), .format = .float32 },
+                    .{ .shaderLocation = 7, .offset = @offsetOf(Quad, "edge_softness"), .format = .float32 },
+                    .{ .shaderLocation = 8, .offset = @offsetOf(Quad, "encoded_params"), .format = .uint32 },
+                },
+            }},
+        },
+        .fragment = &wgpu.FragmentState{
+            .module = quad_shader_module,
+            .entry_point = .fromSlice("fs_main"),
+            .target_count = 1,
+            .targets = &.{.{ .format = surface_format, .blend = &blend_state, .write_mask = .all }},
+        },
+        .primitive = .{ .topology = .triangle_list },
+        .multisample = .{ .count = sample_count, .mask = 0xFFFFFFFF },
+    });
+    std.debug.assert(tri_pipeline != null);
+
     self.* = .{
         .allocator = allocator,
         .device = device,
         .queue = queue,
-        .pipeline = pipeline,
+        .tri_pipeline = tri_pipeline,
+        .quad_pipeline = quad_pipeline,
         .uniform_buffer = uniform_buffer,
         .viewport_width = 0,
         .viewport_height = 0,
@@ -299,6 +379,11 @@ pub fn init(
         .vertex_staging_buffer = vertex_staging_buffer,
         .vertex_staging_buffer_capacity = initial_vertex_capacity_bytes,
         .vertices = .empty,
+        .quad_buffer = null,
+        .quad_buffer_capacity = 0,
+        .quad_staging_buffer = quad_staging_buffer,
+        .quad_staging_buffer_capacity = initial_quad_capacity_bytes,
+        .quads = .empty,
         .asset_cache = asset_cache,
         .atlas = atlas,
         .frame_arena = std.heap.ArenaAllocator.init(allocator),
@@ -313,14 +398,16 @@ pub fn init(
         .patch_list = .empty,
         .batch_list = .empty,
         .scissor_stack = .empty,
-        .current_batch_vertex_start = 0,
+        .current_pipeline = null,
+        .current_batch_start = 0,
         .indirection_buffer = indirection_buffer,
         .indirection_buffer_capacity = initial_indirection_capacity,
         .indirection_staging_buffer = indirection_staging_buffer,
         .indirection_staging_buffer_capacity = initial_indirection_capacity * @sizeOf(Atlas.ImageMipData),
     };
 
-    try self.vertices.ensureTotalCapacity(self.allocator, initial_capacity);
+    try self.vertices.ensureTotalCapacity(self.allocator, 4096);
+    try self.quads.ensureTotalCapacity(self.allocator, 4096);
     try self.patch_list.ensureTotalCapacity(self.allocator, 128);
     try self.batch_list.ensureTotalCapacity(self.allocator, 32);
     try self.scissor_stack.ensureTotalCapacity(self.allocator, 8);
@@ -332,14 +419,17 @@ pub fn deinit(self: *Batch2D) void {
     self.atlas.deinit();
     if (self.bind_group != null) wgpu.bindGroupRelease(self.bind_group);
     if (self.vertex_buffer_capacity > 0) wgpu.bufferRelease(self.vertex_buffer);
+    if (self.quad_buffer_capacity > 0) wgpu.bufferRelease(self.quad_buffer);
     wgpu.bufferRelease(self.vertex_staging_buffer);
+    wgpu.bufferRelease(self.quad_staging_buffer);
     wgpu.bufferRelease(self.indirection_buffer);
     wgpu.bufferRelease(self.indirection_staging_buffer);
     wgpu.bufferRelease(self.uniform_buffer);
     wgpu.samplerRelease(self.linear_sampler);
     wgpu.samplerRelease(self.nearest_sampler);
-    wgpu.renderPipelineRelease(self.pipeline);
+    wgpu.renderPipelineRelease(self.tri_pipeline);
     self.vertices.deinit(self.allocator);
+    self.quads.deinit(self.allocator);
     self.patch_list.deinit(self.allocator);
     self.batch_list.deinit(self.allocator);
     self.scissor_stack.deinit(self.allocator);
@@ -359,6 +449,7 @@ pub fn beginFrame(self: *Batch2D, projection: mat4, viewport_width: u32, viewpor
 
     wgpu.queueWriteBuffer(self.queue, self.uniform_buffer, 0, &Uniforms{ .projection = projection }, @sizeOf(Uniforms));
     self.vertices.clearRetainingCapacity();
+    self.quads.clearRetainingCapacity();
     self.patch_list.clearRetainingCapacity();
     self.batch_list.clearRetainingCapacity();
     self.scissor_stack.clearRetainingCapacity();
@@ -370,21 +461,42 @@ pub fn beginFrame(self: *Batch2D, projection: mat4, viewport_width: u32, viewpor
         .width = viewport_width,
         .height = viewport_height,
     });
-    self.current_batch_vertex_start = 0;
+
+    self.current_pipeline = null;
+    self.current_batch_start = 0;
 }
 
 fn endCurrentBatch(self: *Batch2D) !void {
-    const vertex_count = self.vertices.items.len - self.current_batch_vertex_start;
-    if (vertex_count > 0) {
+    if (self.current_pipeline == null) return;
+
+    const len = switch (self.current_pipeline.?) {
+        .tri => self.vertices.items.len,
+        .quad => self.quads.items.len,
+    };
+
+    const count = len - self.current_batch_start;
+
+    if (count > 0) {
         std.debug.assert(self.scissor_stack.items.len > 0);
         const current_scissor = self.scissor_stack.items[self.scissor_stack.items.len - 1];
         try self.batch_list.append(self.allocator, .{
-            .vertex_start = self.current_batch_vertex_start,
-            .vertex_count = vertex_count,
+            .pipeline = self.current_pipeline.?,
+            .start_index = self.current_batch_start,
+            .count = count,
             .scissor = current_scissor,
         });
     }
-    self.current_batch_vertex_start = self.vertices.items.len;
+}
+
+fn ensurePipeline(self: *Batch2D, pipeline: PipelineKind) !void {
+    if (self.current_pipeline != pipeline) {
+        try self.endCurrentBatch();
+        self.current_pipeline = pipeline;
+        self.current_batch_start = switch (pipeline) {
+            .tri => self.vertices.items.len,
+            .quad => self.quads.items.len,
+        };
+    }
 }
 
 pub fn scissorStart(self: *Batch2D, pos: vec2, size: vec2) !void {
@@ -464,8 +576,16 @@ pub fn endFrame(self: *Batch2D) !void {
         const use_nearest_flag = if (use_nearest) USE_NEAREST_MASK else 0;
         const encoded_params = use_nearest_flag | (location.indirection_table_index & IMAGE_ID_MASK);
 
-        const verts = self.vertices.items[p.vertex_start_index .. p.vertex_start_index + p.vertex_count];
-        for (verts) |*v| v.encoded_params = encoded_params;
+        switch (p.kind) {
+            .tri => {
+                const verts = self.vertices.items[p.start_index .. p.start_index + p.count];
+                for (verts) |*v| v.encoded_params = encoded_params;
+            },
+            .quad => {
+                const quads = self.quads.items[p.start_index .. p.start_index + p.count];
+                for (quads) |*q| q.encoded_params = encoded_params;
+            },
+        }
     }
 
     // --- Upload data to GPU via staging buffers ---
@@ -547,6 +667,40 @@ pub fn endFrame(self: *Batch2D) !void {
         wgpu.commandEncoderCopyBufferToBuffer(upload_encoder, self.vertex_staging_buffer, 0, self.vertex_buffer, 0, required_size);
     }
 
+    // Upload quad data if it has data
+    if (self.quads.items.len > 0) {
+        const required_size = self.quads.items.len * @sizeOf(Quad);
+
+        // Resize final GPU buffer if needed
+        if (self.quad_buffer_capacity < required_size) {
+            if (self.quad_buffer_capacity > 0) wgpu.bufferRelease(self.quad_buffer);
+            const new_capacity = @max(self.quad_buffer_capacity * 2, required_size);
+            self.quad_buffer = wgpu.deviceCreateBuffer(self.device, &.{
+                .label = .fromSlice("quad_buffer"),
+                .usage = wgpu.BufferUsage{ .vertex = true, .copy_dst = true },
+                .size = new_capacity,
+            });
+            self.quad_buffer_capacity = new_capacity;
+            log.debug("resized quad buffer to {d} bytes", .{new_capacity});
+        }
+
+        // Resize staging buffer if needed
+        if (self.quad_staging_buffer_capacity < required_size) {
+            wgpu.bufferRelease(self.quad_staging_buffer);
+            const new_capacity = @max(self.quad_staging_buffer_capacity * 2, required_size);
+            self.quad_staging_buffer = wgpu.deviceCreateBuffer(self.device, &.{
+                .label = .fromSlice("quad_staging_buffer"),
+                .usage = wgpu.BufferUsage{ .map_write = true, .copy_src = true },
+                .size = new_capacity,
+            });
+            self.quad_staging_buffer_capacity = new_capacity;
+        }
+
+        // Perform the upload
+        try uploadSliceToBuffer(self.device, self.quad_staging_buffer, self.quads.items);
+        wgpu.commandEncoderCopyBufferToBuffer(upload_encoder, self.quad_staging_buffer, 0, self.quad_buffer, 0, required_size);
+    }
+
     // Submit the upload commands to the GPU.
     const upload_cmd = wgpu.commandEncoderFinish(upload_encoder, null);
     defer wgpu.commandBufferRelease(upload_cmd);
@@ -563,70 +717,43 @@ pub fn endFrame(self: *Batch2D) !void {
 }
 
 pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
-    if (self.vertices.items.len == 0 or self.bind_group == null) return;
+    if (self.bind_group == null) return;
 
-    wgpu.renderPassEncoderSetPipeline(render_pass, self.pipeline);
-    wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.vertex_buffer, 0, self.vertices.items.len * @sizeOf(Vertex));
     wgpu.renderPassEncoderSetBindGroup(render_pass, 0, self.bind_group, 0, null);
+
+    var bound_pipeline: ?PipelineKind = null;
 
     // Iterate through the batches and issue a draw call for each one with its specific scissor rect
     for (self.batch_list.items) |batch| {
-        if (batch.vertex_count == 0) continue;
+        if (batch.count == 0) continue;
+
+        if (bound_pipeline != batch.pipeline) {
+            switch (batch.pipeline) {
+                .tri => {
+                    wgpu.renderPassEncoderSetPipeline(render_pass, self.tri_pipeline);
+                    wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.vertex_buffer, 0, self.vertices.items.len * @sizeOf(Vertex));
+                },
+                .quad => {
+                    wgpu.renderPassEncoderSetPipeline(render_pass, self.quad_pipeline);
+                    wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.quad_buffer, 0, self.quads.items.len * @sizeOf(Quad));
+                },
+            }
+            bound_pipeline = batch.pipeline;
+        }
 
         wgpu.renderPassEncoderSetScissorRect(render_pass, batch.scissor.x, batch.scissor.y, batch.scissor.width, batch.scissor.height);
-        wgpu.renderPassEncoderDraw(render_pass, @intCast(batch.vertex_count), 1, @intCast(batch.vertex_start), 0);
+        switch (batch.pipeline) {
+            .tri => wgpu.renderPassEncoderDraw(render_pass, @intCast(batch.count), 1, @intCast(batch.start_index), 0),
+            .quad => wgpu.renderPassEncoderDraw(render_pass, 6, @intCast(batch.count), 0, @intCast(batch.start_index)),
+        }
     }
 }
 
-pub fn drawQuad(self: *Batch2D, pos: vec2, size: vec2, tint: Color) !void {
-    try self.drawTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, tint);
-}
-
-pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size: vec2, src_rect: ?UvRect, tint: Color) !void {
-    const p1 = pos; // Top-left
-    const p2 = vec2{ pos[0] + size[0], pos[1] }; // Top-right
-    const p3 = vec2{ pos[0] + size[0], pos[1] + size[1] }; // Bottom-right
-    const p4 = vec2{ pos[0], pos[1] + size[1] }; // Bottom-left
-
-    const tl, const br = if (src_rect) |rect| rect else .{
-        vec2{ 0.0, 0.0 },
-        vec2{ 1.0, 1.0 },
-    };
-
-    const tr = vec2{ br[0], tl[1] };
-    const bl = vec2{ tl[0], br[1] };
-
-    // Note the winding order for standard quads: TL, TR, BL and TR, BR, BL
-    try self.drawTexturedTriangle(image_id, p1, tl, p2, tr, p4, bl, tint);
-    try self.drawTexturedTriangle(image_id, p2, tr, p3, br, p4, bl, tint);
-}
-
-/// Draws a filled rectangle. This is a convenience wrapper around drawQuad.
-pub fn drawRect(self: *Batch2D, pos: vec2, size: vec2, tint: Color) !void {
-    try self.drawQuad(pos, size, tint);
-}
-
-/// Draws the outline of a rectangle with a specified thickness.
-pub fn drawRectLine(self: *Batch2D, pos: vec2, size: vec2, thickness: f32, tint: Color) !void {
-    // Ensure thickness isn't larger than the rectangle itself
-    const t = @min(thickness, @min(size[0] / 2.0, size[1] / 2.0));
-    if (t <= 0.0) return;
-
-    // Top bar
-    try self.drawQuad(pos, .{ size[0], t }, tint);
-    // Bottom bar
-    try self.drawQuad(.{ pos[0], pos[1] + size[1] - t }, .{ size[0], t }, tint);
-    // Left bar (between top and bottom bars)
-    try self.drawQuad(.{ pos[0], pos[1] + t }, .{ t, size[1] - 2 * t }, tint);
-    // Right bar (between top and bottom bars)
-    try self.drawQuad(.{ pos[0] + size[0] - t, pos[1] + t }, .{ t, size[1] - 2 * t }, tint);
-}
-
 pub const CornerRadius = struct {
-    top_left: f32,
-    top_right: f32,
-    bottom_right: f32,
-    bottom_left: f32,
+    top_left: f32 = 0.0,
+    top_right: f32 = 0.0,
+    bottom_right: f32 = 0.0,
+    bottom_left: f32 = 0.0,
 
     pub fn all(radius: f32) CornerRadius {
         return .{ .top_left = radius, .top_right = radius, .bottom_right = radius, .bottom_left = radius };
@@ -637,263 +764,104 @@ pub const CornerRadius = struct {
     }
 };
 
+/// Draws a filled rectangle. This is a convenience wrapper around drawQuad.
+pub fn drawRect(self: *Batch2D, pos: vec2, size: vec2, tint: Color) !void {
+    try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, .{}, 0.0, tint);
+}
+
+/// Draws the outline of a rectangle with a specified thickness.
+pub fn drawRectLine(self: *Batch2D, pos: vec2, size: vec2, thickness: f32, tint: Color) !void {
+    // Ensure thickness isn't larger than the rectangle itself
+    const t = @min(thickness, @min(size[0] / 2.0, size[1] / 2.0));
+    if (t <= 0.0) return;
+
+    try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, .{}, thickness, tint);
+}
+
 /// Draws a filled rectangle with potentially different radii for each corner.
 pub fn drawRoundedRect(self: *Batch2D, pos: vec2, size: vec2, radius: CornerRadius, tint: Color) !void {
-    // 1. Clamp radii to be non-negative and fit within the rectangle's dimensions.
-    var r = CornerRadius{
-        .top_left = @max(0.0, radius.top_left),
-        .top_right = @max(0.0, radius.top_right),
-        .bottom_right = @max(0.0, radius.bottom_right),
-        .bottom_left = @max(0.0, radius.bottom_left),
-    };
-
-    var scale: f32 = 1.0;
-    if (r.top_left + r.top_right > size[0]) {
-        scale = @min(scale, size[0] / (r.top_left + r.top_right));
-    }
-    if (r.bottom_left + r.bottom_right > size[0]) {
-        scale = @min(scale, size[0] / (r.bottom_left + r.bottom_right));
-    }
-    if (r.top_left + r.bottom_left > size[1]) {
-        scale = @min(scale, size[1] / (r.top_left + r.bottom_left));
-    }
-    if (r.top_right + r.bottom_right > size[1]) {
-        scale = @min(scale, size[1] / (r.top_right + r.bottom_right));
-    }
-
-    r.top_left *= scale;
-    r.top_right *= scale;
-    r.bottom_right *= scale;
-    r.bottom_left *= scale;
-
-    // If all radii are negligible, draw a simple rectangle for performance.
-    if (r.top_left < 0.01 and r.top_right < 0.01 and r.bottom_right < 0.01 and r.bottom_left < 0.01) {
-        return self.drawQuad(pos, size, tint);
-    }
-
-    const pi = std.math.pi;
-
-    // 2. Draw the body of the rectangle using a 5-quad decomposition.
-    // This handles asymmetric radii correctly by building a central cross-shape.
-    const max_r_left = @max(r.top_left, r.bottom_left);
-    const max_r_right = @max(r.top_right, r.bottom_right);
-    const max_r_top = @max(r.top_left, r.top_right);
-    const max_r_bottom = @max(r.bottom_left, r.bottom_right);
-
-    // Center quad
-    try self.drawQuad(
-        .{ pos[0] + max_r_left, pos[1] + max_r_top },
-        .{ size[0] - max_r_left - max_r_right, size[1] - max_r_top - max_r_bottom },
-        tint,
-    );
-    // Top quad
-    try self.drawQuad(
-        .{ pos[0] + r.top_left, pos[1] },
-        .{ size[0] - r.top_left - r.top_right, max_r_top },
-        tint,
-    );
-    // Bottom quad
-    try self.drawQuad(
-        .{ pos[0] + r.bottom_left, pos[1] + size[1] - max_r_bottom },
-        .{ size[0] - r.bottom_left - r.bottom_right, max_r_bottom },
-        tint,
-    );
-    // Left quad
-    try self.drawQuad(
-        .{ pos[0], pos[1] + r.top_left },
-        .{ max_r_left, size[1] - r.top_left - r.bottom_left },
-        tint,
-    );
-    // Right quad
-    try self.drawQuad(
-        .{ pos[0] + size[0] - max_r_right, pos[1] + r.top_right },
-        .{ max_r_right, size[1] - r.top_right - r.bottom_right },
-        tint,
-    );
-
-    // 3. Draw the four corner quarter-circles.
-    // Top-left
-    try self.drawArc(.{ pos[0] + r.top_left, pos[1] + r.top_left }, r.top_left, pi, 1.5 * pi, tint);
-    // Top-right
-    try self.drawArc(.{ pos[0] + size[0] - r.top_right, pos[1] + r.top_right }, r.top_right, 1.5 * pi, 2.0 * pi, tint);
-    // Bottom-right
-    try self.drawArc(.{ pos[0] + size[0] - r.bottom_right, pos[1] + size[1] - r.bottom_right }, r.bottom_right, 0, 0.5 * pi, tint);
-    // Bottom-left
-    try self.drawArc(.{ pos[0] + r.bottom_left, pos[1] + size[1] - r.bottom_left }, r.bottom_left, 0.5 * pi, pi, tint);
+    try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, radius, 0.0, tint);
 }
 
 /// Draws the outline of a rectangle with potentially different radii for each corner,
 /// drawn inwards from the specified boundary.
 /// `pos` and `size` define the outer bounding box. `radius` defines the outer corner radii.
 pub fn drawRoundedRectLine(self: *Batch2D, pos: vec2, size: vec2, radius: CornerRadius, thickness: f32, tint: Color) !void {
-    // Clamp thickness to be non-negative and not larger than the rectangle itself.
+    // Ensure thickness isn't larger than the rectangle itself
     const t = @min(thickness, @min(size[0] / 2.0, size[1] / 2.0));
     if (t <= 0.0) return;
 
-    // 1. Clamp radii to be non-negative and fit within the rectangle's dimensions.
-    var r = CornerRadius{
-        .top_left = @max(0.0, radius.top_left),
-        .top_right = @max(0.0, radius.top_right),
-        .bottom_right = @max(0.0, radius.bottom_right),
-        .bottom_left = @max(0.0, radius.bottom_left),
-    };
+    try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, radius, thickness, tint);
+}
 
-    var scale: f32 = 1.0;
-    if (r.top_left + r.top_right > size[0]) {
-        scale = @min(scale, size[0] / (r.top_left + r.top_right));
-    }
-    if (r.bottom_left + r.bottom_right > size[0]) {
-        scale = @min(scale, size[0] / (r.bottom_left + r.bottom_right));
-    }
-    if (r.top_left + r.bottom_left > size[1]) {
-        scale = @min(scale, size[1] / (r.top_left + r.bottom_left));
-    }
-    if (r.top_right + r.bottom_right > size[1]) {
-        scale = @min(scale, size[1] / (r.top_right + r.bottom_right));
-    }
-
-    r.top_left *= scale;
-    r.top_right *= scale;
-    r.bottom_right *= scale;
-    r.bottom_left *= scale;
-
-    // If all radii are negligible, draw a simple rectangle line for performance.
-    if (r.top_left < 0.01 and r.top_right < 0.01 and r.bottom_right < 0.01 and r.bottom_left < 0.01) {
-        return self.drawRectLine(pos, size, t, tint);
-    }
-
-    const pi = std.math.pi;
-
-    // 2. Draw the four straight line segments as quads inside the boundary.
-    // Top
-    try self.drawQuad(.{ pos[0] + r.top_left, pos[1] }, .{ size[0] - r.top_left - r.top_right, t }, tint);
-    // Bottom
-    try self.drawQuad(.{ pos[0] + r.bottom_left, pos[1] + size[1] - t }, .{ size[0] - r.bottom_left - r.bottom_right, t }, tint);
-    // Left
-    try self.drawQuad(.{ pos[0], pos[1] + r.top_left }, .{ t, size[1] - r.top_left - r.bottom_left }, tint);
-    // Right
-    try self.drawQuad(.{ pos[0] + size[0] - t, pos[1] + r.top_right }, .{ t, size[1] - r.top_right - r.bottom_right }, tint);
-
-    // 3. Draw the four corner arcs.
-    // The `radius` passed to drawArcLine is the outer radius of the stroke.
-    // Top-left
-    try self.drawArcLine(.{ pos[0] + r.top_left, pos[1] + r.top_left }, r.top_left, pi, 1.5 * pi, t, tint);
-    // Top-right
-    try self.drawArcLine(.{ pos[0] + size[0] - r.top_right, pos[1] + r.top_right }, r.top_right, 1.5 * pi, 2.0 * pi, t, tint);
-    // Bottom-right
-    try self.drawArcLine(.{ pos[0] + size[0] - r.bottom_right, pos[1] + size[1] - r.bottom_right }, r.bottom_right, 0, 0.5 * pi, t, tint);
-    // Bottom-left
-    try self.drawArcLine(.{ pos[0] + r.bottom_left, pos[1] + size[1] - r.bottom_left }, r.bottom_left, 0.5 * pi, pi, t, tint);
+pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size: vec2, src_rect: ?UvRect, tint: Color) !void {
+    try self.pushTexturedQuad(image_id, pos, size, src_rect, .{}, 0.0, tint);
 }
 
 /// Draws a textured quad with rounded corners, using a 9-slice method.
 /// The `src_rect` defines the texture area, and `radius` defines the screen-space corner size.
-pub fn drawRoundedTexturedQuad(
-    self: *Batch2D,
-    image_id: Atlas.ImageId,
-    pos: vec2,
-    size: vec2,
-    radius: CornerRadius,
-    src_rect: ?UvRect,
-    tint: Color,
-) !void {
-    if (@reduce(.Or, size <= vec2{ 0, 0 })) return;
-
-    // 1. Clamp radii to be non-negative and fit within the rectangle's dimensions.
-    var r = CornerRadius{
-        .top_left = @max(0.0, radius.top_left),
-        .top_right = @max(0.0, radius.top_right),
-        .bottom_right = @max(0.0, radius.bottom_right),
-        .bottom_left = @max(0.0, radius.bottom_left),
-    };
-
-    var scale: f32 = 1.0;
-    if (r.top_left + r.top_right > size[0]) {
-        scale = @min(scale, size[0] / (r.top_left + r.top_right));
-    }
-    if (r.bottom_left + r.bottom_right > size[0]) {
-        scale = @min(scale, size[0] / (r.bottom_left + r.bottom_right));
-    }
-    if (r.top_left + r.bottom_left > size[1]) {
-        scale = @min(scale, size[1] / (r.top_left + r.bottom_left));
-    }
-    if (r.top_right + r.bottom_right > size[1]) {
-        scale = @min(scale, size[1] / (r.top_right + r.bottom_right));
-    }
-
-    r.top_left *= scale;
-    r.top_right *= scale;
-    r.bottom_right *= scale;
-    r.bottom_left *= scale;
-
-    // If all radii are negligible, draw a simple textured quad for performance.
-    if (r.top_left < 0.01 and r.top_right < 0.01 and r.bottom_right < 0.01 and r.bottom_left < 0.01) {
-        return self.drawTexturedQuad(image_id, pos, size, src_rect, tint);
-    }
-
-    const pi = std.math.pi;
-
-    // 2. Define the 9-slice grid in both screen space (positions) and texture space (UVs).
-    const src = src_rect orelse UvRect{ .{ 0.0, 0.0 }, .{ 1.0, 1.0 } };
-    const src_tl = src[0];
-    const src_br = src[1];
-    const uv_size = vec2{ src_br[0] - src_tl[0], src_br[1] - src_tl[1] };
-
-    // Define the x-coordinates for the grid
-    const pos_x0 = pos[0];
-    const pos_x1 = pos[0] + r.top_left;
-    const pos_x2 = pos[0] + size[0] - r.top_right;
-    const pos_x3 = pos[0] + size[0];
-
-    const uv_x0 = src_tl[0];
-    const uv_x1 = src_tl[0] + (r.top_left / size[0]) * uv_size[0];
-    const uv_x2 = src_br[0] - (r.top_right / size[0]) * uv_size[0];
-    const uv_x3 = src_br[0];
-
-    // Define the y-coordinates for the grid
-    const pos_y0 = pos[1];
-    const pos_y1 = pos[1] + r.top_left;
-    const pos_y2 = pos[1] + size[1] - r.bottom_left;
-    const pos_y3 = pos[1] + size[1];
-
-    const uv_y0 = src_tl[1];
-    const uv_y1 = src_tl[1] + (r.top_left / size[1]) * uv_size[1];
-    const uv_y2 = src_br[1] - (r.bottom_left / size[1]) * uv_size[1];
-    const uv_y3 = src_br[1];
-
-    // 3. Draw the 9 slices using the calculated grid coordinates.
-    // Top Row
-    try self.drawTexturedArc(image_id, .{ pos_x1, pos_y1 }, r.top_left, pi, 1.5 * pi, .{ uv_x1, uv_y1 }, .{ uv_x1 - uv_x0, uv_y1 - uv_y0 }, tint);
-    try self.drawTexturedQuad(image_id, .{ pos_x1, pos_y0 }, .{ pos_x2 - pos_x1, pos_y1 - pos_y0 }, UvRect{ .{ uv_x1, uv_y0 }, .{ uv_x2, uv_y1 } }, tint);
-    try self.drawTexturedArc(image_id, .{ pos_x2, pos_y1 }, r.top_right, 1.5 * pi, 2.0 * pi, .{ uv_x2, uv_y1 }, .{ uv_x3 - uv_x2, uv_y1 - uv_y0 }, tint);
-
-    // Middle Row
-    try self.drawTexturedQuad(image_id, .{ pos_x0, pos_y1 }, .{ pos_x1 - pos_x0, pos_y2 - pos_y1 }, UvRect{ .{ uv_x0, uv_y1 }, .{ uv_x1, uv_y2 } }, tint);
-    try self.drawTexturedQuad(image_id, .{ pos_x1, pos_y1 }, .{ pos_x2 - pos_x1, pos_y2 - pos_y1 }, UvRect{ .{ uv_x1, uv_y1 }, .{ uv_x2, uv_y2 } }, tint);
-    try self.drawTexturedQuad(image_id, .{ pos_x2, pos_y1 }, .{ pos_x3 - pos_x2, pos_y2 - pos_y1 }, UvRect{ .{ uv_x2, uv_y1 }, .{ uv_x3, uv_y2 } }, tint);
-
-    // Bottom Row
-    try self.drawTexturedArc(image_id, .{ pos_x1, pos_y2 }, r.bottom_left, 0.5 * pi, pi, .{ uv_x1, uv_y2 }, .{ uv_x1 - uv_x0, uv_y3 - uv_y2 }, tint);
-    try self.drawTexturedQuad(image_id, .{ pos_x1, pos_y2 }, .{ pos_x2 - pos_x1, pos_y3 - pos_y2 }, UvRect{ .{ uv_x1, uv_y2 }, .{ uv_x2, uv_y3 } }, tint);
-    try self.drawTexturedArc(image_id, .{ pos_x2, pos_y2 }, r.bottom_right, 0, 0.5 * pi, .{ uv_x2, uv_y2 }, .{ uv_x3 - uv_x2, uv_y3 - uv_y2 }, tint);
+pub fn drawRoundedTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size: vec2, radius: CornerRadius, src_rect: ?UvRect, tint: Color) !void {
+    try self.pushTexturedQuad(image_id, pos, size, src_rect, radius, 0.0, tint);
 }
 
 pub fn drawTriangle(self: *Batch2D, v1: vec2, v2: vec2, v3: vec2, tint: Color) !void {
     // Solid triangles use the white pixel texture and have (0,0) UVs, which correctly maps to that single pixel.
     const uv = vec2{ 0.0, 0.0 };
-    try self.drawTexturedTriangle(AssetCache.WHITE_PIXEL_ID, v1, uv, v2, uv, v3, uv, tint);
+    try self.pushTexturedTriangle(AssetCache.WHITE_PIXEL_ID, v1, uv, v2, uv, v3, uv, tint);
 }
 
-pub fn drawTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, v1: vec2, uv1: vec2, v2: vec2, uv2: vec2, v3: vec2, uv3: vec2, tint: Color) !void {
+pub fn pushTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size: vec2, uv_rect: ?UvRect, corner_radius: CornerRadius, border_thickness: f32, tint: Color) !void {
+    const uv_min, const uv_max = if (uv_rect) |r| r else .{ .{ 0, 0 }, .{ 1, 1 } };
+    const radii = [4]f32{ @max(0.0, corner_radius.top_left), @max(0.0, corner_radius.top_right), @max(0.0, corner_radius.bottom_right), @max(0.0, corner_radius.bottom_left) };
+
+    const location = self.atlas.query(image_id, self.provider_context) catch |err| {
+        if (err == error.ImageNotYetPacked) {
+            // UNPACKED PATH: The image isn't in the atlas yet.
+            // 1. Create a patch so we can fix `encoded_params` later.
+            const quad_index = self.quads.items.len;
+            try self.patch_list.append(self.allocator, .{
+                .kind = .quad,
+                .image_id = image_id,
+                .start_index = quad_index,
+                .count = 1,
+            });
+            // 2. Push a placeholder quad with `encoded_params = 0` and the ORIGINAL image-relative UVs.
+            return self.pushQuad(0, pos, size, uv_min, uv_max, tint, radii, border_thickness);
+        }
+        return err;
+    };
+
+    // PACKED PATH: The image is in the atlas.
+    // 1. Calculate the final `encoded_params` with the correct indirection table index.
+    var use_nearest = false;
+    const decoded = AssetCache.decodeGlyphId(image_id);
+    if (decoded.is_glyph_or_special) {
+        if (decoded.font_id == AssetCache.SPECIAL_ID_font_id) {
+            use_nearest = true;
+        } else {
+            const font = &self.asset_cache.fonts.items[decoded.font_id];
+            use_nearest = (font.filter_mode == .nearest);
+        }
+    }
+
+    const use_nearest_flag = if (use_nearest) USE_NEAREST_MASK else 0;
+    const encoded_params = use_nearest_flag | (location.indirection_table_index & IMAGE_ID_MASK);
+
+    // 2. Push the triangle with the final `encoded_params` and the ORIGINAL image-relative UVs.
+    try self.pushQuad(encoded_params, pos, size, uv_min, uv_max, tint, radii, border_thickness);
+}
+
+pub fn pushTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, v1: vec2, uv1: vec2, v2: vec2, uv2: vec2, v3: vec2, uv3: vec2, tint: Color) !void {
     const location = self.atlas.query(image_id, self.provider_context) catch |err| {
         if (err == error.ImageNotYetPacked) {
             // UNPACKED PATH: The image isn't in the atlas yet.
             // 1. Create a patch so we can fix `encoded_params` later.
             const vertex_start_index = self.vertices.items.len;
             try self.patch_list.append(self.allocator, .{
+                .kind = .tri,
                 .image_id = image_id,
-                .vertex_start_index = vertex_start_index,
-                .vertex_count = 3,
+                .start_index = vertex_start_index,
+                .count = 3,
             });
             // 2. Push a placeholder triangle with `encoded_params = 0` and the ORIGINAL image-relative UVs.
             return self.pushTriangle(0, v1, uv1, v2, uv2, v3, uv3, tint);
@@ -1068,7 +1036,7 @@ pub fn drawTexturedArc(
         const uv1 = vec2{ center_uv[0] + cos1 * radius_uv[0], center_uv[1] + sin1 * radius_uv[1] };
         const uv2 = vec2{ center_uv[0] + cos2 * radius_uv[0], center_uv[1] + sin2 * radius_uv[1] };
 
-        try self.drawTexturedTriangle(image_id, center_pos, center_uv, p1, uv1, p2, uv2, tint);
+        try self.pushTexturedTriangle(image_id, center_pos, center_uv, p1, uv1, p2, uv2, tint);
     }
 }
 
@@ -1364,17 +1332,37 @@ pub fn preAtlasAllImages(renderer: *Batch2D) !void {
     log.info("Finished pre-atlasing all images in {:.2}ms.", .{duration_ms});
 }
 
+fn pushQuad(self: *Batch2D, encoded_params: u32, pos: vec2, size: vec2, uv_min: vec2, uv_max: vec2, tint: Color, radii: [4]f32, border_thickness: f32) !void {
+    try self.ensurePipeline(.quad);
+
+    // We can map 1.0 to pixel density later if we support DPI scaling
+    const edge_softness = 1.0;
+
+    try self.quads.append(self.allocator, .{
+        .position = .{ pos[0], pos[1] },
+        .size = .{ size[0], size[1] },
+        .uv_min = .{ uv_min[0], uv_min[1] },
+        .uv_max = .{ uv_max[0], uv_max[1] },
+        .color = .{ tint.r, tint.g, tint.b, tint.a },
+        .radii = radii,
+        .border_thickness = border_thickness,
+        .edge_softness = edge_softness,
+        .encoded_params = encoded_params,
+    });
+}
+
 fn pushTriangle(self: *Batch2D, encoded_params: u32, v1: vec2, uv1: vec2, v2: vec2, uv2: vec2, v3: vec2, uv3: vec2, tint: Color) !void {
-    const c: [4]f32 = .{ tint.r, tint.g, tint.b, tint.a };
+    try self.ensurePipeline(.tri);
+
     try self.vertices.appendSlice(self.allocator, &[_]Vertex{
-        .{ .position = .{ v1[0], v1[1] }, .tex_coords = .{ uv1[0], uv1[1] }, .color = c, .encoded_params = encoded_params },
-        .{ .position = .{ v2[0], v2[1] }, .tex_coords = .{ uv2[0], uv2[1] }, .color = c, .encoded_params = encoded_params },
-        .{ .position = .{ v3[0], v3[1] }, .tex_coords = .{ uv3[0], uv3[1] }, .color = c, .encoded_params = encoded_params },
+        .{ .position = .{ v1[0], v1[1] }, .tex_coords = .{ uv1[0], uv1[1] }, .color = .{ tint.r, tint.g, tint.b, tint.a }, .encoded_params = encoded_params },
+        .{ .position = .{ v2[0], v2[1] }, .tex_coords = .{ uv2[0], uv2[1] }, .color = .{ tint.r, tint.g, tint.b, tint.a }, .encoded_params = encoded_params },
+        .{ .position = .{ v3[0], v3[1] }, .tex_coords = .{ uv3[0], uv3[1] }, .color = .{ tint.r, tint.g, tint.b, tint.a }, .encoded_params = encoded_params },
     });
 }
 
 fn recreateBindGroup(self: *Batch2D) !void {
-    const layout = wgpu.renderPipelineGetBindGroupLayout(self.pipeline, 0);
+    const layout = wgpu.renderPipelineGetBindGroupLayout(self.tri_pipeline, 0);
     const bg = wgpu.deviceCreateBindGroup(self.device, &.{
         .label = .fromSlice("atlas_array_bind_group"),
         .layout = layout,

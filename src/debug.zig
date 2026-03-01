@@ -58,12 +58,12 @@ pub fn drawFpsChart(renderer: *Batch2D, chart_pos: vec2) !void {
     const reference_ms = @max(16.67, max_ms);
 
     const chart_width = @as(f32, FRAME_AVG_LEN) * bar_width;
-    try renderer.drawQuad(chart_pos, .{ chart_width, chart_height }, chart_color);
+    try renderer.drawRect(chart_pos, .{ chart_width, chart_height }, chart_color);
 
     var x: f32 = chart_pos[0];
     for (frame_ms_buf) |ms| {
         const height = @as(f32, @floatCast(ms)) / @as(f32, @floatCast(reference_ms)) * chart_height;
-        try renderer.drawQuad(.{ x, chart_pos[1] + (chart_height - height) }, .{ bar_width - 1, height }, chart_color);
+        try renderer.drawRect(.{ x, chart_pos[1] + (chart_height - height) }, .{ bar_width - 1, height }, chart_color);
         x += bar_width;
     }
 

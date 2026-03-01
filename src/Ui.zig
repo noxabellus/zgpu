@@ -3058,13 +3058,13 @@ fn draw(self: *Ui) !void {
                 // We will draw each side as a separate component.
 
                 // Top bar
-                try self.renderer.drawQuad(.{ pos[0] + r.top_left, pos[1] }, .{ size[0] - r.top_left - r.top_right, @floatFromInt(data.width.top) }, color);
+                try self.renderer.drawRect(.{ pos[0] + r.top_left, pos[1] }, .{ size[0] - r.top_left - r.top_right, @floatFromInt(data.width.top) }, color);
                 // Bottom bar
-                try self.renderer.drawQuad(.{ pos[0] + r.bottom_left, pos[1] + size[1] - @as(f32, @floatFromInt(data.width.bottom)) }, .{ size[0] - r.bottom_left - r.bottom_right, @floatFromInt(data.width.bottom) }, color);
+                try self.renderer.drawRect(.{ pos[0] + r.bottom_left, pos[1] + size[1] - @as(f32, @floatFromInt(data.width.bottom)) }, .{ size[0] - r.bottom_left - r.bottom_right, @floatFromInt(data.width.bottom) }, color);
                 // Left bar
-                try self.renderer.drawQuad(.{ pos[0], pos[1] + r.top_left }, .{ @floatFromInt(data.width.left), size[1] - r.top_left - r.bottom_left }, color);
+                try self.renderer.drawRect(.{ pos[0], pos[1] + r.top_left }, .{ @floatFromInt(data.width.left), size[1] - r.top_left - r.bottom_left }, color);
                 // Right bar
-                try self.renderer.drawQuad(.{ pos[0] + size[0] - @as(f32, @floatFromInt(data.width.right)), pos[1] + r.top_right }, .{ @floatFromInt(data.width.right), size[1] - r.top_right - r.bottom_right }, color);
+                try self.renderer.drawRect(.{ pos[0] + size[0] - @as(f32, @floatFromInt(data.width.right)), pos[1] + r.top_right }, .{ @floatFromInt(data.width.right), size[1] - r.top_right - r.bottom_right }, color);
 
                 const pi = std.math.pi;
                 // Top-left corner
