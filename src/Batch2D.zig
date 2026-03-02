@@ -814,6 +814,36 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
     }
 }
 
+/// Creates a new dynamic texture ID and reserves a dedicated layer for it in the atlas.
+/// NOTE: Because this grows the atlas texture, it will trigger a pipeline bind group recreation.
+pub fn createDynamicTexture(self: *Batch2D, width: u32, height: u32) !ImageId {
+    const id = self.asset_cache.createDynamicId();
+
+    try self.atlas.reserveDynamicLayer(id, width, height);
+
+    // Growing the texture array invalidates the current bind group.
+    // We must release it so it gets recreated before the next draw call.
+    if (self.bind_group != null) {
+        wgpu.bindGroupRelease(self.bind_group);
+        self.bind_group = null;
+    }
+
+    return id;
+}
+
+/// Blits an offscreen render target into its reserved place in the atlas.
+/// Handles dynamic resizing by updating the UV indirection table automatically.
+pub fn updateDynamicTexture(self: *Batch2D, encoder: wgpu.CommandEncoder, id: ImageId, source_texture: wgpu.Texture, width: u32, height: u32) !void {
+    // Look up the indirection table index assigned to this dynamic ID
+    const cache_info = self.atlas.cache.get(id) orelse {
+        log.err("Attempted to update a dynamic texture that wasn't reserved in the atlas.", .{});
+        return error.DynamicTextureNotRegistered;
+    };
+
+    // Delegate the blit and UV mutation to the atlas
+    try self.atlas.updateDynamicLayer(encoder, cache_info.indirection_table_index, source_texture, width, height);
+}
+
 /// Draws a filled rectangle. This is a convenience wrapper around drawQuad.
 pub fn drawRect(self: *Batch2D, pos: vec2, size: vec2, tint: Color) !void {
     try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, .{}, .all(0.0), tint);

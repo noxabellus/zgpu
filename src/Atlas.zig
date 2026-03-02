@@ -163,6 +163,102 @@ pub fn query(
     return error.ImageNotYetPacked;
 }
 
+/// Blits a source texture into the reserved atlas layer and updates the UV mapping if the size changed.
+pub fn updateDynamicLayer(
+    self: *Atlas,
+    encoder: wgpu.CommandEncoder,
+    indirection_table_index: u32,
+    source_texture: wgpu.Texture,
+    width: u32,
+    height: u32,
+) !void {
+    // 1. Bounds check to prevent WGPU validation crashes
+    if (width > self.atlas_width or height > self.atlas_height) {
+        log.err("Dynamic texture update ({d}x{d}) exceeds atlas bounds ({d}x{d})", .{ width, height, self.atlas_width, self.atlas_height });
+        return error.DynamicTextureTooLarge;
+    }
+
+    const ind_entry = &self.indirection_table.items[indirection_table_index];
+    const layer_idx = ind_entry.mips[0].atlas_layer_index;
+
+    // 2. Update the UV footprint in the indirection table
+    const u_max = @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(self.atlas_width));
+    const v_max = @as(f32, @floatFromInt(height)) / @as(f32, @floatFromInt(self.atlas_height));
+
+    // We update all mip levels just to keep the struct consistent, even if mips aren't used here
+    for (&ind_entry.mips) |*mip| {
+        mip.uv_rect = .{ 0.0, 0.0, u_max, v_max };
+    }
+
+    // 3. Perform the blit
+    const copy_src = wgpu.TexelCopyTextureInfo{
+        .texture = source_texture,
+        .mip_level = 0,
+        .origin = .{ .x = 0, .y = 0, .z = 0 },
+    };
+
+    const copy_dst = wgpu.TexelCopyTextureInfo{
+        .texture = self.texture,
+        .mip_level = 0,
+        .origin = .{ .x = 0, .y = 0, .z = layer_idx },
+    };
+
+    const copy_size = wgpu.Extent3D{
+        .width = width,
+        .height = height,
+        .depth_or_array_layers = 1,
+    };
+
+    wgpu.commandEncoderCopyTextureToTexture(encoder, &copy_src, &copy_dst, &copy_size);
+}
+
+/// Reserves an entire atlas layer for a dynamic texture (like a render target).
+pub fn reserveDynamicLayer(self: *Atlas, id: ImageId, width: u32, height: u32) !void {
+    if (width > self.atlas_width or height > self.atlas_height) {
+        log.err("Dynamic texture ({d}x{d}) exceeds atlas bounds ({d}x{d})", .{ width, height, self.atlas_width, self.atlas_height });
+        return error.DynamicTextureTooLarge;
+    }
+
+    if (self.cache.contains(id)) {
+        return error.ImageIdAlreadyExists;
+    }
+
+    // 1. Grow the texture array by 1 layer to hold this dynamic texture.
+    const current_layer_count: u32 = @intCast(self.pack_contexts.items.len);
+    const new_layer_idx = current_layer_count;
+    try self.growTextureArray(current_layer_count + 1);
+
+    // 2. Mark the layer as "full" so stbrp.packRects skips it during standard flush() calls.
+    var dummy_rect = stbrp.Rect{ .id = 0, .w = @intCast(self.atlas_width), .h = @intCast(self.atlas_height) };
+    _ = stbrp.packRects(&self.pack_contexts.items[new_layer_idx], @ptrCast(&dummy_rect), 1);
+    std.debug.assert(dummy_rect.was_packed.to());
+
+    // 3. Add to indirection table
+    const new_index: u32 = @intCast(self.indirection_table.items.len);
+    try self.indirection_table.append(self.allocator, std.mem.zeroes(ImageMipData));
+
+    // 4. Update the cache so query() resolves successfully.
+    try self.cache.put(self.allocator, id, .{ .indirection_table_index = new_index });
+
+    // 5. Populate the mip data with the dynamic texture's UV footprint.
+    const ind_entry = &self.indirection_table.items[new_index];
+    const u_max = @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(self.atlas_width));
+    const v_max = @as(f32, @floatFromInt(height)) / @as(f32, @floatFromInt(self.atlas_height));
+
+    const mip0_info = MipInfo{
+        .uv_rect = .{ 0.0, 0.0, u_max, v_max },
+        .atlas_layer_index = new_layer_idx,
+        ._p1 = 0,
+        ._p2 = 0,
+        ._p3 = 0,
+    };
+
+    // Copy mip 0 to all levels (for now, we don't generate mips for render targets)
+    for (&ind_entry.mips) |*mip| mip.* = mip0_info;
+
+    log.info("Reserved dynamic layer {d} for ImageId {d}", .{ new_layer_idx, id });
+}
+
 pub fn flush(self: *Atlas) !bool {
     if (self.pending_items.items.len == 0) return false;
     log.debug("flushing {d} pending images...", .{self.pending_items.items.len});

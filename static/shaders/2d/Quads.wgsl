@@ -92,7 +92,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     var sdf_val = d;
 
     // 2. Smoothly Interpolated Border Thickness
-    // border_thickness: x=top, y=right, z=bottom, w=left [cite: 28]
+    // border_thickness: x=top, y=right, z=bottom, w=left
     if (any(in.border_thickness > vec4<f32>(0.0))) {
         // Calculate normalized coordinates from 0.0 to 1.0 across the quad
         let st = in.local_pos / in.size;

@@ -82,6 +82,7 @@ allocator: std.mem.Allocator,
 fonts: std.ArrayList(LoadedFont),
 images: std.ArrayList(LoadedImage),
 image_map: std.StringHashMapUnmanaged(ImageId),
+dynamic_id_counter: u21,
 
 pub fn init(allocator: std.mem.Allocator) AssetCache {
     return .{
@@ -89,6 +90,7 @@ pub fn init(allocator: std.mem.Allocator) AssetCache {
         .fonts = .empty,
         .images = .empty,
         .image_map = .empty,
+        .dynamic_id_counter = 1,
     };
 }
 
@@ -110,6 +112,20 @@ pub fn deinit(self: *AssetCache) void {
     }
     self.images.deinit(self.allocator);
     self.image_map.deinit(self.allocator);
+}
+
+/// Generates a unique ImageId for a dynamic texture (like a render target).
+pub fn createDynamicId(self: *AssetCache) ImageId {
+    const current_id = self.dynamic_id_counter;
+    self.dynamic_id_counter += 1;
+
+    return encodeGlyphId(.{
+        .char_code = current_id,
+        .font_size = 0,
+        .font_id = SPECIAL_ID_font_id,
+        ._reserved = 0,
+        .is_glyph_or_special = true,
+    });
 }
 
 /// Loads a font from a file path and returns its index.
@@ -165,7 +181,7 @@ pub fn dataProvider(image_id: ImageId, context: Atlas.ProviderContext) ?Atlas.In
 
     if (decoded.is_glyph_or_special) { // This is a glyph or special ID request.
         if (decoded.font_id == SPECIAL_ID_font_id) {
-            // This is a special, non-font ID. The white pixel is char_code 0.
+            // The white pixel is char_code 0.
             if (decoded.char_code == 0) {
                 const white_pixel = (frame_allocator.alloc(u8, 4) catch return null);
                 @memcpy(white_pixel, &[_]u8{ 255, 255, 255, 255 });
@@ -176,9 +192,12 @@ pub fn dataProvider(image_id: ImageId, context: Atlas.ProviderContext) ?Atlas.In
                     .format = .rgba,
                     .wants_mips = false,
                 };
+            } else {
+                // NEW: It's a dynamic texture.
+                // If we reach here, the dynamic layer wasn't reserved in the Atlas before drawing!
+                log.err("Requested CPU pixel data for dynamic texture ID {d}. Ensure atlas.reserveDynamicLayer was called!", .{decoded.char_code});
+                return null;
             }
-            log.err("unknown special id {any}", .{decoded});
-            return null;
         }
 
         // --- Otherwise, it's a regular glyph request ---

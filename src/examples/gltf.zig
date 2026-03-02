@@ -60,6 +60,7 @@ const Demo = struct {
 var FONT_ID_BODY: AssetCache.FontId = undefined;
 var FONT_ID_TITLE: AssetCache.FontId = undefined;
 var FONT_ID_MONO: AssetCache.FontId = undefined;
+var IMAGE_ID_PIP: AssetCache.ImageId = undefined;
 
 const COLOR_LIGHT = Ui.Color.fromLinearU8(244, 235, 230, 255);
 const COLOR_LIGHT_HOVER = Ui.Color.fromLinearU8(224, 215, 210, 255);
@@ -109,7 +110,7 @@ pub fn main() !void {
         gpa,
         app.gpu.device,
         app.gpu.queue,
-        app.gpu.surface_format,
+        .rgba8_unorm_srgb,
         &asset_cache,
         UI_MSAA_SAMPLES,
     );
@@ -126,8 +127,8 @@ pub fn main() !void {
             .label = "gltf_color",
             .width = @divFloor(app.gpu.config.width, SCALE_DIVISOR),
             .height = @divFloor(app.gpu.config.height, SCALE_DIVISOR),
-            .format = app.gpu.surface_format,
-            .usage = .{ .render_attachment = true, .texture_binding = true },
+            .format = .rgba8_unorm_srgb,
+            .usage = .{ .render_attachment = true, .texture_binding = true, .copy_src = true },
             .sample_count = 1,
         }),
         .gltf_depth = try RenderTexture.init(&app.gpu, .{
@@ -142,7 +143,7 @@ pub fn main() !void {
             .label = "ui_msaa",
             .width = app.gpu.config.width,
             .height = app.gpu.config.height,
-            .format = app.gpu.surface_format,
+            .format = .rgba8_unorm_srgb,
             .usage = .{ .render_attachment = true },
             .sample_count = UI_MSAA_SAMPLES,
         }),
@@ -150,7 +151,7 @@ pub fn main() !void {
             .label = "ui_color",
             .width = app.gpu.config.width,
             .height = app.gpu.config.height,
-            .format = app.gpu.surface_format,
+            .format = .rgba8_unorm_srgb,
             .usage = .{ .render_attachment = true, .texture_binding = true },
             .sample_count = 1,
         }),
@@ -191,6 +192,8 @@ pub fn main() !void {
     FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/quicksand/semibold.ttf", .linear);
     FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/calistoga/regular.ttf", .linear);
     FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/dejavu/sans-mono.ttf", .linear);
+
+    IMAGE_ID_PIP = try renderer.createDynamicTexture(app.gpu.config.width, app.gpu.config.height);
 
     defer if (demo.model) |*m| m.deinit();
 
@@ -248,6 +251,20 @@ pub fn main() !void {
         &demo,
     );
 
+    var draw_fps = true;
+    try ui.addListener(
+        .fromSlice("fpsOverlayToggle"),
+        .bool_change,
+        bool,
+        &struct {
+            pub fn fps_overlay_checkbox_listener(out: *bool, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.bool_change)) anyerror!void {
+                out.* = new_value;
+                std.debug.print("new draw_fps value: {}\n", .{out.*});
+            }
+        }.fps_overlay_checkbox_listener,
+        &draw_fps,
+    );
+
     const shader_module = try app.gpu.loadShaderText("GltfMultiPurpose.wgsl", shader_text);
     defer wgpu.shaderModuleRelease(shader_module);
 
@@ -288,7 +305,7 @@ pub fn main() !void {
             .target_count = 1,
             .targets = &.{
                 wgpu.ColorTargetState{
-                    .format = app.gpu.surface_format,
+                    .format = .rgba8_unorm_srgb,
                 },
             },
         },
@@ -378,7 +395,12 @@ pub fn main() !void {
                             .direction = .top_to_bottom,
                             .child_alignment = .center,
                             .child_gap = 10,
-                            .padding = .all(10),
+                            .padding = .{
+                                .top = 11,
+                                .right = 13,
+                                .bottom = 16,
+                                .left = 19,
+                            },
                         },
                         .background_color = COLOR_GREYBROWN,
                         .corner_radius = .all(10),
@@ -607,6 +629,75 @@ pub fn main() !void {
                             });
                         }
                     }
+
+                    {
+                        try ui.beginElement(.fromSlice("PictureInPictureTest"));
+                        defer ui.closeElement();
+
+                        const screen_ratio = @as(f32, @floatFromInt(app.gpu.config.width)) / @as(f32, @floatFromInt(app.gpu.config.height));
+
+                        try ui.configureElement(.{
+                            .layout = .{
+                                .sizing = .{
+                                    .w = .fixed(300),
+                                    .h = .fixed(300 / screen_ratio),
+                                },
+                            },
+                            .image = IMAGE_ID_PIP,
+                        });
+                    }
+
+                    {
+                        try ui.openElement(.{
+                            .id = .fromSlice("DebugFPSOverlayControlSection"),
+                            .layout = .{
+                                .sizing = .fit,
+                                .direction = .left_to_right,
+                                .child_alignment = .center,
+                                .child_gap = 5,
+                            },
+                        });
+                        defer ui.closeElement();
+
+                        {
+                            try ui.beginElement(.fromSlice("fpsOverlayToggle"));
+                            defer ui.closeElement();
+
+                            try ui.configureElement(.{
+                                .layout = .{
+                                    .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
+                                },
+                                .widget = true,
+                                .state = .flags(.{
+                                    .activate = true,
+                                    .focus = true,
+                                }),
+                            });
+
+                            try ui.bindCheckbox(.{
+                                .default = true,
+                                .box_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                                .check_color = COLOR_PHOSPHOR,
+                                .size = 16.0,
+                            });
+                        }
+
+                        {
+                            try ui.openElement(.{
+                                .id = .fromSlice("FPSOverlayLabel"),
+                                .layout = .{
+                                    .sizing = .fit,
+                                },
+                            });
+                            defer ui.closeElement();
+
+                            try ui.text("Show FPS Overlay", .{
+                                .font_id = FONT_ID_BODY,
+                                .font_size = 16,
+                                .color = COLOR_PHOSPHOR,
+                            });
+                        }
+                    }
                 }
             }
 
@@ -667,12 +758,14 @@ pub fn main() !void {
                 wgpu.renderPassEncoderEnd(render_pass);
             }
 
+            try renderer.updateDynamicTexture(encoder, IMAGE_ID_PIP, demo.gltf_color.texture, demo.gltf_color.desc.width, demo.gltf_color.desc.height);
+
             // --- Pass 2: UI (MSAA resolving to UI Color) ---
             {
                 const proj = linalg.mat4_ortho(0, @floatFromInt(w), @floatFromInt(h), 0, -1, 1);
                 renderer.beginFrame(proj, w, h);
                 try ui.render();
-                try debug.drawFpsChart(renderer, .{ 0, 0 });
+                if (draw_fps) try debug.drawFpsChart(renderer, .{ 0, 0 });
                 try renderer.endFrame();
 
                 const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
