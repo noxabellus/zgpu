@@ -643,6 +643,7 @@ pub fn main() !void {
                                     .h = .fixed(300 / screen_ratio),
                                 },
                             },
+                            .corner_radius = .all(10),
                             .image = IMAGE_ID_PIP,
                         });
                     }
