@@ -245,14 +245,26 @@ pub fn build(b: *std.Build) void {
     exe_mod.addImport("nfd", nfd_mod);
     exe_mod.addImport("glfw", glfw_mod);
     exe_mod.addImport("gltf", gltf_mod);
+    exe_mod.addAnonymousImport("shaders/Batch3D.wgsl", .{
+        .root_source_file = b.path("static/shaders/Batch3D.wgsl"),
+    });
     exe_mod.addAnonymousImport("shaders/GltfMultiPurpose.wgsl", .{
         .root_source_file = b.path("static/shaders/GltfMultiPurpose.wgsl"),
+    });
+    exe_mod.addAnonymousImport("shaders/GltfShadowed.wgsl", .{
+        .root_source_file = b.path("static/shaders/GltfShadowed.wgsl"),
     });
     exe_mod.addAnonymousImport("shaders/2d/Quads.wgsl", .{
         .root_source_file = b.path("static/shaders/2d/Quads.wgsl"),
     });
     exe_mod.addAnonymousImport("shaders/2d/Triangles.wgsl", .{
         .root_source_file = b.path("static/shaders/2d/Triangles.wgsl"),
+    });
+    exe_mod.addAnonymousImport("shaders/2d/PickerWorldPos.wgsl", .{
+        .root_source_file = b.path("static/shaders/2d/PickerWorldPos.wgsl"),
+    });
+    exe_mod.addAnonymousImport("shaders/2d/PickerId.wgsl", .{
+        .root_source_file = b.path("static/shaders/2d/PickerId.wgsl"),
     });
     exe_mod.addAnonymousImport("shaders/GridMesher.wgsl", .{
         .root_source_file = b.path("static/shaders/GridMesher.wgsl"),

@@ -1,0 +1,641 @@
+const Batch3D = @This();
+
+const std = @import("std");
+const wgpu = @import("wgpu");
+const linalg = @import("linalg.zig");
+const vec3 = linalg.vec3;
+const mat4 = linalg.mat4;
+pub const Color = @import("Batch2D.zig").Color;
+
+const log = std.log.scoped(.renderer3d);
+
+const PipelineKind3D = enum {
+    shaded_tri,
+    wireframe_line,
+};
+
+const RenderBatch3D = struct {
+    pipeline: PipelineKind3D,
+    start_index: usize,
+    count: usize,
+};
+
+const Vertex3D = extern struct {
+    position: [3]f32,
+    normal: [3]f32,
+    color: [4]f32,
+    /// Encodes a unique object ID that can be read back in the picking pass.
+    id: u32,
+};
+
+const Uniforms3D = extern struct {
+    view_projection: mat4,
+};
+
+allocator: std.mem.Allocator,
+device: wgpu.Device,
+queue: wgpu.Queue,
+
+uniform_buffer: wgpu.Buffer,
+bind_group: wgpu.BindGroup,
+
+shaded_pipeline: wgpu.RenderPipeline,
+picking_shaded_pipeline: wgpu.RenderPipeline,
+wireframe_pipeline: wgpu.RenderPipeline,
+picking_wireframe_pipeline: wgpu.RenderPipeline,
+
+vertex_buffer: ?wgpu.Buffer,
+vertex_buffer_capacity: usize,
+vertex_staging_buffer: wgpu.Buffer,
+vertex_staging_buffer_capacity: usize,
+vertices: std.ArrayList(Vertex3D),
+batch_list: std.ArrayList(RenderBatch3D),
+
+current_pipeline: ?PipelineKind3D,
+current_batch_start: usize,
+
+pub fn init(
+    allocator: std.mem.Allocator,
+    device: wgpu.Device,
+    queue: wgpu.Queue,
+    surface_format: wgpu.TextureFormat,
+    picking_format: wgpu.TextureFormat,
+    depth_format: wgpu.TextureFormat,
+    sample_count: u32,
+) !*Batch3D {
+    const self = try allocator.create(Batch3D);
+    errdefer allocator.destroy(self);
+
+    const shader_module = try wgpu.loadShaderText(device, "static/shaders/Batch3D.wgsl", @embedFile("shaders/Batch3D.wgsl"));
+    defer wgpu.shaderModuleRelease(shader_module);
+
+    const uniform_buffer = wgpu.deviceCreateBuffer(device, &.{
+        .label = .fromSlice("batch3d_uniform_buffer"),
+        .usage = wgpu.BufferUsage{ .uniform = true, .copy_dst = true },
+        .size = @sizeOf(Uniforms3D),
+    });
+
+    const initial_vertex_capacity_bytes = 16384 * @sizeOf(Vertex3D);
+    const vertex_staging_buffer = wgpu.deviceCreateBuffer(device, &.{
+        .label = .fromSlice("batch3d_vertex_staging_buffer"),
+        .usage = .{ .map_write = true, .copy_src = true },
+        .size = initial_vertex_capacity_bytes,
+    });
+
+    const bind_group_layout = wgpu.deviceCreateBindGroupLayout(device, &.{
+        .label = .fromSlice("batch3d_bind_group_layout"),
+        .entry_count = 1,
+        .entries = &[_]wgpu.BindGroupLayoutEntry{
+            .{ .binding = 0, .visibility = .vertexStage, .buffer = .{ .type = .uniform } },
+        },
+    });
+    defer wgpu.bindGroupLayoutRelease(bind_group_layout);
+
+    const bind_group = wgpu.deviceCreateBindGroup(device, &.{
+        .label = .fromSlice("batch3d_bind_group"),
+        .layout = bind_group_layout,
+        .entry_count = 1,
+        .entries = &[_]wgpu.BindGroupEntry{
+            .{ .binding = 0, .buffer = uniform_buffer, .size = @sizeOf(Uniforms3D) },
+        },
+    });
+
+    const pipeline_layout = wgpu.deviceCreatePipelineLayout(device, &.{
+        .label = .fromSlice("batch3d_pipeline_layout"),
+        .bind_group_layout_count = 1,
+        .bind_group_layouts = &.{bind_group_layout},
+    });
+    defer wgpu.pipelineLayoutRelease(pipeline_layout);
+
+    const depth_stencil_state = wgpu.DepthStencilState{
+        .format = depth_format,
+        .depth_write_enabled = .true,
+        .depth_compare = .less,
+        .stencil_front = .{},
+        .stencil_back = .{},
+    };
+
+    const vertex_attributes = [_]wgpu.VertexAttribute{
+        .{ .shaderLocation = 0, .offset = @offsetOf(Vertex3D, "position"), .format = .float32x3 },
+        .{ .shaderLocation = 1, .offset = @offsetOf(Vertex3D, "normal"), .format = .float32x3 },
+        .{ .shaderLocation = 2, .offset = @offsetOf(Vertex3D, "color"), .format = .float32x4 },
+        .{ .shaderLocation = 3, .offset = @offsetOf(Vertex3D, "id"), .format = .uint32 },
+    };
+
+    const vertex_state = wgpu.VertexState{
+        .module = shader_module,
+        .entry_point = .fromSlice("vs_main"),
+        .buffer_count = 1,
+        .buffers = &.{.{
+            .array_stride = @sizeOf(Vertex3D),
+            .step_mode = .vertex,
+            .attribute_count = vertex_attributes.len,
+            .attributes = &vertex_attributes,
+        }},
+    };
+
+    // 1. Shaded Triangle Pipelines
+    const shaded_pipeline = wgpu.deviceCreateRenderPipeline(device, &wgpu.RenderPipelineDescriptor{
+        .label = .fromSlice("batch3d_shaded_pipeline"),
+        .layout = pipeline_layout,
+        .vertex = vertex_state,
+        .fragment = &wgpu.FragmentState{
+            .module = shader_module,
+            .entry_point = .fromSlice("fs_shaded"),
+            .target_count = 1,
+            .targets = &.{.{ .format = surface_format, .write_mask = .all }},
+        },
+        .primitive = .{ .topology = .triangle_list },
+        .depth_stencil = &depth_stencil_state,
+        .multisample = .{ .count = sample_count, .mask = 0xFFFFFFFF },
+    });
+
+    const picking_shaded_pipeline = wgpu.deviceCreateRenderPipeline(device, &wgpu.RenderPipelineDescriptor{
+        .label = .fromSlice("batch3d_picking_shaded_pipeline"),
+        .layout = pipeline_layout,
+        .vertex = vertex_state,
+        .fragment = &wgpu.FragmentState{
+            .module = shader_module,
+            .entry_point = .fromSlice("fs_picking"),
+            .target_count = 1,
+            .targets = &.{.{ .format = picking_format, .write_mask = .all }},
+        },
+        .primitive = .{ .topology = .triangle_list },
+        .depth_stencil = &depth_stencil_state,
+        .multisample = .{ .count = 1, .mask = 0xFFFFFFFF },
+    });
+
+    // 2. Wireframe Line Pipelines
+    const wireframe_pipeline = wgpu.deviceCreateRenderPipeline(device, &wgpu.RenderPipelineDescriptor{
+        .label = .fromSlice("batch3d_wireframe_pipeline"),
+        .layout = pipeline_layout,
+        .vertex = vertex_state,
+        .fragment = &wgpu.FragmentState{
+            .module = shader_module,
+            .entry_point = .fromSlice("fs_wireframe"),
+            .target_count = 1,
+            .targets = &.{.{ .format = surface_format, .write_mask = .all }},
+        },
+        .primitive = .{ .topology = .line_list },
+        .depth_stencil = &depth_stencil_state,
+        .multisample = .{ .count = sample_count, .mask = 0xFFFFFFFF },
+    });
+
+    const picking_wireframe_pipeline = wgpu.deviceCreateRenderPipeline(device, &wgpu.RenderPipelineDescriptor{
+        .label = .fromSlice("batch3d_wireframe_pipeline"),
+        .layout = pipeline_layout,
+        .vertex = vertex_state,
+        .fragment = &wgpu.FragmentState{
+            .module = shader_module,
+            .entry_point = .fromSlice("fs_picking"),
+            .target_count = 1,
+            .targets = &.{.{ .format = picking_format, .write_mask = .all }},
+        },
+        .primitive = .{ .topology = .line_list },
+        .depth_stencil = &depth_stencil_state,
+        .multisample = .{ .count = 1, .mask = 0xFFFFFFFF },
+    });
+
+    self.* = .{
+        .allocator = allocator,
+        .device = device,
+        .queue = queue,
+        .uniform_buffer = uniform_buffer,
+        .bind_group = bind_group,
+        .shaded_pipeline = shaded_pipeline,
+        .picking_shaded_pipeline = picking_shaded_pipeline,
+        .wireframe_pipeline = wireframe_pipeline,
+        .picking_wireframe_pipeline = picking_wireframe_pipeline,
+        .vertex_buffer = null,
+        .vertex_buffer_capacity = 0,
+        .vertex_staging_buffer = vertex_staging_buffer,
+        .vertex_staging_buffer_capacity = initial_vertex_capacity_bytes,
+        .vertices = .empty,
+        .batch_list = .empty,
+        .current_pipeline = null,
+        .current_batch_start = 0,
+    };
+
+    try self.vertices.ensureTotalCapacity(self.allocator, 16384);
+    try self.batch_list.ensureTotalCapacity(self.allocator, 32);
+
+    return self;
+}
+
+pub fn deinit(self: *Batch3D) void {
+    if (self.vertex_buffer) |vb| wgpu.bufferRelease(vb);
+    wgpu.bufferRelease(self.vertex_staging_buffer);
+    wgpu.bufferRelease(self.uniform_buffer);
+    wgpu.bindGroupRelease(self.bind_group);
+    wgpu.renderPipelineRelease(self.shaded_pipeline);
+    wgpu.renderPipelineRelease(self.picking_shaded_pipeline);
+    wgpu.renderPipelineRelease(self.wireframe_pipeline);
+    wgpu.renderPipelineRelease(self.picking_wireframe_pipeline);
+    self.vertices.deinit(self.allocator);
+    self.batch_list.deinit(self.allocator);
+    self.allocator.destroy(self);
+}
+
+pub fn beginFrame(self: *Batch3D, view_projection: mat4) void {
+    wgpu.queueWriteBuffer(self.queue, self.uniform_buffer, 0, &Uniforms3D{ .view_projection = view_projection }, @sizeOf(Uniforms3D));
+    self.vertices.clearRetainingCapacity();
+    self.batch_list.clearRetainingCapacity();
+    self.current_pipeline = null;
+    self.current_batch_start = 0;
+}
+
+fn endCurrentBatch(self: *Batch3D) !void {
+    if (self.current_pipeline == null) return;
+    const count = self.vertices.items.len - self.current_batch_start;
+
+    if (count > 0) {
+        try self.batch_list.append(self.allocator, .{
+            .pipeline = self.current_pipeline.?,
+            .start_index = self.current_batch_start,
+            .count = count,
+        });
+    }
+}
+
+fn ensurePipeline(self: *Batch3D, pipeline: PipelineKind3D) !void {
+    if (self.current_pipeline != pipeline) {
+        try self.endCurrentBatch();
+        self.current_pipeline = pipeline;
+        self.current_batch_start = self.vertices.items.len;
+    }
+}
+
+pub fn endFrame(self: *Batch3D) !void {
+    try self.endCurrentBatch();
+
+    if (self.vertices.items.len > 0) {
+        const required_size = self.vertices.items.len * @sizeOf(Vertex3D);
+        const upload_encoder = wgpu.deviceCreateCommandEncoder(self.device, &.{ .label = .fromSlice("batch3d_upload_encoder") });
+        defer wgpu.commandEncoderRelease(upload_encoder);
+
+        if (self.vertex_buffer_capacity < required_size) {
+            if (self.vertex_buffer) |vb| wgpu.bufferRelease(vb);
+            const new_capacity = @max(@max(self.vertex_buffer_capacity * 2, required_size), 4096);
+            self.vertex_buffer = wgpu.deviceCreateBuffer(self.device, &.{
+                .label = .fromSlice("batch3d_vertex_buffer"),
+                .usage = .{ .vertex = true, .copy_dst = true },
+                .size = new_capacity,
+            });
+            self.vertex_buffer_capacity = new_capacity;
+        }
+
+        if (self.vertex_staging_buffer_capacity < required_size) {
+            wgpu.bufferRelease(self.vertex_staging_buffer);
+            const new_capacity = @max(@max(self.vertex_staging_buffer_capacity * 2, required_size), 4096);
+            self.vertex_staging_buffer = wgpu.deviceCreateBuffer(self.device, &.{
+                .label = .fromSlice("batch3d_vertex_staging_buffer"),
+                .usage = .{ .map_write = true, .copy_src = true },
+                .size = new_capacity,
+            });
+            self.vertex_staging_buffer_capacity = new_capacity;
+        }
+
+        // (Assuming you bring over the `uploadSliceToBuffer` helper function from Batch2D)
+        try uploadSliceToBuffer(self.device, self.vertex_staging_buffer, self.vertices.items);
+        wgpu.commandEncoderCopyBufferToBuffer(upload_encoder, self.vertex_staging_buffer, 0, self.vertex_buffer.?, 0, required_size);
+
+        const upload_cmd = wgpu.commandEncoderFinish(upload_encoder, null);
+        defer wgpu.commandBufferRelease(upload_cmd);
+        wgpu.queueSubmit(self.queue, 1, &.{upload_cmd});
+    }
+}
+
+pub fn render(self: *Batch3D, render_pass: wgpu.RenderPassEncoder) !void {
+    if (self.vertex_buffer == null) return;
+
+    wgpu.renderPassEncoderSetBindGroup(render_pass, 0, self.bind_group, 0, null);
+    wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.vertex_buffer.?, 0, self.vertices.items.len * @sizeOf(Vertex3D));
+
+    var bound_pipeline: ?PipelineKind3D = null;
+    for (self.batch_list.items) |batch| {
+        if (batch.count == 0) continue;
+
+        if (bound_pipeline != batch.pipeline) {
+            switch (batch.pipeline) {
+                .shaded_tri => wgpu.renderPassEncoderSetPipeline(render_pass, self.shaded_pipeline),
+                .wireframe_line => wgpu.renderPassEncoderSetPipeline(render_pass, self.wireframe_pipeline),
+            }
+            bound_pipeline = batch.pipeline;
+        }
+
+        wgpu.renderPassEncoderDraw(render_pass, @intCast(batch.count), 1, @intCast(batch.start_index), 0);
+    }
+}
+
+pub fn renderPicking(self: *Batch3D, render_pass: wgpu.RenderPassEncoder) !void {
+    if (self.vertex_buffer == null) return;
+    wgpu.renderPassEncoderSetBindGroup(render_pass, 0, self.bind_group, 0, null);
+    wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.vertex_buffer.?, 0, self.vertices.items.len * @sizeOf(Vertex3D));
+
+    var bound_pipeline: ?PipelineKind3D = null;
+    for (self.batch_list.items) |batch| {
+        if (batch.count == 0) continue;
+
+        if (bound_pipeline != batch.pipeline) {
+            switch (batch.pipeline) {
+                .shaded_tri => wgpu.renderPassEncoderSetPipeline(render_pass, self.picking_shaded_pipeline),
+                .wireframe_line => wgpu.renderPassEncoderSetPipeline(render_pass, self.picking_wireframe_pipeline),
+            }
+            bound_pipeline = batch.pipeline;
+        }
+
+        wgpu.renderPassEncoderDraw(render_pass, @intCast(batch.count), 1, @intCast(batch.start_index), 0);
+    }
+}
+
+// --- 3D Primitive Drawing API ---
+
+pub fn drawLine(self: *Batch3D, p1: vec3, p2: vec3, tint: Color, id: u32) !void {
+    try self.ensurePipeline(.wireframe_line);
+    const c = [4]f32{ tint.r, tint.g, tint.b, tint.a };
+    // Normals don't matter for wireframes
+    const n = [3]f32{ 0.0, 0.0, 0.0 };
+    try self.vertices.appendSlice(self.allocator, &[_]Vertex3D{
+        .{ .position = p1, .normal = n, .color = c, .id = id },
+        .{ .position = p2, .normal = n, .color = c, .id = id },
+    });
+}
+
+pub fn drawTriangle(self: *Batch3D, p1: vec3, p2: vec3, p3: vec3, tint: Color, id: u32) !void {
+    try self.ensurePipeline(.shaded_tri);
+    const c = [4]f32{ tint.r, tint.g, tint.b, tint.a };
+
+    // Calculate flat face normal
+    const u = .{ p2[0] - p1[0], p2[1] - p1[1], p2[2] - p1[2] };
+    const v = .{ p3[0] - p1[0], p3[1] - p1[1], p3[2] - p1[2] };
+    var n = [3]f32{
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    };
+    // Normalize
+    const len = std.math.sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    if (len > 0) {
+        n[0] /= len;
+        n[1] /= len;
+        n[2] /= len;
+    }
+
+    try self.vertices.appendSlice(self.allocator, &[_]Vertex3D{
+        .{ .position = p1, .normal = n, .color = c, .id = id },
+        .{ .position = p2, .normal = n, .color = c, .id = id },
+        .{ .position = p3, .normal = n, .color = c, .id = id },
+    });
+}
+
+// --- Planes ---
+pub fn drawPlane(self: *Batch3D, transform: mat4, tint: Color, id: u32) !void {
+    const p0 = linalg.mat4_apply(transform, linalg.vec3{ -0.5, 0.0, -0.5 });
+    const p1 = linalg.mat4_apply(transform, linalg.vec3{ 0.5, 0.0, -0.5 });
+    const p2 = linalg.mat4_apply(transform, linalg.vec3{ -0.5, 0.0, 0.5 });
+    const p3 = linalg.mat4_apply(transform, linalg.vec3{ 0.5, 0.0, 0.5 });
+
+    try self.drawTriangle(p0, p2, p1, tint, id);
+    try self.drawTriangle(p1, p2, p3, tint, id);
+}
+
+pub fn drawPlaneWire(self: *Batch3D, transform: mat4, tint: Color, id: u32) !void {
+    const p0 = linalg.mat4_apply(transform, linalg.vec3{ -0.5, 0.0, -0.5 });
+    const p1 = linalg.mat4_apply(transform, linalg.vec3{ 0.5, 0.0, -0.5 });
+    const p2 = linalg.mat4_apply(transform, linalg.vec3{ 0.5, 0.0, 0.5 });
+    const p3 = linalg.mat4_apply(transform, linalg.vec3{ -0.5, 0.0, 0.5 });
+
+    try self.drawLine(p0, p1, tint, id);
+    try self.drawLine(p1, p2, tint, id);
+    try self.drawLine(p2, p3, tint, id);
+    try self.drawLine(p3, p0, tint, id);
+}
+
+// --- Cubes ---
+pub fn drawCubeWire(self: *Batch3D, transform: mat4, tint: Color, id: u32) !void {
+    const corners = [_]linalg.vec3{
+        linalg.mat4_apply(transform, linalg.vec3{ -0.5, -0.5, -0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ 0.5, -0.5, -0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ 0.5, 0.5, -0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ -0.5, 0.5, -0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ -0.5, -0.5, 0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ 0.5, -0.5, 0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ 0.5, 0.5, 0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ -0.5, 0.5, 0.5 }),
+    };
+
+    // Bottom and top loops
+    for (0..4) |i| {
+        try self.drawLine(corners[i], corners[(i + 1) % 4], tint, id);
+        try self.drawLine(corners[i + 4], corners[((i + 1) % 4) + 4], tint, id);
+        try self.drawLine(corners[i], corners[i + 4], tint, id);
+    }
+}
+
+pub fn drawCube(self: *Batch3D, transform: mat4, tint: Color, id: u32) !void {
+    const corners = [_]linalg.vec3{
+        linalg.mat4_apply(transform, linalg.vec3{ -0.5, -0.5, -0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ 0.5, -0.5, -0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ 0.5, 0.5, -0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ -0.5, 0.5, -0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ -0.5, -0.5, 0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ 0.5, -0.5, 0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ 0.5, 0.5, 0.5 }),
+        linalg.mat4_apply(transform, linalg.vec3{ -0.5, 0.5, 0.5 }),
+    };
+
+    const indices = [_]usize{
+        0, 1, 2, 0, 2, 3, // Front
+        1, 5, 6, 1, 6, 2, // Right
+        5, 4, 7, 5, 7, 6, // Back
+        4, 0, 3, 4, 3, 7, // Left
+        3, 2, 6, 3, 6, 7, // Top
+        4, 5, 1, 4, 1, 0, // Bottom
+    };
+
+    var i: usize = 0;
+    while (i < indices.len) : (i += 3) {
+        try self.drawTriangle(corners[indices[i]], corners[indices[i + 1]], corners[indices[i + 2]], tint, id);
+    }
+}
+
+// --- Cylinders ---
+pub fn drawCylinderWire(self: *Batch3D, transform: mat4, segments: usize, tint: Color, id: u32) !void {
+    const step = (2.0 * std.math.pi) / @as(f32, @floatFromInt(segments));
+
+    for (0..segments) |i| {
+        const angle1 = @as(f32, @floatFromInt(i)) * step;
+        const angle2 = @as(f32, @floatFromInt((i + 1) % segments)) * step;
+
+        const b1 = linalg.mat4_apply(transform, linalg.vec3{ @cos(angle1) * 0.5, -0.5, @sin(angle1) * 0.5 });
+        const b2 = linalg.mat4_apply(transform, linalg.vec3{ @cos(angle2) * 0.5, -0.5, @sin(angle2) * 0.5 });
+        const t1 = linalg.mat4_apply(transform, linalg.vec3{ @cos(angle1) * 0.5, 0.5, @sin(angle1) * 0.5 });
+        const t2 = linalg.mat4_apply(transform, linalg.vec3{ @cos(angle2) * 0.5, 0.5, @sin(angle2) * 0.5 });
+
+        try self.drawLine(b1, b2, tint, id); // Bottom cap
+        try self.drawLine(t1, t2, tint, id); // Top cap
+        try self.drawLine(b1, t1, tint, id); // Vertical sides
+    }
+}
+
+pub fn drawCylinder(self: *Batch3D, transform: mat4, segments: usize, tint: Color, id: u32) !void {
+    const step = (2.0 * std.math.pi) / @as(f32, @floatFromInt(segments));
+    const center_bottom = linalg.mat4_apply(transform, linalg.vec3{ 0.0, -0.5, 0.0 });
+    const center_top = linalg.mat4_apply(transform, linalg.vec3{ 0.0, 0.5, 0.0 });
+
+    for (0..segments) |i| {
+        const angle1 = @as(f32, @floatFromInt(i)) * step;
+        const angle2 = @as(f32, @floatFromInt((i + 1) % segments)) * step;
+
+        const b1 = linalg.mat4_apply(transform, linalg.vec3{ @cos(angle1) * 0.5, -0.5, @sin(angle1) * 0.5 });
+        const b2 = linalg.mat4_apply(transform, linalg.vec3{ @cos(angle2) * 0.5, -0.5, @sin(angle2) * 0.5 });
+        const t1 = linalg.mat4_apply(transform, linalg.vec3{ @cos(angle1) * 0.5, 0.5, @sin(angle1) * 0.5 });
+        const t2 = linalg.mat4_apply(transform, linalg.vec3{ @cos(angle2) * 0.5, 0.5, @sin(angle2) * 0.5 });
+
+        try self.drawTriangle(center_bottom, b2, b1, tint, id); // Bottom Cap
+        try self.drawTriangle(center_top, t1, t2, tint, id); // Top Cap
+
+        // Side Wall Quads (2 triangles)
+        try self.drawTriangle(b1, b2, t1, tint, id);
+        try self.drawTriangle(t1, b2, t2, tint, id);
+    }
+}
+
+// --- Cones ---
+pub fn drawConeWire(self: *Batch3D, transform: mat4, segments: usize, tint: Color, id: u32) !void {
+    const step = (2.0 * std.math.pi) / @as(f32, @floatFromInt(segments));
+    const tip = linalg.mat4_apply(transform, linalg.vec3{ 0.0, 0.5, 0.0 });
+
+    for (0..segments) |i| {
+        const angle1 = @as(f32, @floatFromInt(i)) * step;
+        const angle2 = @as(f32, @floatFromInt((i + 1) % segments)) * step;
+
+        const b1 = linalg.mat4_apply(transform, linalg.vec3{ @cos(angle1) * 0.5, -0.5, @sin(angle1) * 0.5 });
+        const b2 = linalg.mat4_apply(transform, linalg.vec3{ @cos(angle2) * 0.5, -0.5, @sin(angle2) * 0.5 });
+
+        try self.drawLine(b1, b2, tint, id);
+        try self.drawLine(b1, tip, tint, id);
+    }
+}
+
+pub fn drawCone(self: *Batch3D, transform: mat4, segments: usize, tint: Color, id: u32) !void {
+    const step = (2.0 * std.math.pi) / @as(f32, @floatFromInt(segments));
+    const center_bottom = linalg.mat4_apply(transform, linalg.vec3{ 0.0, -0.5, 0.0 });
+    const tip = linalg.mat4_apply(transform, linalg.vec3{ 0.0, 0.5, 0.0 });
+
+    for (0..segments) |i| {
+        const angle1 = @as(f32, @floatFromInt(i)) * step;
+        const angle2 = @as(f32, @floatFromInt((i + 1) % segments)) * step;
+
+        const b1 = linalg.mat4_apply(transform, linalg.vec3{ @cos(angle1) * 0.5, -0.5, @sin(angle1) * 0.5 });
+        const b2 = linalg.mat4_apply(transform, linalg.vec3{ @cos(angle2) * 0.5, -0.5, @sin(angle2) * 0.5 });
+
+        try self.drawTriangle(center_bottom, b2, b1, tint, id); // Base
+        try self.drawTriangle(b1, b2, tip, tint, id); // Side
+    }
+}
+
+// --- Ico-Sphere ---
+const ico_indices = [_]usize{
+    0,  11, 5,
+    0,  5,  1,
+    0,  1,  7,
+    0,  7,  10,
+    0,  10, 11,
+    1,  5,  9,
+    5,  11, 4,
+    11, 10, 2,
+    10, 7,  6,
+    7,  1,  8,
+    3,  9,  4,
+    3,  4,  2,
+    3,  2,  6,
+    3,  6,  8,
+    3,  8,  9,
+    4,  9,  5,
+    2,  4,  11,
+    6,  2,  10,
+    8,  6,  7,
+    9,  8,  1,
+};
+
+fn getIcoVertices(transform: mat4) [12]linalg.vec3 { // [cite: 68, 70]
+    const t = (1.0 + std.math.sqrt(5.0)) / 2.0;
+    const verts = [_]linalg.vec3{ // [cite: 70]
+        .{ -1, t, 0 }, .{ 1, t, 0 }, .{ -1, -t, 0 }, .{ 1, -t, 0 },
+        .{ 0, -1, t }, .{ 0, 1, t }, .{ 0, -1, -t }, .{ 0, 1, -t },
+        .{ t, 0, -1 }, .{ t, 0, 1 }, .{ -t, 0, -1 }, .{ -t, 0, 1 },
+    };
+
+    var transformed_verts: [12]linalg.vec3 = undefined;
+    for (verts, 0..) |v, i| {
+        const normalized = linalg.normalize(v);
+        // We scale down slightly so it fits inside a unit radius
+        transformed_verts[i] = linalg.mat4_apply(transform, normalized * @as(linalg.vec3, @splat(0.5)));
+    }
+    return transformed_verts;
+}
+
+pub fn drawIcoSphereWire(self: *Batch3D, transform: mat4, tint: Color, id: u32) !void {
+    const verts = getIcoVertices(transform);
+    var i: usize = 0;
+    while (i < ico_indices.len) : (i += 3) {
+        try self.drawLine(verts[ico_indices[i]], verts[ico_indices[i + 1]], tint, id);
+        try self.drawLine(verts[ico_indices[i + 1]], verts[ico_indices[i + 2]], tint, id);
+        try self.drawLine(verts[ico_indices[i + 2]], verts[ico_indices[i]], tint, id);
+    }
+}
+
+pub fn drawIcoSphere(self: *Batch3D, transform: mat4, tint: Color, id: u32) !void {
+    const verts = getIcoVertices(transform);
+    var i: usize = 0;
+    while (i < ico_indices.len) : (i += 3) {
+        try self.drawTriangle(verts[ico_indices[i]], verts[ico_indices[i + 1]], verts[ico_indices[i + 2]], tint, id);
+    }
+}
+
+/// A helper function to upload a slice of data to a staging buffer, map it, copy the data, and unmap it.
+/// This helper function contains a short, synchronous wait to acquire a memory pointer,
+/// but it enables the much longer data transfer to happen completely asynchronously, which is what prevents rendering hiccups.
+fn uploadSliceToBuffer(device: wgpu.Device, staging_buffer: wgpu.Buffer, slice: anytype) !void {
+    const T = comptime @TypeOf(slice);
+    const TInfo = comptime @typeInfo(T).pointer;
+
+    if (comptime TInfo.size != .slice) @compileError("Batch2D.uploadSliceToBuffer input must be a slice type; got " ++ @typeName(T));
+
+    const data_size: u64 = slice.len * @sizeOf(TInfo.child);
+    var map_finished = false;
+    var map_status: wgpu.MapAsyncStatus = .unknown;
+
+    _ = wgpu.bufferMapAsync(staging_buffer, .writeMode, 0, data_size, .{
+        .callback = &struct {
+            fn handle_map(status: wgpu.MapAsyncStatus, _: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
+                const finished_flag: *bool = @ptrCast(@alignCast(ud1.?));
+                const status_ptr: *wgpu.MapAsyncStatus = @ptrCast(@alignCast(ud2.?));
+                status_ptr.* = status;
+                finished_flag.* = true;
+            }
+        }.handle_map,
+        .userdata1 = &map_finished,
+        .userdata2 = &map_status,
+    });
+
+    while (!map_finished) {
+        _ = wgpu.devicePoll(device, .from(true), null);
+    }
+
+    if (map_status != .success) {
+        log.err("failed to map staging buffer: {any}", .{map_status});
+        return error.StagingBufferMapFailed;
+    }
+
+    const mapped_range: [*]u8 = @ptrCast(@alignCast(wgpu.bufferGetMappedRange(staging_buffer, 0, data_size) orelse {
+        log.err("failed to get mapped range for staging buffer", .{});
+        wgpu.bufferUnmap(staging_buffer);
+        return error.StagingBufferMapFailed;
+    }));
+
+    const byte_slice = std.mem.sliceAsBytes(slice);
+    @memcpy(mapped_range[0..byte_slice.len], byte_slice);
+    wgpu.bufferUnmap(staging_buffer);
+}

@@ -39,6 +39,7 @@ pub const Widget = struct {
     pub const TextInput = @import("widgets/TextInput.zig");
     pub const RadioButton = @import("widgets/RadioButton.zig");
     pub const Dropdown = @import("widgets/Dropdown.zig");
+    pub const ShaderRect = @import("widgets/ShaderRect.zig");
 
     test {
         log.debug("semantic analysis for Ui.Widgets", .{});
@@ -842,6 +843,48 @@ pub fn bindTextInput(self: *Ui, config: Widget.TextInput.Config) !void {
     }
 
     try self.text(widget.currentText(), config.toFull());
+}
+
+pub fn bindShaderRect(self: *Ui, config: Widget.ShaderRect.Config) !void {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+    std.debug.assert(self.open_ids.items.len > 0);
+
+    const id = self.open_ids.items[self.open_ids.items.len - 1];
+    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
+    const widget = if (!gop.found_existing) create_new: {
+        const ptr = try Widget.ShaderRect.init(self, id, config);
+        gop.value_ptr.* = Widget{
+            .user_data = ptr,
+            .render = @ptrCast(&Widget.ShaderRect.render),
+            .get = @ptrCast(&Widget.ShaderRect.onGet),
+            .set = @ptrCast(&Widget.ShaderRect.onSet),
+            .state_type = @typeName(Widget.ShaderRect.State),
+            .unbind = @ptrCast(&Widget.ShaderRect.unbindEvents),
+            .deinit = @ptrCast(&Widget.ShaderRect.deinit),
+            .seen_this_frame = true,
+        };
+
+        break :create_new ptr;
+    } else reuse_existing: {
+        gop.value_ptr.seen_this_frame = true;
+
+        var ptr: *Widget.ShaderRect = @ptrCast(@alignCast(gop.value_ptr.user_data));
+        if (!ptr.identity.eql(&.init(config.shader, config.texture_bindings))) {
+            // if the identity has changed we need to destroy and recreate the widget
+            ptr.deinit(self);
+            ptr = try Widget.ShaderRect.init(self, id, config);
+            gop.value_ptr.user_data = ptr;
+        } else {
+            // otherwise, just copy the config textures in case they change from frame to frame
+            try ptr.onSet(self, &Widget.ShaderRect.State.fromSlice(config.textures));
+        }
+
+        break :reuse_existing ptr;
+    };
+
+    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
+        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
+    }
 }
 
 // --- Menu Structures ---

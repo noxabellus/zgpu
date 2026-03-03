@@ -158,11 +158,15 @@ const ScissorRect = extern struct {
     height: u32,
 };
 
+pub const MAX_CUSTOM_TEXTURES = 4;
 const RenderBatch = struct {
-    pipeline: PipelineKind,
+    pipeline: u32,
     start_index: usize,
     count: usize,
     scissor: ScissorRect,
+    uniform_data_offset: usize,
+    uniform_data_size: usize,
+    textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView,
 };
 
 const Vertex = extern struct {
@@ -201,9 +205,60 @@ const Patch = struct {
     count: usize,
 };
 
-const PipelineKind = enum {
+pub const PipelineKind = enum {
     tri,
     quad,
+};
+
+pub const Pipeline = struct {
+    kind: PipelineKind,
+    gpu: wgpu.RenderPipeline,
+    texture_count: usize,
+    uniform_size: usize,
+    uniform_buffer: wgpu.Buffer,
+    bind_group_layout: wgpu.BindGroupLayout,
+    cached_textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView,
+    cached_bind_group: wgpu.BindGroup,
+
+    pub fn getBindGroup(self: *Pipeline, device: wgpu.Device, textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView) wgpu.BindGroup {
+        if (self.bind_group_layout == null) return null;
+
+        if (self.cached_bind_group) |cbg| {
+            const cache_valid = for (0..self.texture_count) |i| {
+                if (textures[i] != self.cached_textures[i]) break false;
+            } else true;
+
+            if (cache_valid) {
+                return cbg;
+            } else {
+                wgpu.bindGroupRelease(cbg);
+            }
+        }
+
+        var entries: [1 + MAX_CUSTOM_TEXTURES]wgpu.BindGroupEntry = undefined;
+        var offset: u32 = 0;
+        self.cached_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+
+        if (self.uniform_size > 0) {
+            entries[offset] = .{ .binding = offset, .buffer = self.uniform_buffer, .size = self.uniform_size };
+            offset += 1;
+        }
+
+        for (0..self.texture_count) |i| {
+            self.cached_textures[i] = textures[i];
+            entries[offset] = .{ .binding = offset, .texture_view = textures[i] };
+            offset += 1;
+        }
+
+        self.cached_bind_group = wgpu.deviceCreateBindGroup(device, &.{
+            .label = .fromSlice("Batch2D:custom_pipeline:custom_bind_group"),
+            .layout = self.bind_group_layout,
+            .entry_count = offset,
+            .entries = &entries,
+        });
+        std.debug.assert(self.cached_bind_group != null);
+        return self.cached_bind_group;
+    }
 };
 
 pub const DataProvider = Atlas.DataProvider;
@@ -214,9 +269,8 @@ allocator: std.mem.Allocator,
 device: wgpu.Device,
 queue: wgpu.Queue,
 uniform_buffer: wgpu.Buffer,
-
-tri_pipeline: wgpu.RenderPipeline,
-quad_pipeline: wgpu.RenderPipeline,
+sample_count: u32,
+surface_format: wgpu.TextureFormat,
 
 // Viewport State
 viewport_width: u32,
@@ -248,14 +302,55 @@ patch_list: std.ArrayList(Patch),
 batch_list: std.ArrayList(RenderBatch),
 scissor_stack: std.ArrayList(ScissorRect),
 
-current_pipeline: ?PipelineKind,
+current_pipeline: ?u32,
 current_batch_start: usize,
+current_batch_textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView,
+current_batch_uniform_start: usize,
+current_batch_uniform_size: usize,
+pipelines: std.ArrayList(Pipeline),
+uniform_data_storage: std.ArrayList(u8),
 
 // Indirection Table Buffers
 indirection_buffer: wgpu.Buffer,
 indirection_buffer_capacity: usize,
 indirection_staging_buffer: wgpu.Buffer,
 indirection_staging_buffer_capacity: usize,
+
+var BINDGROUP_LAYOUT: wgpu.BindGroupLayout = null;
+pub fn getBindGroupLayout(device: wgpu.Device) wgpu.BindGroupLayout {
+    if (BINDGROUP_LAYOUT == null) {
+        BINDGROUP_LAYOUT = wgpu.deviceCreateBindGroupLayout(device, &.{
+            .label = .fromSlice("Batch2D:bind_group_layout"),
+            .entry_count = 6,
+            .entries = &[_]wgpu.BindGroupLayoutEntry{
+                .{ .binding = 0, .visibility = .vertexStage, .buffer = .{ .type = .uniform } },
+                .{ .binding = 1, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } }, // Linear
+                .{ .binding = 2, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } }, // Nearest
+                .{ .binding = 3, .visibility = .fragmentStage, .sampler = .{ .type = .non_filtering } }, // non-filtering sampler for special use cases
+                .{ .binding = 4, .visibility = .fragmentStage, .texture = .{ .sample_type = .float, .view_dimension = .@"2d_array" } },
+                .{ .binding = 5, .visibility = .fragmentStage, .buffer = .{ .type = .read_only_storage } },
+            },
+        });
+        std.debug.assert(BINDGROUP_LAYOUT != null);
+    }
+    return BINDGROUP_LAYOUT;
+}
+
+var TRI_SHADER: wgpu.ShaderModule = null;
+pub fn getTriShader(device: wgpu.Device) !wgpu.ShaderModule {
+    if (TRI_SHADER == null) {
+        TRI_SHADER = try wgpu.loadShaderText(device, "static/shaders/2d/Triangles.wgsl", @embedFile("shaders/2d/Triangles.wgsl"));
+    }
+    return TRI_SHADER;
+}
+
+var QUAD_SHADER: wgpu.ShaderModule = null;
+pub fn getQuadShader(device: wgpu.Device) !wgpu.ShaderModule {
+    if (QUAD_SHADER == null) {
+        QUAD_SHADER = try wgpu.loadShaderText(device, "static/shaders/2d/Quads.wgsl", @embedFile("shaders/2d/Quads.wgsl"));
+    }
+    return QUAD_SHADER;
+}
 
 pub fn init(
     allocator: std.mem.Allocator,
@@ -271,14 +366,8 @@ pub fn init(
     const atlas = try Atlas.init(allocator, device, queue, 2048, 2048, Atlas.MAX_MIP_LEVELS);
     errdefer atlas.deinit();
 
-    const tri_shader_module = try wgpu.loadShaderText(device, "static/shaders/2d/Triangles.wgsl", @embedFile("shaders/2d/Triangles.wgsl"));
-    defer wgpu.shaderModuleRelease(tri_shader_module);
-
-    const quad_shader_module = try wgpu.loadShaderText(device, "static/shaders/2d/Quads.wgsl", @embedFile("shaders/2d/Quads.wgsl"));
-    defer wgpu.shaderModuleRelease(quad_shader_module);
-
     const uniform_buffer = wgpu.deviceCreateBuffer(device, &.{
-        .label = .fromSlice("uniform_buffer"),
+        .label = .fromSlice("Batch2D:uniform_buffer"),
         .usage = wgpu.BufferUsage{ .uniform = true, .copy_dst = true },
         .size = @sizeOf(Uniforms),
     });
@@ -287,7 +376,7 @@ pub fn init(
 
     const initial_indirection_capacity = 2048;
     const indirection_buffer = wgpu.deviceCreateBuffer(device, &.{
-        .label = .fromSlice("indirection_buffer"),
+        .label = .fromSlice("Batch2D:indirection_buffer"),
         .usage = .{ .storage = true, .copy_dst = true },
         .size = initial_indirection_capacity * @sizeOf(Atlas.ImageMipData),
     });
@@ -295,7 +384,7 @@ pub fn init(
     errdefer wgpu.bufferRelease(indirection_buffer);
 
     const indirection_staging_buffer = wgpu.deviceCreateBuffer(device, &.{
-        .label = .fromSlice("indirection_staging_buffer"),
+        .label = .fromSlice("Batch2D:indirection_staging_buffer"),
         .usage = .{ .map_write = true, .copy_src = true },
         .size = initial_indirection_capacity * @sizeOf(Atlas.ImageMipData),
     });
@@ -304,7 +393,7 @@ pub fn init(
 
     const initial_vertex_capacity_bytes = 4096 * @sizeOf(Vertex);
     const vertex_staging_buffer = wgpu.deviceCreateBuffer(device, &.{
-        .label = .fromSlice("vertex_staging_buffer"),
+        .label = .fromSlice("Batch2D:vertex_staging_buffer"),
         .usage = .{ .map_write = true, .copy_src = true },
         .size = initial_vertex_capacity_bytes,
     });
@@ -312,14 +401,14 @@ pub fn init(
 
     const initial_quad_capacity_bytes = 4096 * @sizeOf(Quad);
     const quad_staging_buffer = wgpu.deviceCreateBuffer(device, &.{
-        .label = .fromSlice("quad_staging_buffer"),
+        .label = .fromSlice("Batch2D:quad_staging_buffer"),
         .usage = .{ .map_write = true, .copy_src = true },
         .size = initial_quad_capacity_bytes,
     });
     errdefer wgpu.bufferRelease(quad_staging_buffer);
 
     const linear_sampler = wgpu.deviceCreateSampler(device, &.{
-        .label = .fromSlice("linear_sampler"),
+        .label = .fromSlice("Batch2D:linear_sampler"),
         .address_mode_u = .clamp_to_edge,
         .address_mode_v = .clamp_to_edge,
         .mag_filter = .linear,
@@ -329,7 +418,7 @@ pub fn init(
     errdefer wgpu.samplerRelease(linear_sampler);
 
     const nearest_sampler = wgpu.deviceCreateSampler(device, &.{
-        .label = .fromSlice("nearest_sampler"),
+        .label = .fromSlice("Batch2D:nearest_sampler"),
         .address_mode_u = .clamp_to_edge,
         .address_mode_v = .clamp_to_edge,
         .mag_filter = .nearest,
@@ -338,105 +427,13 @@ pub fn init(
     std.debug.assert(nearest_sampler != null);
     errdefer wgpu.samplerRelease(nearest_sampler);
 
-    const bind_group_layout = wgpu.deviceCreateBindGroupLayout(device, &.{
-        .label = .fromSlice("bind_group_layout"),
-        .entry_count = 5,
-        .entries = &[_]wgpu.BindGroupLayoutEntry{
-            .{ .binding = 0, .visibility = .vertexStage, .buffer = .{ .type = .uniform } },
-            .{ .binding = 1, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } }, // Linear
-            .{ .binding = 2, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } }, // Nearest
-            .{ .binding = 3, .visibility = .fragmentStage, .texture = .{ .sample_type = .float, .view_dimension = .@"2d_array" } },
-            .{ .binding = 4, .visibility = .fragmentStage, .buffer = .{ .type = .read_only_storage } },
-        },
-    });
-    std.debug.assert(bind_group_layout != null);
-    defer wgpu.bindGroupLayoutRelease(bind_group_layout);
-
-    const pipeline_layout = wgpu.deviceCreatePipelineLayout(device, &.{
-        .label = .fromSlice("pipeline_layout"),
-        .bind_group_layout_count = 1,
-        .bind_group_layouts = &.{bind_group_layout},
-    });
-    std.debug.assert(pipeline_layout != null);
-    defer wgpu.pipelineLayoutRelease(pipeline_layout);
-
-    const blend_state = wgpu.BlendState{
-        .color = .{ .operation = .add, .src_factor = .one, .dst_factor = .one_minus_src_alpha },
-        .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .one_minus_src_alpha },
-    };
-
-    const tri_pipeline = wgpu.deviceCreateRenderPipeline(device, &wgpu.RenderPipelineDescriptor{
-        .label = .fromSlice("batch2d_tri_render_pipeline"),
-        .layout = pipeline_layout,
-        .vertex = .{
-            .module = tri_shader_module,
-            .entry_point = .fromSlice("vs_main"),
-            .buffer_count = 1,
-            .buffers = &.{.{
-                .array_stride = @sizeOf(Vertex),
-                .step_mode = .vertex,
-                .attribute_count = 4,
-                .attributes = &[_]wgpu.VertexAttribute{
-                    .{ .shaderLocation = 0, .offset = @offsetOf(Vertex, "position"), .format = .float32x2 },
-                    .{ .shaderLocation = 1, .offset = @offsetOf(Vertex, "tex_coords"), .format = .float32x2 },
-                    .{ .shaderLocation = 2, .offset = @offsetOf(Vertex, "color"), .format = .float32x4 },
-                    .{ .shaderLocation = 3, .offset = @offsetOf(Vertex, "encoded_params"), .format = .uint32 },
-                },
-            }},
-        },
-        .fragment = &wgpu.FragmentState{
-            .module = tri_shader_module,
-            .entry_point = .fromSlice("fs_main"),
-            .target_count = 1,
-            .targets = &.{.{ .format = surface_format, .blend = &blend_state, .write_mask = .all }},
-        },
-        .primitive = .{ .topology = .triangle_list },
-        .multisample = .{ .count = sample_count, .mask = 0xFFFFFFFF },
-    });
-    std.debug.assert(tri_pipeline != null);
-
-    const quad_pipeline = wgpu.deviceCreateRenderPipeline(device, &wgpu.RenderPipelineDescriptor{
-        .label = .fromSlice("batch2d_quad_render_pipeline"),
-        .layout = pipeline_layout,
-        .vertex = .{
-            .module = quad_shader_module,
-            .entry_point = .fromSlice("vs_main"),
-            .buffer_count = 1,
-            .buffers = &.{.{
-                .array_stride = @sizeOf(Quad),
-                .step_mode = .instance,
-                .attribute_count = 9,
-                .attributes = &[_]wgpu.VertexAttribute{
-                    .{ .shaderLocation = 0, .offset = @offsetOf(Quad, "position"), .format = .float32x2 },
-                    .{ .shaderLocation = 1, .offset = @offsetOf(Quad, "size"), .format = .float32x2 },
-                    .{ .shaderLocation = 2, .offset = @offsetOf(Quad, "uv_min"), .format = .float32x2 },
-                    .{ .shaderLocation = 3, .offset = @offsetOf(Quad, "uv_max"), .format = .float32x2 },
-                    .{ .shaderLocation = 4, .offset = @offsetOf(Quad, "color"), .format = .float32x4 },
-                    .{ .shaderLocation = 5, .offset = @offsetOf(Quad, "radii"), .format = .float32x4 },
-                    .{ .shaderLocation = 6, .offset = @offsetOf(Quad, "border_thickness"), .format = .float32x4 },
-                    .{ .shaderLocation = 7, .offset = @offsetOf(Quad, "edge_softness"), .format = .float32 },
-                    .{ .shaderLocation = 8, .offset = @offsetOf(Quad, "encoded_params"), .format = .uint32 },
-                },
-            }},
-        },
-        .fragment = &wgpu.FragmentState{
-            .module = quad_shader_module,
-            .entry_point = .fromSlice("fs_main"),
-            .target_count = 1,
-            .targets = &.{.{ .format = surface_format, .blend = &blend_state, .write_mask = .all }},
-        },
-        .primitive = .{ .topology = .triangle_list },
-        .multisample = .{ .count = sample_count, .mask = 0xFFFFFFFF },
-    });
-    std.debug.assert(tri_pipeline != null);
-
     self.* = .{
         .allocator = allocator,
         .device = device,
         .queue = queue,
-        .tri_pipeline = tri_pipeline,
-        .quad_pipeline = quad_pipeline,
         .uniform_buffer = uniform_buffer,
+        .sample_count = sample_count,
+        .surface_format = surface_format,
         .viewport_width = 0,
         .viewport_height = 0,
         .vertex_buffer = null,
@@ -464,7 +461,12 @@ pub fn init(
         .batch_list = .empty,
         .scissor_stack = .empty,
         .current_pipeline = null,
+        .pipelines = .empty,
         .current_batch_start = 0,
+        .current_batch_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES,
+        .current_batch_uniform_start = 0,
+        .current_batch_uniform_size = 0,
+        .uniform_data_storage = .empty,
         .indirection_buffer = indirection_buffer,
         .indirection_buffer_capacity = initial_indirection_capacity,
         .indirection_staging_buffer = indirection_staging_buffer,
@@ -476,6 +478,11 @@ pub fn init(
     try self.patch_list.ensureTotalCapacity(self.allocator, 128);
     try self.batch_list.ensureTotalCapacity(self.allocator, 32);
     try self.scissor_stack.ensureTotalCapacity(self.allocator, 8);
+    try self.pipelines.ensureTotalCapacity(self.allocator, 8);
+    try self.uniform_data_storage.ensureTotalCapacity(self.allocator, 4096);
+
+    _ = try self.createCustomPipeline("Batch2D:default_tri_pipeline", .tri, try getTriShader(device), &.{}, void);
+    _ = try self.createCustomPipeline("Batch2D:default_quad_pipeline", .quad, try getQuadShader(device), &.{}, void);
 
     return self;
 }
@@ -492,12 +499,14 @@ pub fn deinit(self: *Batch2D) void {
     wgpu.bufferRelease(self.uniform_buffer);
     wgpu.samplerRelease(self.linear_sampler);
     wgpu.samplerRelease(self.nearest_sampler);
-    wgpu.renderPipelineRelease(self.tri_pipeline);
+    for (self.pipelines.items) |pipeline| wgpu.renderPipelineRelease(pipeline.gpu);
+    self.pipelines.deinit(self.allocator);
     self.vertices.deinit(self.allocator);
     self.quads.deinit(self.allocator);
     self.patch_list.deinit(self.allocator);
     self.batch_list.deinit(self.allocator);
     self.scissor_stack.deinit(self.allocator);
+    self.uniform_data_storage.deinit(self.allocator);
     self.frame_arena.deinit();
     self.allocator.destroy(self);
 }
@@ -529,12 +538,17 @@ pub fn beginFrame(self: *Batch2D, projection: mat4, viewport_width: u32, viewpor
 
     self.current_pipeline = null;
     self.current_batch_start = 0;
+    self.current_batch_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+    self.current_batch_uniform_start = 0;
+    self.current_batch_uniform_size = 0;
 }
 
 fn endCurrentBatch(self: *Batch2D) !void {
     if (self.current_pipeline == null) return;
 
-    const len = switch (self.current_pipeline.?) {
+    const cp = self.pipelines.items[self.current_pipeline.?];
+
+    const len = switch (cp.kind) {
         .tri => self.vertices.items.len,
         .quad => self.quads.items.len,
     };
@@ -549,19 +563,222 @@ fn endCurrentBatch(self: *Batch2D) !void {
             .start_index = self.current_batch_start,
             .count = count,
             .scissor = current_scissor,
+            .textures = self.current_batch_textures,
+            .uniform_data_offset = self.current_batch_uniform_start,
+            .uniform_data_size = self.current_batch_uniform_size,
         });
     }
+    
+    self.current_pipeline = null;
+}
+
+pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind, module: wgpu.ShaderModule, texture_bindings: []const wgpu.TextureBindingLayout, comptime CustomUniforms: type) !struct { u32, wgpu.RenderPipeline, wgpu.Buffer } {
+    const texture_count = texture_bindings.len;
+
+    if (texture_count > 4) {
+        log.err("Cannot bind more than 4 custom textures, got {d}", .{texture_count});
+        return error.TooManyCustomTextures;
+    }
+
+    const blend_state = wgpu.BlendState{
+        .color = .{ .operation = .add, .src_factor = .one, .dst_factor = .one_minus_src_alpha },
+        .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .one_minus_src_alpha },
+    };
+
+    const hasCustomUniforms = @sizeOf(CustomUniforms) > 0;
+    const uniform_buffer = if (hasCustomUniforms) {
+        wgpu.deviceCreateBuffer(self.device, &.{
+            .label = .fromSlice("Batch2D:custom_uniform_buffer"),
+            .usage = wgpu.BufferUsage{ .uniform = true, .copy_dst = true },
+            .size = @sizeOf(CustomUniforms),
+        });
+    } else null;
+
+    const bindgroup_layout = if (texture_count > 0 or hasCustomUniforms) make_bgl: {
+        var entries: [5]wgpu.BindGroupLayoutEntry = undefined;
+        var offset: u32 = 0;
+        if (hasCustomUniforms) {
+            entries[offset] = .{ .binding = offset, .visibility = .fragmentStage, .buffer = .{ .type = .uniform } };
+            offset += 1;
+        }
+        for (texture_bindings) |layout| {
+            entries[offset] = .{ .binding = offset, .visibility = .fragmentStage, .texture = layout };
+            offset += 1;
+        }
+        break :make_bgl wgpu.deviceCreateBindGroupLayout(self.device, &.{
+            .label = .fromSlice("Batch2D:custom_pipeline_bindgroup_layout"),
+            .entry_count = offset,
+            .entries = &entries,
+        });
+    } else null;
+
+    const pipeline_layout = wgpu.deviceCreatePipelineLayout(self.device, &.{
+        .label = .fromSlice("Batch2D:pipeline_layout"),
+        .bind_group_layout_count = 1 + @as(usize, @intFromBool(bindgroup_layout != null)),
+        .bind_group_layouts = &.{ getBindGroupLayout(self.device), bindgroup_layout },
+    });
+    std.debug.assert(pipeline_layout != null);
+    defer wgpu.pipelineLayoutRelease(pipeline_layout);
+
+    const pipeline = switch (kind) {
+        .tri => wgpu.deviceCreateRenderPipeline(self.device, &wgpu.RenderPipelineDescriptor{
+            .label = .fromSlice(name),
+            .layout = pipeline_layout,
+            .vertex = .{
+                .module = try getTriShader(self.device),
+                .entry_point = .fromSlice("vs_main"),
+                .buffer_count = 1,
+                .buffers = &.{.{
+                    .array_stride = @sizeOf(Vertex),
+                    .step_mode = .vertex,
+                    .attribute_count = 4,
+                    .attributes = &[_]wgpu.VertexAttribute{
+                        .{ .shaderLocation = 0, .offset = @offsetOf(Vertex, "position"), .format = .float32x2 },
+                        .{ .shaderLocation = 1, .offset = @offsetOf(Vertex, "tex_coords"), .format = .float32x2 },
+                        .{ .shaderLocation = 2, .offset = @offsetOf(Vertex, "color"), .format = .float32x4 },
+                        .{ .shaderLocation = 3, .offset = @offsetOf(Vertex, "encoded_params"), .format = .uint32 },
+                    },
+                }},
+            },
+            .fragment = &wgpu.FragmentState{
+                .module = module,
+                .entry_point = .fromSlice("fs_main"),
+                .target_count = 1,
+                .targets = &.{.{ .format = self.surface_format, .blend = &blend_state, .write_mask = .all }},
+            },
+            .primitive = .{ .topology = .triangle_list },
+            .multisample = .{ .count = self.sample_count, .mask = 0xFFFFFFFF },
+        }),
+        .quad => wgpu.deviceCreateRenderPipeline(self.device, &wgpu.RenderPipelineDescriptor{
+            .label = .fromSlice(name),
+            .layout = pipeline_layout,
+            .vertex = .{
+                .module = try getQuadShader(self.device),
+                .entry_point = .fromSlice("vs_main"),
+                .buffer_count = 1,
+                .buffers = &.{.{
+                    .array_stride = @sizeOf(Quad),
+                    .step_mode = .instance,
+                    .attribute_count = 9,
+                    .attributes = &[_]wgpu.VertexAttribute{
+                        .{ .shaderLocation = 0, .offset = @offsetOf(Quad, "position"), .format = .float32x2 },
+                        .{ .shaderLocation = 1, .offset = @offsetOf(Quad, "size"), .format = .float32x2 },
+                        .{ .shaderLocation = 2, .offset = @offsetOf(Quad, "uv_min"), .format = .float32x2 },
+                        .{ .shaderLocation = 3, .offset = @offsetOf(Quad, "uv_max"), .format = .float32x2 },
+                        .{ .shaderLocation = 4, .offset = @offsetOf(Quad, "color"), .format = .float32x4 },
+                        .{ .shaderLocation = 5, .offset = @offsetOf(Quad, "radii"), .format = .float32x4 },
+                        .{ .shaderLocation = 6, .offset = @offsetOf(Quad, "border_thickness"), .format = .float32x4 },
+                        .{ .shaderLocation = 7, .offset = @offsetOf(Quad, "edge_softness"), .format = .float32 },
+                        .{ .shaderLocation = 8, .offset = @offsetOf(Quad, "encoded_params"), .format = .uint32 },
+                    },
+                }},
+            },
+            .fragment = &wgpu.FragmentState{
+                .module = module,
+                .entry_point = .fromSlice("fs_main"),
+                .target_count = 1,
+                .targets = &.{.{ .format = self.surface_format, .blend = &blend_state, .write_mask = .all }},
+            },
+            .primitive = .{ .topology = .triangle_list },
+            .multisample = .{ .count = self.sample_count, .mask = 0xFFFFFFFF },
+        }),
+    };
+    std.debug.assert(pipeline != null);
+    errdefer wgpu.renderPipelineRelease(pipeline);
+
+    const index: u32 = @intCast(self.pipelines.items.len);
+    try self.pipelines.append(self.allocator, .{
+        .kind = kind,
+        .gpu = pipeline,
+        .texture_count = texture_count,
+        .bind_group_layout = bindgroup_layout,
+        .cached_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES,
+        .cached_bind_group = null,
+        .uniform_size = @sizeOf(CustomUniforms),
+        .uniform_buffer = uniform_buffer,
+    });
+
+    return .{ index, pipeline, uniform_buffer };
 }
 
 fn ensurePipeline(self: *Batch2D, pipeline: PipelineKind) !void {
-    if (self.current_pipeline != pipeline) {
-        try self.endCurrentBatch();
-        self.current_pipeline = pipeline;
-        self.current_batch_start = switch (pipeline) {
-            .tri => self.vertices.items.len,
-            .quad => self.quads.items.len,
-        };
+    if (self.current_pipeline) |index| {
+        const cp = self.pipelines.items[index];
+        if (cp.kind == pipeline) return;
     }
+
+    try self.endCurrentBatch();
+
+    switch (pipeline) {
+        .tri => {
+            self.current_pipeline = 0;
+            self.current_batch_start = self.vertices.items.len;
+        },
+        .quad => {
+            self.current_pipeline = 1;
+            self.current_batch_start = self.quads.items.len;
+        },
+    }
+
+    self.current_batch_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+    self.current_batch_uniform_start = 0;
+    self.current_batch_uniform_size = 0;
+}
+
+pub fn customPipelineStart(self: *Batch2D, index: u32, textures: []const wgpu.TextureView, uniform_buffer: anytype) !void {
+    if (self.current_pipeline == index) return;
+
+    try self.endCurrentBatch();
+
+    const np = self.pipelines.items[index];
+
+    if (textures.len != np.texture_count) {
+        log.err("Pipeline at index {d} expects {d} textures, but got {d}", .{ index, np.texture_count, textures.len });
+        return error.InvalidTextureCount;
+    }
+
+    self.current_batch_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+    for (textures, 0..) |tex, i| {
+        self.current_batch_textures[i] = tex;
+    }
+    self.current_pipeline = index;
+    self.current_batch_uniform_start = self.uniform_data_storage.items.len;
+    const T = @TypeOf(uniform_buffer);
+    if (T == void) {
+        self.current_batch_uniform_size = 0;
+    } else {
+        const T_info = @typeInfo(T);
+        if (T_info != .pointer) {
+            self.current_batch_uniform_size = @sizeOf(T);
+            try self.uniform_data_storage.appendSlice(self.allocator, std.mem.asBytes(&uniform_buffer));
+        } else {
+            switch (T_info.pointer.size) {
+                .c, .many => @compileError("customPipelineStart only accepts single item pointer, slice, or value"),
+                .one => {
+                    self.current_batch_uniform_size = @sizeOf(T_info.pointer.child);
+                    try self.uniform_data_storage.appendSlice(self.allocator, std.mem.asBytes(uniform_buffer));
+                },
+                .slice => {
+                    self.current_batch_uniform_size = @sizeOf(T_info.pointer.child) * uniform_buffer.len;
+                    try self.uniform_data_storage.appendSlice(self.allocator, std.mem.sliceAsBytes(uniform_buffer));
+                },
+            }
+        }
+    }
+
+    switch (np.kind) {
+        .tri => self.current_batch_start = self.vertices.items.len,
+        .quad => self.current_batch_start = self.quads.items.len,
+    }
+}
+
+pub fn customPipelineEnd(self: *Batch2D, index: u32) !void {
+    if (self.current_pipeline != index) {
+        log.err("customPipelineEnd called with invalid index {d}; current is {?d}", .{ index, self.current_pipeline });
+        return;
+    }
+
+    try self.endCurrentBatch();
 }
 
 pub fn scissorStart(self: *Batch2D, pos: vec2, size: vec2) !void {
@@ -656,7 +873,7 @@ pub fn endFrame(self: *Batch2D) !void {
     // --- Upload data to GPU via staging buffers ---
     // We create a dedicated command encoder for these copy operations.
     // This allows the GPU to process data uploads in parallel with the CPU preparing the next frame.
-    const upload_encoder = wgpu.deviceCreateCommandEncoder(self.device, &.{ .label = .fromSlice("staging_upload_encoder") });
+    const upload_encoder = wgpu.deviceCreateCommandEncoder(self.device, &.{ .label = .fromSlice("Batch2D:staging_upload_encoder") });
     defer wgpu.commandEncoderRelease(upload_encoder);
 
     // Upload indirection table if it has data
@@ -673,7 +890,7 @@ pub fn endFrame(self: *Batch2D) !void {
             wgpu.bufferRelease(self.indirection_buffer);
             const new_capacity = @max(self.indirection_buffer_capacity * 2, required_capacity);
             self.indirection_buffer = wgpu.deviceCreateBuffer(self.device, &.{
-                .label = .fromSlice("indirection_buffer"),
+                .label = .fromSlice("Batch2D:indirection_buffer"),
                 .usage = .{ .storage = true, .copy_dst = true },
                 .size = new_capacity * @sizeOf(Atlas.ImageMipData),
             });
@@ -686,7 +903,7 @@ pub fn endFrame(self: *Batch2D) !void {
             wgpu.bufferRelease(self.indirection_staging_buffer);
             const new_capacity = @max(self.indirection_staging_buffer_capacity * 2, required_size);
             self.indirection_staging_buffer = wgpu.deviceCreateBuffer(self.device, &.{
-                .label = .fromSlice("indirection_staging_buffer"),
+                .label = .fromSlice("Batch2D:indirection_staging_buffer"),
                 .usage = .{ .map_write = true, .copy_src = true },
                 .size = new_capacity,
             });
@@ -707,7 +924,7 @@ pub fn endFrame(self: *Batch2D) !void {
             if (self.vertex_buffer_capacity > 0) wgpu.bufferRelease(self.vertex_buffer);
             const new_capacity = @max(self.vertex_buffer_capacity * 2, required_size);
             self.vertex_buffer = wgpu.deviceCreateBuffer(self.device, &.{
-                .label = .fromSlice("vertex_buffer"),
+                .label = .fromSlice("Batch2D:vertex_buffer"),
                 .usage = wgpu.BufferUsage{ .vertex = true, .copy_dst = true },
                 .size = new_capacity,
             });
@@ -720,7 +937,7 @@ pub fn endFrame(self: *Batch2D) !void {
             wgpu.bufferRelease(self.vertex_staging_buffer);
             const new_capacity = @max(self.vertex_staging_buffer_capacity * 2, required_size);
             self.vertex_staging_buffer = wgpu.deviceCreateBuffer(self.device, &.{
-                .label = .fromSlice("vertex_staging_buffer"),
+                .label = .fromSlice("Batch2D:vertex_staging_buffer"),
                 .usage = wgpu.BufferUsage{ .map_write = true, .copy_src = true },
                 .size = new_capacity,
             });
@@ -741,7 +958,7 @@ pub fn endFrame(self: *Batch2D) !void {
             if (self.quad_buffer_capacity > 0) wgpu.bufferRelease(self.quad_buffer);
             const new_capacity = @max(self.quad_buffer_capacity * 2, required_size);
             self.quad_buffer = wgpu.deviceCreateBuffer(self.device, &.{
-                .label = .fromSlice("quad_buffer"),
+                .label = .fromSlice("Batch2D:quad_buffer"),
                 .usage = wgpu.BufferUsage{ .vertex = true, .copy_dst = true },
                 .size = new_capacity,
             });
@@ -754,7 +971,7 @@ pub fn endFrame(self: *Batch2D) !void {
             wgpu.bufferRelease(self.quad_staging_buffer);
             const new_capacity = @max(self.quad_staging_buffer_capacity * 2, required_size);
             self.quad_staging_buffer = wgpu.deviceCreateBuffer(self.device, &.{
-                .label = .fromSlice("quad_staging_buffer"),
+                .label = .fromSlice("Batch2D:quad_staging_buffer"),
                 .usage = wgpu.BufferUsage{ .map_write = true, .copy_src = true },
                 .size = new_capacity,
             });
@@ -782,32 +999,38 @@ pub fn endFrame(self: *Batch2D) !void {
 }
 
 pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
-    if (self.bind_group == null) return;
+    if (self.bind_group == null) {
+        log.debug("Bind group is null, skipping render.", .{});
+        return;
+    }
 
     wgpu.renderPassEncoderSetBindGroup(render_pass, 0, self.bind_group, 0, null);
 
-    var bound_pipeline: ?PipelineKind = null;
+    var bound_pipeline: ?u32 = null;
 
     // Iterate through the batches and issue a draw call for each one with its specific scissor rect
     for (self.batch_list.items) |batch| {
         if (batch.count == 0) continue;
 
+        const bp = &self.pipelines.items[batch.pipeline];
+
         if (bound_pipeline != batch.pipeline) {
-            switch (batch.pipeline) {
-                .tri => {
-                    wgpu.renderPassEncoderSetPipeline(render_pass, self.tri_pipeline);
-                    wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.vertex_buffer, 0, self.vertices.items.len * @sizeOf(Vertex));
-                },
-                .quad => {
-                    wgpu.renderPassEncoderSetPipeline(render_pass, self.quad_pipeline);
-                    wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.quad_buffer, 0, self.quads.items.len * @sizeOf(Quad));
-                },
+            wgpu.renderPassEncoderSetPipeline(render_pass, bp.gpu);
+            if (bp.getBindGroup(self.device, batch.textures)) |cbg| {
+                wgpu.renderPassEncoderSetBindGroup(render_pass, 1, cbg, 0, null);
+                if (bp.uniform_size > 0) {
+                    wgpu.queueWriteBuffer(self.queue, bp.uniform_buffer, 0, self.uniform_data_storage.items.ptr + batch.uniform_data_offset, batch.uniform_data_size);
+                }
+            }
+            switch (bp.kind) {
+                .tri => wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.vertex_buffer, 0, self.vertices.items.len * @sizeOf(Vertex)),
+                .quad => wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.quad_buffer, 0, self.quads.items.len * @sizeOf(Quad)),
             }
             bound_pipeline = batch.pipeline;
         }
 
         wgpu.renderPassEncoderSetScissorRect(render_pass, batch.scissor.x, batch.scissor.y, batch.scissor.width, batch.scissor.height);
-        switch (batch.pipeline) {
+        switch (bp.kind) {
             .tri => wgpu.renderPassEncoderDraw(render_pass, @intCast(batch.count), 1, @intCast(batch.start_index), 0),
             .quad => wgpu.renderPassEncoderDraw(render_pass, 6, @intCast(batch.count), 0, @intCast(batch.start_index)),
         }
@@ -1447,17 +1670,17 @@ fn pushTriangle(self: *Batch2D, encoded_params: u32, v1: vec2, uv1: vec2, v2: ve
 }
 
 fn recreateBindGroup(self: *Batch2D) !void {
-    const layout = wgpu.renderPipelineGetBindGroupLayout(self.tri_pipeline, 0);
     const bg = wgpu.deviceCreateBindGroup(self.device, &.{
-        .label = .fromSlice("atlas_array_bind_group"),
-        .layout = layout,
-        .entry_count = 5,
+        .label = .fromSlice("Batch2D:atlas_array_bind_group"),
+        .layout = getBindGroupLayout(self.device),
+        .entry_count = 6,
         .entries = &[_]wgpu.BindGroupEntry{
             .{ .binding = 0, .buffer = self.uniform_buffer, .size = @sizeOf(Uniforms) },
             .{ .binding = 1, .sampler = self.linear_sampler },
             .{ .binding = 2, .sampler = self.nearest_sampler },
-            .{ .binding = 3, .texture_view = self.atlas.view },
-            .{ .binding = 4, .buffer = self.indirection_buffer, .size = self.indirection_buffer_capacity * @sizeOf(Atlas.ImageMipData) },
+            .{ .binding = 3, .sampler = self.nearest_sampler },
+            .{ .binding = 4, .texture_view = self.atlas.view },
+            .{ .binding = 5, .buffer = self.indirection_buffer, .size = self.indirection_buffer_capacity * @sizeOf(Atlas.ImageMipData) },
         },
     });
     std.debug.assert(bg != null);

@@ -1,7 +1,9 @@
 @group(0) @binding(0) var<uniform> projection_matrix: mat4x4<f32>;
 @group(0) @binding(1) var linear_sampler: sampler;
 @group(0) @binding(2) var nearest_sampler: sampler;
-@group(0) @binding(3) var atlas_texture: texture_2d_array<f32>;
+@group(0) @binding(3) var non_filtering_sampler: sampler;
+@group(0) @binding(4) var atlas_texture: texture_2d_array<f32>;
+@group(0) @binding(5) var<storage, read> image_mip_table: array<ImageMipData>;
 
 struct MipInfo {
     uv_rect: vec4<f32>,
@@ -13,7 +15,6 @@ struct ImageMipData {
     mips: array<MipInfo, MAX_MIP_LEVELS>,
 };
 
-@group(0) @binding(4) var<storage, read> image_mip_table: array<ImageMipData>;
 
 struct QuadInstance {
     @location(0) position: vec2<f32>,

@@ -8,11 +8,18 @@ pipeline: wgpu.RenderPipeline,
 bind_group_layout: wgpu.BindGroupLayout,
 sampler: wgpu.Sampler,
 
-pub fn init(gpu: *Gpu) !Compositor {
+var BLIT_SHADER_MODULE: wgpu.ShaderModule = null;
+pub fn getBlitShader(gpu: *Gpu) !wgpu.ShaderModule {
+    if (BLIT_SHADER_MODULE == null) {
+        BLIT_SHADER_MODULE = try gpu.loadShaderText("shaders/BlitCompositor.wgsl", @embedFile("shaders/BlitCompositor.wgsl"));
+    }
+    return BLIT_SHADER_MODULE;
+}
+
+pub fn init(gpu: *Gpu, custom_shader: wgpu.ShaderModule) !Compositor {
     // Load the shader
-    // TODO: custom shaders so we can do post-processing effects. for now just blit.
-    const shader = try gpu.loadShaderText("shaders/BlitCompositor.wgsl", @embedFile("shaders/BlitCompositor.wgsl"));
-    defer wgpu.shaderModuleRelease(shader);
+    const blit_shader = try getBlitShader(gpu);
+    const shader = if (custom_shader) |cs| cs else blit_shader;
 
     // Create the Sampler
     const sampler = gpu.createSampler(&wgpu.SamplerDescriptor{
@@ -62,7 +69,7 @@ pub fn init(gpu: *Gpu) !Compositor {
         .label = .fromSlice("compositor_pipeline"),
         .layout = pipeline_layout,
         .vertex = .{
-            .module = shader,
+            .module = blit_shader,
             .entry_point = .fromSlice("vs_main"),
             .buffer_count = 0,
             .buffers = null,
