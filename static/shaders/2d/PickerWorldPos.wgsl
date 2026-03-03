@@ -5,7 +5,12 @@
 @group(0) @binding(4) var atlas_texture: texture_2d_array<f32>;
 @group(0) @binding(5) var<storage, read> image_mip_table: array<ImageMipData>;
 
-@group(1) @binding(0) var picking_texture: texture_2d<f32>;
+struct CustomUniforms {
+    mouse_pos: vec2<f32>,
+    _padding: vec2<f32>,
+};
+@group(1) @binding(0) var<uniform> custom_uniforms: CustomUniforms;
+@group(1) @binding(1) var picking_texture: texture_2d<f32>;
 
 struct MipInfo {
     uv_rect: vec4<f32>,
@@ -33,14 +38,13 @@ fn sdRoundRect(p: vec2<f32>, size: vec2<f32>, radii: vec4<f32>) -> f32 {
     let half_size = size * 0.5;
     let center_p = p - half_size;
 
-    // Map screen quadrants to corner radii
     var r: f32;
     if (center_p.x > 0.0) {
-        if (center_p.y > 0.0) { r = radii.z; } // Bottom-Right
-        else                  { r = radii.y; } // Top-Right
+        if (center_p.y > 0.0) { r = radii.z; } 
+        else                  { r = radii.y; } 
     } else {
-        if (center_p.y > 0.0) { r = radii.w; } // Bottom-Left
-        else                  { r = radii.x; } // Top-Left
+        if (center_p.y > 0.0) { r = radii.w; } 
+        else                  { r = radii.x; } 
     }
 
     let q = abs(center_p) - half_size + r;
@@ -49,43 +53,37 @@ fn sdRoundRect(p: vec2<f32>, size: vec2<f32>, radii: vec4<f32>) -> f32 {
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    // 1. Evaluate SDF Geometry
     let d = sdRoundRect(in.local_pos, in.size, in.radii);
     var sdf_val = d;
 
-    // 2. Smoothly Interpolated Border Thickness
-    // border_thickness: x=top, y=right, z=bottom, w=left
     if (any(in.border_thickness > vec4<f32>(0.0))) {
-        // Calculate normalized coordinates from 0.0 to 1.0 across the quad
         let st = in.local_pos / in.size;
-
-        // Calculate weights for each side. 
-        // These are highest (1.0) at the edge and 0.0 at the opposite edge.
         let w_top    = 1.0 - st.y;
         let w_bottom = st.y;
         let w_left   = 1.0 - st.x;
         let w_right  = st.x;
 
-        // Use a power function or smoothstep to sharpen the transition 
-        // toward the corners, ensuring the correct thickness "wins" at the edge.
         let blend = pow(vec4<f32>(w_top, w_right, w_bottom, w_left), vec4<f32>(4.0));
         let total_w = blend.x + blend.y + blend.z + blend.w;
-        
-        // Final interpolated thickness
         let t = dot(in.border_thickness, blend) / total_w;
-
-        // Apply thickness to the SDF
         sdf_val = abs(d + t * 0.5) - t * 0.5;
     }
 
-    // Alpha Anti-Aliasing falloff
     let alpha_factor = 1.0 - smoothstep(-in.edge_softness, in.edge_softness, sdf_val);
     if (alpha_factor <= 0.0) { discard; }
 
     let sampled_data = textureSample(picking_texture, non_filtering_sampler, in.tex_coords);
-    // var light = 0.0;
-    // if (bitcast<u32>(sampled_data.a) != 0) {
-    //     light = 1.0;
-    // }
-    return vec4<f32>(sampled_data.rgb, alpha_factor);
+    var final_color = sampled_data.rgb;
+
+    // --- TEXTURE SPACE MOUSE LOGIC ---
+    let tex_dims = vec2<f32>(textureDimensions(picking_texture));
+    let tex_pixel_pos = in.tex_coords * tex_dims;
+    
+    let dist_to_mouse = distance(tex_pixel_pos, custom_uniforms.mouse_pos);
+    
+    if (abs(dist_to_mouse - 10.0) < 2.0) {
+        final_color = vec3<f32>(1.0, 0.0, 0.0);
+    }
+
+    return vec4<f32>(final_color, alpha_factor);
 }

@@ -6,6 +6,7 @@ const std = @import("std");
 const wgpu = @import("wgpu");
 const stbtt = @import("stbtt");
 const Atlas = @import("Atlas.zig");
+const Gpu = @import("Gpu.zig");
 const linalg = @import("linalg.zig");
 const AssetCache = @import("AssetCache.zig");
 
@@ -173,9 +174,6 @@ const Vertex = extern struct {
     position: [2]f32,
     tex_coords: [2]f32,
     color: [4]f32,
-    /// Encoded rendering parameters passed to the shader.
-    /// - Bit 31: Use Nearest Filter flag (for text, solid colors, etc.)
-    /// - Bits 0-30: Logical Image ID (index into the indirection table storage buffer)
     encoded_params: u32,
 };
 
@@ -188,9 +186,6 @@ const Quad = extern struct {
     radii: [4]f32,
     border_thickness: [4]f32,
     edge_softness: f32,
-    /// Encoded rendering parameters passed to the shader.
-    /// - Bit 31: Use Nearest Filter flag (for text, solid colors, etc.)
-    /// - Bits 0-30: Logical Image ID (index into the indirection table storage buffer)
     encoded_params: u32,
 };
 
@@ -215,18 +210,24 @@ pub const Pipeline = struct {
     gpu: wgpu.RenderPipeline,
     texture_count: usize,
     uniform_size: usize,
-    uniform_buffer: wgpu.Buffer,
     bind_group_layout: wgpu.BindGroupLayout,
     cached_textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView,
-    cached_bind_group: wgpu.BindGroup,
+    cached_custom_uniform_buffer: ?wgpu.Buffer,
+    cached_bind_group: ?wgpu.BindGroup,
 
-    pub fn getBindGroup(self: *Pipeline, device: wgpu.Device, textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView) wgpu.BindGroup {
+    pub fn getBindGroup(self: *Pipeline, device: wgpu.Device, textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView, custom_uniform_buffer: ?wgpu.Buffer) ?wgpu.BindGroup {
         if (self.bind_group_layout == null) return null;
 
         if (self.cached_bind_group) |cbg| {
-            const cache_valid = for (0..self.texture_count) |i| {
-                if (textures[i] != self.cached_textures[i]) break false;
-            } else true;
+            var cache_valid = true;
+            if (self.cached_custom_uniform_buffer != custom_uniform_buffer) cache_valid = false;
+
+            for (0..self.texture_count) |i| {
+                if (textures[i] != self.cached_textures[i]) {
+                    cache_valid = false;
+                    break;
+                }
+            }
 
             if (cache_valid) {
                 return cbg;
@@ -238,9 +239,11 @@ pub const Pipeline = struct {
         var entries: [1 + MAX_CUSTOM_TEXTURES]wgpu.BindGroupEntry = undefined;
         var offset: u32 = 0;
         self.cached_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+        self.cached_custom_uniform_buffer = custom_uniform_buffer;
 
         if (self.uniform_size > 0) {
-            entries[offset] = .{ .binding = offset, .buffer = self.uniform_buffer, .size = self.uniform_size };
+            // Note: We bind the exact size of the struct, not the whole buffer.
+            entries[offset] = .{ .binding = offset, .buffer = custom_uniform_buffer.?, .size = self.uniform_size };
             offset += 1;
         }
 
@@ -256,8 +259,8 @@ pub const Pipeline = struct {
             .entry_count = offset,
             .entries = &entries,
         });
-        std.debug.assert(self.cached_bind_group != null);
-        return self.cached_bind_group;
+
+        return self.cached_bind_group.?;
     }
 };
 
@@ -266,8 +269,7 @@ pub const ProviderContext = Atlas.ProviderContext;
 
 // --- WGPU Resources and State ---
 allocator: std.mem.Allocator,
-device: wgpu.Device,
-queue: wgpu.Queue,
+gpu: *Gpu,
 uniform_buffer: wgpu.Buffer,
 sample_count: u32,
 surface_format: wgpu.TextureFormat,
@@ -279,42 +281,40 @@ viewport_height: u32,
 // Vertex Buffers
 vertex_buffer: wgpu.Buffer,
 vertex_buffer_capacity: usize,
-vertex_staging_buffer: wgpu.Buffer,
-vertex_staging_buffer_capacity: usize,
-vertices: std.ArrayList(Vertex),
+vertices: std.ArrayListUnmanaged(Vertex),
 
 // Quad buffers
 quad_buffer: wgpu.Buffer,
 quad_buffer_capacity: usize,
-quad_staging_buffer: wgpu.Buffer,
-quad_staging_buffer_capacity: usize,
-quads: std.ArrayList(Quad),
+quads: std.ArrayListUnmanaged(Quad),
+
+// Custom Uniform Buffers (Shared via dynamic offset)
+custom_uniform_buffer: ?wgpu.Buffer,
+custom_uniform_buffer_capacity: usize,
+uniform_data_storage: std.ArrayListUnmanaged(u8),
 
 // Drawing State
 asset_cache: *AssetCache,
 atlas: *Atlas,
 frame_arena: std.heap.ArenaAllocator,
 provider_context: Atlas.ProviderContext,
-bind_group: wgpu.BindGroup,
+bind_group: ?wgpu.BindGroup,
 linear_sampler: wgpu.Sampler,
 nearest_sampler: wgpu.Sampler,
-patch_list: std.ArrayList(Patch),
-batch_list: std.ArrayList(RenderBatch),
-scissor_stack: std.ArrayList(ScissorRect),
+patch_list: std.ArrayListUnmanaged(Patch),
+batch_list: std.ArrayListUnmanaged(RenderBatch),
+scissor_stack: std.ArrayListUnmanaged(ScissorRect),
 
 current_pipeline: ?u32,
 current_batch_start: usize,
 current_batch_textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView,
 current_batch_uniform_start: usize,
 current_batch_uniform_size: usize,
-pipelines: std.ArrayList(Pipeline),
-uniform_data_storage: std.ArrayList(u8),
+pipelines: std.ArrayListUnmanaged(Pipeline),
 
 // Indirection Table Buffers
 indirection_buffer: wgpu.Buffer,
 indirection_buffer_capacity: usize,
-indirection_staging_buffer: wgpu.Buffer,
-indirection_staging_buffer_capacity: usize,
 
 var BINDGROUP_LAYOUT: wgpu.BindGroupLayout = null;
 pub fn getBindGroupLayout(device: wgpu.Device) wgpu.BindGroupLayout {
@@ -324,9 +324,9 @@ pub fn getBindGroupLayout(device: wgpu.Device) wgpu.BindGroupLayout {
             .entry_count = 6,
             .entries = &[_]wgpu.BindGroupLayoutEntry{
                 .{ .binding = 0, .visibility = .vertexStage, .buffer = .{ .type = .uniform } },
-                .{ .binding = 1, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } }, // Linear
-                .{ .binding = 2, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } }, // Nearest
-                .{ .binding = 3, .visibility = .fragmentStage, .sampler = .{ .type = .non_filtering } }, // non-filtering sampler for special use cases
+                .{ .binding = 1, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } },
+                .{ .binding = 2, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } },
+                .{ .binding = 3, .visibility = .fragmentStage, .sampler = .{ .type = .non_filtering } },
                 .{ .binding = 4, .visibility = .fragmentStage, .texture = .{ .sample_type = .float, .view_dimension = .@"2d_array" } },
                 .{ .binding = 5, .visibility = .fragmentStage, .buffer = .{ .type = .read_only_storage } },
             },
@@ -354,8 +354,7 @@ pub fn getQuadShader(device: wgpu.Device) !wgpu.ShaderModule {
 
 pub fn init(
     allocator: std.mem.Allocator,
-    device: wgpu.Device,
-    queue: wgpu.Queue,
+    gpu: *Gpu,
     surface_format: wgpu.TextureFormat,
     asset_cache: *AssetCache,
     sample_count: u32,
@@ -363,10 +362,10 @@ pub fn init(
     const self = try allocator.create(Batch2D);
     errdefer allocator.destroy(self);
 
-    const atlas = try Atlas.init(allocator, device, queue, 2048, 2048, Atlas.MAX_MIP_LEVELS);
+    const atlas = try Atlas.init(allocator, gpu, 2048, 2048, Atlas.MAX_MIP_LEVELS);
     errdefer atlas.deinit();
 
-    const uniform_buffer = wgpu.deviceCreateBuffer(device, &.{
+    const uniform_buffer = wgpu.deviceCreateBuffer(gpu.device, &.{
         .label = .fromSlice("Batch2D:uniform_buffer"),
         .usage = wgpu.BufferUsage{ .uniform = true, .copy_dst = true },
         .size = @sizeOf(Uniforms),
@@ -375,7 +374,7 @@ pub fn init(
     errdefer wgpu.bufferRelease(uniform_buffer);
 
     const initial_indirection_capacity = 2048;
-    const indirection_buffer = wgpu.deviceCreateBuffer(device, &.{
+    const indirection_buffer = wgpu.deviceCreateBuffer(gpu.device, &.{
         .label = .fromSlice("Batch2D:indirection_buffer"),
         .usage = .{ .storage = true, .copy_dst = true },
         .size = initial_indirection_capacity * @sizeOf(Atlas.ImageMipData),
@@ -383,31 +382,7 @@ pub fn init(
     std.debug.assert(indirection_buffer != null);
     errdefer wgpu.bufferRelease(indirection_buffer);
 
-    const indirection_staging_buffer = wgpu.deviceCreateBuffer(device, &.{
-        .label = .fromSlice("Batch2D:indirection_staging_buffer"),
-        .usage = .{ .map_write = true, .copy_src = true },
-        .size = initial_indirection_capacity * @sizeOf(Atlas.ImageMipData),
-    });
-    std.debug.assert(indirection_staging_buffer != null);
-    errdefer wgpu.bufferRelease(indirection_staging_buffer);
-
-    const initial_vertex_capacity_bytes = 4096 * @sizeOf(Vertex);
-    const vertex_staging_buffer = wgpu.deviceCreateBuffer(device, &.{
-        .label = .fromSlice("Batch2D:vertex_staging_buffer"),
-        .usage = .{ .map_write = true, .copy_src = true },
-        .size = initial_vertex_capacity_bytes,
-    });
-    errdefer wgpu.bufferRelease(vertex_staging_buffer);
-
-    const initial_quad_capacity_bytes = 4096 * @sizeOf(Quad);
-    const quad_staging_buffer = wgpu.deviceCreateBuffer(device, &.{
-        .label = .fromSlice("Batch2D:quad_staging_buffer"),
-        .usage = .{ .map_write = true, .copy_src = true },
-        .size = initial_quad_capacity_bytes,
-    });
-    errdefer wgpu.bufferRelease(quad_staging_buffer);
-
-    const linear_sampler = wgpu.deviceCreateSampler(device, &.{
+    const linear_sampler = wgpu.deviceCreateSampler(gpu.device, &.{
         .label = .fromSlice("Batch2D:linear_sampler"),
         .address_mode_u = .clamp_to_edge,
         .address_mode_v = .clamp_to_edge,
@@ -417,7 +392,7 @@ pub fn init(
     std.debug.assert(linear_sampler != null);
     errdefer wgpu.samplerRelease(linear_sampler);
 
-    const nearest_sampler = wgpu.deviceCreateSampler(device, &.{
+    const nearest_sampler = wgpu.deviceCreateSampler(gpu.device, &.{
         .label = .fromSlice("Batch2D:nearest_sampler"),
         .address_mode_u = .clamp_to_edge,
         .address_mode_v = .clamp_to_edge,
@@ -429,30 +404,28 @@ pub fn init(
 
     self.* = .{
         .allocator = allocator,
-        .device = device,
-        .queue = queue,
+        .gpu = gpu,
         .uniform_buffer = uniform_buffer,
         .sample_count = sample_count,
         .surface_format = surface_format,
         .viewport_width = 0,
         .viewport_height = 0,
-        .vertex_buffer = null,
+        .vertex_buffer = null, // Created lazily
         .vertex_buffer_capacity = 0,
-        .vertex_staging_buffer = vertex_staging_buffer,
-        .vertex_staging_buffer_capacity = initial_vertex_capacity_bytes,
         .vertices = .empty,
-        .quad_buffer = null,
+        .quad_buffer = null, // Created lazily
         .quad_buffer_capacity = 0,
-        .quad_staging_buffer = quad_staging_buffer,
-        .quad_staging_buffer_capacity = initial_quad_capacity_bytes,
         .quads = .empty,
+        .custom_uniform_buffer = null,
+        .custom_uniform_buffer_capacity = 0,
+        .uniform_data_storage = .empty,
         .asset_cache = asset_cache,
         .atlas = atlas,
         .frame_arena = std.heap.ArenaAllocator.init(allocator),
         .provider_context = .{
             .provider = AssetCache.dataProvider,
             .user_context = @constCast(asset_cache),
-            .frame_allocator = undefined, // This will be set per-frame in beginFrame
+            .frame_allocator = undefined,
         },
         .bind_group = null,
         .linear_sampler = linear_sampler,
@@ -466,11 +439,8 @@ pub fn init(
         .current_batch_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES,
         .current_batch_uniform_start = 0,
         .current_batch_uniform_size = 0,
-        .uniform_data_storage = .empty,
         .indirection_buffer = indirection_buffer,
         .indirection_buffer_capacity = initial_indirection_capacity,
-        .indirection_staging_buffer = indirection_staging_buffer,
-        .indirection_staging_buffer_capacity = initial_indirection_capacity * @sizeOf(Atlas.ImageMipData),
     };
 
     try self.vertices.ensureTotalCapacity(self.allocator, 4096);
@@ -481,25 +451,28 @@ pub fn init(
     try self.pipelines.ensureTotalCapacity(self.allocator, 8);
     try self.uniform_data_storage.ensureTotalCapacity(self.allocator, 4096);
 
-    _ = try self.createCustomPipeline("Batch2D:default_tri_pipeline", .tri, try getTriShader(device), &.{}, void);
-    _ = try self.createCustomPipeline("Batch2D:default_quad_pipeline", .quad, try getQuadShader(device), &.{}, void);
+    _ = try self.createCustomPipeline("Batch2D:default_tri_pipeline", .tri, try getTriShader(gpu.device), &.{}, 0);
+    _ = try self.createCustomPipeline("Batch2D:default_quad_pipeline", .quad, try getQuadShader(gpu.device), &.{}, 0);
 
     return self;
 }
 
 pub fn deinit(self: *Batch2D) void {
     self.atlas.deinit();
-    if (self.bind_group != null) wgpu.bindGroupRelease(self.bind_group);
+    if (self.bind_group) |bg| wgpu.bindGroupRelease(bg);
     if (self.vertex_buffer_capacity > 0) wgpu.bufferRelease(self.vertex_buffer);
     if (self.quad_buffer_capacity > 0) wgpu.bufferRelease(self.quad_buffer);
-    wgpu.bufferRelease(self.vertex_staging_buffer);
-    wgpu.bufferRelease(self.quad_staging_buffer);
+    if (self.custom_uniform_buffer) |cub| wgpu.bufferRelease(cub);
     wgpu.bufferRelease(self.indirection_buffer);
-    wgpu.bufferRelease(self.indirection_staging_buffer);
     wgpu.bufferRelease(self.uniform_buffer);
     wgpu.samplerRelease(self.linear_sampler);
     wgpu.samplerRelease(self.nearest_sampler);
-    for (self.pipelines.items) |pipeline| wgpu.renderPipelineRelease(pipeline.gpu);
+
+    for (self.pipelines.items) |pipeline| {
+        wgpu.renderPipelineRelease(pipeline.gpu);
+        if (pipeline.cached_bind_group) |cbg| wgpu.bindGroupRelease(cbg);
+    }
+
     self.pipelines.deinit(self.allocator);
     self.vertices.deinit(self.allocator);
     self.quads.deinit(self.allocator);
@@ -515,20 +488,18 @@ pub fn beginFrame(self: *Batch2D, projection: mat4, viewport_width: u32, viewpor
     self.viewport_width = viewport_width;
     self.viewport_height = viewport_height;
 
-    // Reset the frame arena allocator and update the provider context for this frame.
-    // This provides a valid, temporary allocator for any assets that need to be
-    // generated on-the-fly during this frame (e.g., new glyphs, mipmaps).
     _ = self.frame_arena.reset(.retain_capacity);
     self.provider_context.frame_allocator = self.frame_arena.allocator();
 
-    wgpu.queueWriteBuffer(self.queue, self.uniform_buffer, 0, &Uniforms{ .projection = projection }, @sizeOf(Uniforms));
+    wgpu.queueWriteBuffer(self.gpu.queue, self.uniform_buffer, 0, &Uniforms{ .projection = projection }, @sizeOf(Uniforms));
+
     self.vertices.clearRetainingCapacity();
     self.quads.clearRetainingCapacity();
     self.patch_list.clearRetainingCapacity();
     self.batch_list.clearRetainingCapacity();
     self.scissor_stack.clearRetainingCapacity();
+    self.uniform_data_storage.clearRetainingCapacity(); // Reset our dynamic offset arena
 
-    // Start with a default scissor rect that covers the whole screen.
     self.scissor_stack.appendAssumeCapacity(.{
         .x = 0,
         .y = 0,
@@ -568,11 +539,11 @@ fn endCurrentBatch(self: *Batch2D) !void {
             .uniform_data_size = self.current_batch_uniform_size,
         });
     }
-    
+
     self.current_pipeline = null;
 }
 
-pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind, module: wgpu.ShaderModule, texture_bindings: []const wgpu.TextureBindingLayout, comptime CustomUniforms: type) !struct { u32, wgpu.RenderPipeline, wgpu.Buffer } {
+pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind, module: wgpu.ShaderModule, texture_bindings: []const wgpu.TextureBindingLayout, uniform_size: usize) !u32 {
     const texture_count = texture_bindings.len;
 
     if (texture_count > 4) {
@@ -585,47 +556,41 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
         .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .one_minus_src_alpha },
     };
 
-    const hasCustomUniforms = @sizeOf(CustomUniforms) > 0;
-    const uniform_buffer = if (hasCustomUniforms) {
-        wgpu.deviceCreateBuffer(self.device, &.{
-            .label = .fromSlice("Batch2D:custom_uniform_buffer"),
-            .usage = wgpu.BufferUsage{ .uniform = true, .copy_dst = true },
-            .size = @sizeOf(CustomUniforms),
-        });
-    } else null;
+    const hasCustomUniforms = uniform_size > 0;
 
     const bindgroup_layout = if (texture_count > 0 or hasCustomUniforms) make_bgl: {
         var entries: [5]wgpu.BindGroupLayoutEntry = undefined;
         var offset: u32 = 0;
         if (hasCustomUniforms) {
-            entries[offset] = .{ .binding = offset, .visibility = .fragmentStage, .buffer = .{ .type = .uniform } };
+            // Flag this binding to accept dynamic offsets
+            entries[offset] = .{ .binding = offset, .visibility = .fragmentStage, .buffer = .{ .type = .uniform, .has_dynamic_offset = .from(true) } };
             offset += 1;
         }
         for (texture_bindings) |layout| {
             entries[offset] = .{ .binding = offset, .visibility = .fragmentStage, .texture = layout };
             offset += 1;
         }
-        break :make_bgl wgpu.deviceCreateBindGroupLayout(self.device, &.{
+        break :make_bgl wgpu.deviceCreateBindGroupLayout(self.gpu.device, &.{
             .label = .fromSlice("Batch2D:custom_pipeline_bindgroup_layout"),
             .entry_count = offset,
             .entries = &entries,
         });
     } else null;
 
-    const pipeline_layout = wgpu.deviceCreatePipelineLayout(self.device, &.{
+    const pipeline_layout = wgpu.deviceCreatePipelineLayout(self.gpu.device, &.{
         .label = .fromSlice("Batch2D:pipeline_layout"),
         .bind_group_layout_count = 1 + @as(usize, @intFromBool(bindgroup_layout != null)),
-        .bind_group_layouts = &.{ getBindGroupLayout(self.device), bindgroup_layout },
+        .bind_group_layouts = &.{ getBindGroupLayout(self.gpu.device), bindgroup_layout },
     });
     std.debug.assert(pipeline_layout != null);
     defer wgpu.pipelineLayoutRelease(pipeline_layout);
 
     const pipeline = switch (kind) {
-        .tri => wgpu.deviceCreateRenderPipeline(self.device, &wgpu.RenderPipelineDescriptor{
+        .tri => wgpu.deviceCreateRenderPipeline(self.gpu.device, &wgpu.RenderPipelineDescriptor{
             .label = .fromSlice(name),
             .layout = pipeline_layout,
             .vertex = .{
-                .module = try getTriShader(self.device),
+                .module = try getTriShader(self.gpu.device),
                 .entry_point = .fromSlice("vs_main"),
                 .buffer_count = 1,
                 .buffers = &.{.{
@@ -649,11 +614,11 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
             .primitive = .{ .topology = .triangle_list },
             .multisample = .{ .count = self.sample_count, .mask = 0xFFFFFFFF },
         }),
-        .quad => wgpu.deviceCreateRenderPipeline(self.device, &wgpu.RenderPipelineDescriptor{
+        .quad => wgpu.deviceCreateRenderPipeline(self.gpu.device, &wgpu.RenderPipelineDescriptor{
             .label = .fromSlice(name),
             .layout = pipeline_layout,
             .vertex = .{
-                .module = try getQuadShader(self.device),
+                .module = try getQuadShader(self.gpu.device),
                 .entry_point = .fromSlice("vs_main"),
                 .buffer_count = 1,
                 .buffers = &.{.{
@@ -693,12 +658,12 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
         .texture_count = texture_count,
         .bind_group_layout = bindgroup_layout,
         .cached_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES,
+        .cached_custom_uniform_buffer = null,
         .cached_bind_group = null,
-        .uniform_size = @sizeOf(CustomUniforms),
-        .uniform_buffer = uniform_buffer,
+        .uniform_size = uniform_size,
     });
 
-    return .{ index, pipeline, uniform_buffer };
+    return index;
 }
 
 fn ensurePipeline(self: *Batch2D, pipeline: PipelineKind) !void {
@@ -742,11 +707,23 @@ pub fn customPipelineStart(self: *Batch2D, index: u32, textures: []const wgpu.Te
         self.current_batch_textures[i] = tex;
     }
     self.current_pipeline = index;
-    self.current_batch_uniform_start = self.uniform_data_storage.items.len;
+
     const T = @TypeOf(uniform_buffer);
     if (T == void) {
         self.current_batch_uniform_size = 0;
+        self.current_batch_uniform_start = 0;
     } else {
+        // Calculate required 256-byte alignment padding for dynamic offsets
+        const alignment = 256;
+        const current_len = self.uniform_data_storage.items.len;
+        const padding = (alignment - (current_len % alignment)) % alignment;
+
+        if (padding > 0) {
+            try self.uniform_data_storage.appendNTimes(self.allocator, 0, padding);
+        }
+
+        self.current_batch_uniform_start = self.uniform_data_storage.items.len;
+
         const T_info = @typeInfo(T);
         if (T_info != .pointer) {
             self.current_batch_uniform_size = @sizeOf(T);
@@ -782,26 +759,21 @@ pub fn customPipelineEnd(self: *Batch2D, index: u32) !void {
 }
 
 pub fn scissorStart(self: *Batch2D, pos: vec2, size: vec2) !void {
-    // End the current batch of drawing with the old scissor rect
     try self.endCurrentBatch();
 
-    // Get the current scissor rect to clip against
     std.debug.assert(self.scissor_stack.items.len > 0);
     const parent = self.scissor_stack.items[self.scissor_stack.items.len - 1];
 
-    // Clamp and convert the requested rect to integer coordinates
     const new_x1 = @max(0, @as(i32, @intFromFloat(pos[0])));
     const new_y1 = @max(0, @as(i32, @intFromFloat(pos[1])));
     const new_x2 = @max(new_x1, @as(i32, @intFromFloat(pos[0] + size[0])));
     const new_y2 = @max(new_y1, @as(i32, @intFromFloat(pos[1] + size[1])));
 
-    // Intersect with the parent rect
     const final_x1 = @max(@as(i32, @intCast(parent.x)), new_x1);
     const final_y1 = @max(@as(i32, @intCast(parent.y)), new_y1);
     const final_x2 = @min(@as(i32, @intCast(parent.x + parent.width)), new_x2);
     const final_y2 = @min(@as(i32, @intCast(parent.y + parent.height)), new_y2);
 
-    // Push the new, clipped scissor rect onto the stack
     try self.scissor_stack.append(self.allocator, .{
         .x = @intCast(final_x1),
         .y = @intCast(final_y1),
@@ -811,16 +783,12 @@ pub fn scissorStart(self: *Batch2D, pos: vec2, size: vec2) !void {
 }
 
 pub fn scissorEnd(self: *Batch2D) !void {
-    // End the current batch of drawing with the old scissor rect
     try self.endCurrentBatch();
-
-    // Pop the current scissor rect from the stack
-    std.debug.assert(self.scissor_stack.items.len > 1); // Should not pop the root
+    std.debug.assert(self.scissor_stack.items.len > 1);
     _ = self.scissor_stack.pop();
 }
 
 pub fn endFrame(self: *Batch2D) !void {
-    // Finalize the last batch of the frame
     try self.endCurrentBatch();
 
     const atlas_recreated = try self.atlas.flush();
@@ -832,26 +800,14 @@ pub fn endFrame(self: *Batch2D) !void {
         };
 
         const decoded = AssetCache.decodeGlyphId(p.image_id);
-
         var use_nearest = false;
 
         if (decoded.is_glyph_or_special) {
-            // It is a glyph or special ID
             if (decoded.font_id == AssetCache.SPECIAL_ID_font_id) {
-                // White pixel always needs nearest neighbor
                 use_nearest = true;
             } else {
-                // Look up the font to see its preference
                 const font = &self.asset_cache.fonts.items[decoded.font_id];
                 use_nearest = (font.filter_mode == .nearest);
-            }
-        } else {
-            // It is a standard image
-            const image_idx = @as(usize, @intCast(p.image_id));
-            if (image_idx < self.asset_cache.images.items.len) {
-                // TODO: add filter_mode to LoadedImage too
-                const img = &self.asset_cache.images.items[image_idx];
-                _ = img; // unused for now
             }
         }
 
@@ -870,126 +826,84 @@ pub fn endFrame(self: *Batch2D) !void {
         }
     }
 
-    // --- Upload data to GPU via staging buffers ---
-    // We create a dedicated command encoder for these copy operations.
-    // This allows the GPU to process data uploads in parallel with the CPU preparing the next frame.
-    const upload_encoder = wgpu.deviceCreateCommandEncoder(self.device, &.{ .label = .fromSlice("Batch2D:staging_upload_encoder") });
-    defer wgpu.commandEncoderRelease(upload_encoder);
+    // --- Direct GPU Uploads via queueWriteBuffer ---
 
-    // Upload indirection table if it has data
     if (self.atlas.indirection_table.items.len > 0) {
         const required_capacity = self.atlas.indirection_table.items.len;
         const required_size = required_capacity * @sizeOf(Atlas.ImageMipData);
 
-        // Resize final GPU buffer if needed
         if (self.indirection_buffer_capacity < required_capacity) {
-            if (self.bind_group != null) {
-                wgpu.bindGroupRelease(self.bind_group);
+            if (self.bind_group) |bg| {
+                wgpu.bindGroupRelease(bg);
                 self.bind_group = null;
             }
             wgpu.bufferRelease(self.indirection_buffer);
             const new_capacity = @max(self.indirection_buffer_capacity * 2, required_capacity);
-            self.indirection_buffer = wgpu.deviceCreateBuffer(self.device, &.{
+            self.indirection_buffer = wgpu.deviceCreateBuffer(self.gpu.device, &.{
                 .label = .fromSlice("Batch2D:indirection_buffer"),
                 .usage = .{ .storage = true, .copy_dst = true },
                 .size = new_capacity * @sizeOf(Atlas.ImageMipData),
             });
             self.indirection_buffer_capacity = new_capacity;
-            log.info("resized indirection buffer to capacity {d}", .{new_capacity});
         }
 
-        // Resize staging buffer if needed
-        if (self.indirection_staging_buffer_capacity < required_size) {
-            wgpu.bufferRelease(self.indirection_staging_buffer);
-            const new_capacity = @max(self.indirection_staging_buffer_capacity * 2, required_size);
-            self.indirection_staging_buffer = wgpu.deviceCreateBuffer(self.device, &.{
-                .label = .fromSlice("Batch2D:indirection_staging_buffer"),
-                .usage = .{ .map_write = true, .copy_src = true },
-                .size = new_capacity,
-            });
-            self.indirection_staging_buffer_capacity = new_capacity;
-        }
-
-        // Perform the upload
-        try uploadSliceToBuffer(self.device, self.indirection_staging_buffer, self.atlas.indirection_table.items);
-        wgpu.commandEncoderCopyBufferToBuffer(upload_encoder, self.indirection_staging_buffer, 0, self.indirection_buffer, 0, required_size);
+        wgpu.queueWriteBuffer(self.gpu.queue, self.indirection_buffer, 0, self.atlas.indirection_table.items.ptr, required_size);
     }
 
-    // Upload vertex data if it has data
     if (self.vertices.items.len > 0) {
         const required_size = self.vertices.items.len * @sizeOf(Vertex);
 
-        // Resize final GPU buffer if needed
         if (self.vertex_buffer_capacity < required_size) {
             if (self.vertex_buffer_capacity > 0) wgpu.bufferRelease(self.vertex_buffer);
             const new_capacity = @max(self.vertex_buffer_capacity * 2, required_size);
-            self.vertex_buffer = wgpu.deviceCreateBuffer(self.device, &.{
+            self.vertex_buffer = wgpu.deviceCreateBuffer(self.gpu.device, &.{
                 .label = .fromSlice("Batch2D:vertex_buffer"),
                 .usage = wgpu.BufferUsage{ .vertex = true, .copy_dst = true },
                 .size = new_capacity,
             });
             self.vertex_buffer_capacity = new_capacity;
-            log.debug("resized vertex buffer to {d} bytes", .{new_capacity});
         }
 
-        // Resize staging buffer if needed
-        if (self.vertex_staging_buffer_capacity < required_size) {
-            wgpu.bufferRelease(self.vertex_staging_buffer);
-            const new_capacity = @max(self.vertex_staging_buffer_capacity * 2, required_size);
-            self.vertex_staging_buffer = wgpu.deviceCreateBuffer(self.device, &.{
-                .label = .fromSlice("Batch2D:vertex_staging_buffer"),
-                .usage = wgpu.BufferUsage{ .map_write = true, .copy_src = true },
-                .size = new_capacity,
-            });
-            self.vertex_staging_buffer_capacity = new_capacity;
-        }
-
-        // Perform the upload
-        try uploadSliceToBuffer(self.device, self.vertex_staging_buffer, self.vertices.items);
-        wgpu.commandEncoderCopyBufferToBuffer(upload_encoder, self.vertex_staging_buffer, 0, self.vertex_buffer, 0, required_size);
+        wgpu.queueWriteBuffer(self.gpu.queue, self.vertex_buffer, 0, self.vertices.items.ptr, required_size);
     }
 
-    // Upload quad data if it has data
     if (self.quads.items.len > 0) {
         const required_size = self.quads.items.len * @sizeOf(Quad);
 
-        // Resize final GPU buffer if needed
         if (self.quad_buffer_capacity < required_size) {
             if (self.quad_buffer_capacity > 0) wgpu.bufferRelease(self.quad_buffer);
             const new_capacity = @max(self.quad_buffer_capacity * 2, required_size);
-            self.quad_buffer = wgpu.deviceCreateBuffer(self.device, &.{
+            self.quad_buffer = wgpu.deviceCreateBuffer(self.gpu.device, &.{
                 .label = .fromSlice("Batch2D:quad_buffer"),
                 .usage = wgpu.BufferUsage{ .vertex = true, .copy_dst = true },
                 .size = new_capacity,
             });
             self.quad_buffer_capacity = new_capacity;
-            log.debug("resized quad buffer to {d} bytes", .{new_capacity});
         }
 
-        // Resize staging buffer if needed
-        if (self.quad_staging_buffer_capacity < required_size) {
-            wgpu.bufferRelease(self.quad_staging_buffer);
-            const new_capacity = @max(self.quad_staging_buffer_capacity * 2, required_size);
-            self.quad_staging_buffer = wgpu.deviceCreateBuffer(self.device, &.{
-                .label = .fromSlice("Batch2D:quad_staging_buffer"),
-                .usage = wgpu.BufferUsage{ .map_write = true, .copy_src = true },
-                .size = new_capacity,
-            });
-            self.quad_staging_buffer_capacity = new_capacity;
-        }
-
-        // Perform the upload
-        try uploadSliceToBuffer(self.device, self.quad_staging_buffer, self.quads.items);
-        wgpu.commandEncoderCopyBufferToBuffer(upload_encoder, self.quad_staging_buffer, 0, self.quad_buffer, 0, required_size);
+        wgpu.queueWriteBuffer(self.gpu.queue, self.quad_buffer, 0, self.quads.items.ptr, required_size);
     }
 
-    // Submit the upload commands to the GPU.
-    const upload_cmd = wgpu.commandEncoderFinish(upload_encoder, null);
-    defer wgpu.commandBufferRelease(upload_cmd);
-    wgpu.queueSubmit(self.queue, 1, &.{upload_cmd});
+    if (self.uniform_data_storage.items.len > 0) {
+        const required_size = self.uniform_data_storage.items.len;
+
+        if (self.custom_uniform_buffer_capacity < required_size) {
+            if (self.custom_uniform_buffer) |cub| wgpu.bufferRelease(cub);
+            // Defaulting dynamic buffer minimum to a reasonable size
+            const new_capacity = @max(self.custom_uniform_buffer_capacity * 2, @max(required_size, 4096));
+            self.custom_uniform_buffer = wgpu.deviceCreateBuffer(self.gpu.device, &.{
+                .label = .fromSlice("Batch2D:custom_uniform_buffer"),
+                .usage = wgpu.BufferUsage{ .uniform = true, .copy_dst = true },
+                .size = new_capacity,
+            });
+            self.custom_uniform_buffer_capacity = new_capacity;
+        }
+
+        wgpu.queueWriteBuffer(self.gpu.queue, self.custom_uniform_buffer.?, 0, self.uniform_data_storage.items.ptr, required_size);
+    }
 
     if (atlas_recreated and self.bind_group != null) {
-        wgpu.bindGroupRelease(self.bind_group);
+        wgpu.bindGroupRelease(self.bind_group.?);
         self.bind_group = null;
     }
 
@@ -1004,11 +918,12 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
         return;
     }
 
-    wgpu.renderPassEncoderSetBindGroup(render_pass, 0, self.bind_group, 0, null);
+    wgpu.renderPassEncoderSetBindGroup(render_pass, 0, self.bind_group.?, 0, null);
 
     var bound_pipeline: ?u32 = null;
+    var bound_textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+    var bound_uniform_offset: ?usize = null;
 
-    // Iterate through the batches and issue a draw call for each one with its specific scissor rect
     for (self.batch_list.items) |batch| {
         if (batch.count == 0) continue;
 
@@ -1016,17 +931,41 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
 
         if (bound_pipeline != batch.pipeline) {
             wgpu.renderPassEncoderSetPipeline(render_pass, bp.gpu);
-            if (bp.getBindGroup(self.device, batch.textures)) |cbg| {
-                wgpu.renderPassEncoderSetBindGroup(render_pass, 1, cbg, 0, null);
-                if (bp.uniform_size > 0) {
-                    wgpu.queueWriteBuffer(self.queue, bp.uniform_buffer, 0, self.uniform_data_storage.items.ptr + batch.uniform_data_offset, batch.uniform_data_size);
-                }
-            }
             switch (bp.kind) {
                 .tri => wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.vertex_buffer, 0, self.vertices.items.len * @sizeOf(Vertex)),
                 .quad => wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.quad_buffer, 0, self.quads.items.len * @sizeOf(Quad)),
             }
             bound_pipeline = batch.pipeline;
+
+            // Forcing a bind group check by invalidating our local texture cache tracking
+            bound_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+        }
+
+        // Check if textures or uniforms shifted from the last batch
+        var requires_bind_update = false;
+
+        if (bp.uniform_size > 0 and bound_uniform_offset != batch.uniform_data_offset) {
+            requires_bind_update = true;
+        } else {
+            for (0..bp.texture_count) |i| {
+                if (bound_textures[i] != batch.textures[i]) {
+                    requires_bind_update = true;
+                    break;
+                }
+            }
+        }
+
+        if (requires_bind_update) {
+            if (bp.getBindGroup(self.gpu.device, batch.textures, self.custom_uniform_buffer)) |cbg| {
+                if (bp.uniform_size > 0) {
+                    const offset = [1]u32{@intCast(batch.uniform_data_offset)};
+                    wgpu.renderPassEncoderSetBindGroup(render_pass, 1, cbg, 1, &offset);
+                } else {
+                    wgpu.renderPassEncoderSetBindGroup(render_pass, 1, cbg, 0, null);
+                }
+            }
+            bound_textures = batch.textures;
+            bound_uniform_offset = batch.uniform_data_offset;
         }
 
         wgpu.renderPassEncoderSetScissorRect(render_pass, batch.scissor.x, batch.scissor.y, batch.scissor.width, batch.scissor.height);
@@ -1037,67 +976,45 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
     }
 }
 
-/// Creates a new dynamic texture ID and reserves a dedicated layer for it in the atlas.
-/// NOTE: Because this grows the atlas texture, it will trigger a pipeline bind group recreation.
 pub fn createDynamicTexture(self: *Batch2D, width: u32, height: u32) !ImageId {
     const id = self.asset_cache.createDynamicId();
-
     try self.atlas.reserveDynamicLayer(id, width, height);
-
-    // Growing the texture array invalidates the current bind group.
-    // We must release it so it gets recreated before the next draw call.
-    if (self.bind_group != null) {
-        wgpu.bindGroupRelease(self.bind_group);
+    if (self.bind_group) |bg| {
+        wgpu.bindGroupRelease(bg);
         self.bind_group = null;
     }
-
     return id;
 }
 
-/// Blits an offscreen render target into its reserved place in the atlas.
-/// Handles dynamic resizing by updating the UV indirection table automatically.
 pub fn updateDynamicTexture(self: *Batch2D, encoder: wgpu.CommandEncoder, id: ImageId, source_texture: wgpu.Texture, width: u32, height: u32) !void {
-    // Look up the indirection table index assigned to this dynamic ID
     const cache_info = self.atlas.cache.get(id) orelse {
         log.err("Attempted to update a dynamic texture that wasn't reserved in the atlas.", .{});
         return error.DynamicTextureNotRegistered;
     };
-
-    // Delegate the blit and UV mutation to the atlas
     try self.atlas.updateDynamicLayer(encoder, cache_info.indirection_table_index, source_texture, width, height);
 }
 
-/// Draws a filled rectangle. This is a convenience wrapper around drawQuad.
 pub fn drawRect(self: *Batch2D, pos: vec2, size: vec2, tint: Color) !void {
     try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, .{}, .all(0.0), tint);
 }
 
-/// Draws the outline of a rectangle with a specified thickness.
 pub fn drawRectLine(self: *Batch2D, pos: vec2, size: vec2, thickness: BorderWidth, tint: Color) !void {
-    // Ensure thickness isn't larger than the rectangle itself
     inline for (comptime std.meta.fieldNames(BorderWidth)) |fieldName| {
         const t = @min(@field(thickness, fieldName), @min(size[0] / 2.0, size[1] / 2.0));
         if (t <= 0.0) return;
     }
-
     try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, .{}, thickness, tint);
 }
 
-/// Draws a filled rectangle with potentially different radii for each corner.
 pub fn drawRoundedRect(self: *Batch2D, pos: vec2, size: vec2, radius: CornerRadius, tint: Color) !void {
     try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, radius, .all(0.0), tint);
 }
 
-/// Draws the outline of a rectangle with potentially different radii for each corner,
-/// drawn inwards from the specified boundary.
-/// `pos` and `size` define the outer bounding box. `radius` defines the outer corner radii.
 pub fn drawRoundedRectLine(self: *Batch2D, pos: vec2, size: vec2, radius: CornerRadius, thickness: BorderWidth, tint: Color) !void {
-    // Ensure thickness isn't larger than the rectangle itself
     inline for (comptime std.meta.fieldNames(BorderWidth)) |fieldName| {
         const t = @min(@field(thickness, fieldName), @min(size[0] / 2.0, size[1] / 2.0));
         if (t <= 0.0) return;
     }
-
     try self.pushTexturedQuad(AssetCache.WHITE_PIXEL_ID, pos, size, null, radius, thickness, tint);
 }
 
@@ -1105,14 +1022,11 @@ pub fn drawTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size
     try self.pushTexturedQuad(image_id, pos, size, src_rect, .{}, .all(0.0), tint);
 }
 
-/// Draws a textured quad with rounded corners, using a 9-slice method.
-/// The `src_rect` defines the texture area, and `radius` defines the screen-space corner size.
 pub fn drawRoundedTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size: vec2, radius: CornerRadius, src_rect: ?UvRect, tint: Color) !void {
     try self.pushTexturedQuad(image_id, pos, size, src_rect, radius, .all(0.0), tint);
 }
 
 pub fn drawTriangle(self: *Batch2D, v1: vec2, v2: vec2, v3: vec2, tint: Color) !void {
-    // Solid triangles use the white pixel texture and have (0,0) UVs, which correctly maps to that single pixel.
     const uv = vec2{ 0.0, 0.0 };
     try self.pushTexturedTriangle(AssetCache.WHITE_PIXEL_ID, v1, uv, v2, uv, v3, uv, tint);
 }
@@ -1124,8 +1038,6 @@ pub fn pushTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size
 
     const location = self.atlas.query(image_id, self.provider_context) catch |err| {
         if (err == error.ImageNotYetPacked) {
-            // UNPACKED PATH: The image isn't in the atlas yet.
-            // 1. Create a patch so we can fix `encoded_params` later.
             const quad_index = self.quads.items.len;
             try self.patch_list.append(self.allocator, .{
                 .kind = .quad,
@@ -1133,14 +1045,11 @@ pub fn pushTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size
                 .start_index = quad_index,
                 .count = 1,
             });
-            // 2. Push a placeholder quad with `encoded_params = 0` and the ORIGINAL image-relative UVs.
             return self.pushQuad(0, pos, size, uv_min, uv_max, tint, radii, thickness);
         }
         return err;
     };
 
-    // PACKED PATH: The image is in the atlas.
-    // 1. Calculate the final `encoded_params` with the correct indirection table index.
     var use_nearest = false;
     const decoded = AssetCache.decodeGlyphId(image_id);
     if (decoded.is_glyph_or_special) {
@@ -1154,16 +1063,12 @@ pub fn pushTexturedQuad(self: *Batch2D, image_id: Atlas.ImageId, pos: vec2, size
 
     const use_nearest_flag = if (use_nearest) USE_NEAREST_MASK else 0;
     const encoded_params = use_nearest_flag | (location.indirection_table_index & IMAGE_ID_MASK);
-
-    // 2. Push the triangle with the final `encoded_params` and the ORIGINAL image-relative UVs.
     try self.pushQuad(encoded_params, pos, size, uv_min, uv_max, tint, radii, thickness);
 }
 
 pub fn pushTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, v1: vec2, uv1: vec2, v2: vec2, uv2: vec2, v3: vec2, uv3: vec2, tint: Color) !void {
     const location = self.atlas.query(image_id, self.provider_context) catch |err| {
         if (err == error.ImageNotYetPacked) {
-            // UNPACKED PATH: The image isn't in the atlas yet.
-            // 1. Create a patch so we can fix `encoded_params` later.
             const vertex_start_index = self.vertices.items.len;
             try self.patch_list.append(self.allocator, .{
                 .kind = .tri,
@@ -1171,14 +1076,11 @@ pub fn pushTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, v1: vec2, u
                 .start_index = vertex_start_index,
                 .count = 3,
             });
-            // 2. Push a placeholder triangle with `encoded_params = 0` and the ORIGINAL image-relative UVs.
             return self.pushTriangle(0, v1, uv1, v2, uv2, v3, uv3, tint);
         }
         return err;
     };
 
-    // PACKED PATH: The image is in the atlas.
-    // 1. Calculate the final `encoded_params` with the correct indirection table index.
     var use_nearest = false;
     const decoded = AssetCache.decodeGlyphId(image_id);
     if (decoded.is_glyph_or_special) {
@@ -1192,8 +1094,6 @@ pub fn pushTexturedTriangle(self: *Batch2D, image_id: Atlas.ImageId, v1: vec2, u
 
     const use_nearest_flag = if (use_nearest) USE_NEAREST_MASK else 0;
     const encoded_params = use_nearest_flag | (location.indirection_table_index & IMAGE_ID_MASK);
-
-    // 2. Push the triangle with the final `encoded_params` and the ORIGINAL image-relative UVs.
     try self.pushTriangle(encoded_params, v1, uv1, v2, uv2, v3, uv3, tint);
 }
 
@@ -1232,11 +1132,9 @@ pub fn drawCircle(self: *Batch2D, center: vec2, radius: f32, tint: Color) !void 
     }
 }
 
-/// Draws a filled, pie-slice-shaped arc. Angles are in radians.
 pub fn drawArc(self: *Batch2D, center: vec2, radius: f32, start_angle: f32, end_angle: f32, tint: Color) !void {
     if (radius <= 0.0) return;
 
-    // Normalize angles to ensure we always draw counter-clockwise
     var normalized_end = end_angle;
     while (normalized_end < start_angle) {
         normalized_end += 2.0 * std.math.pi;
@@ -1244,8 +1142,6 @@ pub fn drawArc(self: *Batch2D, center: vec2, radius: f32, start_angle: f32, end_
     const total_angle = normalized_end - start_angle;
     if (total_angle <= 0.0) return;
 
-    // Calculate the number of segments for a smooth curve.
-    // This heuristic aims for each segment on the circumference to be ~1.5 pixels long.
     const num_segments = @max(1, @as(u32, @intFromFloat(total_angle * radius / 1.5)));
     const angle_step = total_angle / @as(f32, @floatFromInt(num_segments));
 
@@ -1261,14 +1157,10 @@ pub fn drawArc(self: *Batch2D, center: vec2, radius: f32, start_angle: f32, end_
     }
 }
 
-/// Draws the outline of an arc with a specified thickness, drawn inwards from the path.
-/// The `radius` parameter defines the outer edge of the arc's stroke.
 pub fn drawArcLine(self: *Batch2D, center: vec2, radius: f32, start_angle: f32, end_angle: f32, thickness: f32, tint: Color) !void {
-    // Ensure thickness is positive and does not exceed the radius, creating an inversion.
     const t = @min(thickness, radius);
     if (radius <= 0.0 or t <= 0.0) return;
 
-    // Normalize angles to ensure we always draw counter-clockwise
     var normalized_end = end_angle;
     while (normalized_end < start_angle) {
         normalized_end += 2.0 * std.math.pi;
@@ -1276,7 +1168,6 @@ pub fn drawArcLine(self: *Batch2D, center: vec2, radius: f32, start_angle: f32, 
     const total_angle = normalized_end - start_angle;
     if (total_angle <= 0.0) return;
 
-    // The outer radius is the one specified. The stroke is drawn inwards from there.
     const outer_radius = radius;
     const inner_radius = radius - t;
 
@@ -1298,13 +1189,11 @@ pub fn drawArcLine(self: *Batch2D, center: vec2, radius: f32, start_angle: f32, 
         const v_outer2 = vec2{ center[0] + cos2 * outer_radius, center[1] + sin2 * outer_radius };
         const v_inner2 = vec2{ center[0] + cos2 * inner_radius, center[1] + sin2 * inner_radius };
 
-        // Create a quad for the segment
         try self.drawTriangle(v_outer1, v_outer2, v_inner1, tint);
         try self.drawTriangle(v_inner1, v_outer2, v_inner2, tint);
     }
 }
 
-/// Draws a textured, pie-slice-shaped arc. Angles are in radians.
 pub fn drawTexturedArc(
     self: *Batch2D,
     image_id: Atlas.ImageId,
@@ -1313,7 +1202,7 @@ pub fn drawTexturedArc(
     start_angle: f32,
     end_angle: f32,
     center_uv: vec2,
-    radius_uv: vec2, // Use vec2 for potentially non-uniform UV radii
+    radius_uv: vec2,
     tint: Color,
 ) !void {
     if (radius <= 0.0) return;
@@ -1352,7 +1241,6 @@ pub fn drawSolidTriangleStrip(self: *Batch2D, vertices: []const vec2, tint: Colo
     if (vertices.len < 3) return;
     var i: usize = 0;
     while (i < vertices.len - 2) : (i += 1) {
-        // Alternate winding order to form a strip from a list of vertices
         if (i % 2 == 0) {
             try self.drawTriangle(vertices[i], vertices[i + 1], vertices[i + 2], tint);
         } else {
@@ -1361,37 +1249,30 @@ pub fn drawSolidTriangleStrip(self: *Batch2D, vertices: []const vec2, tint: Colo
     }
 }
 
-// Helper struct to pass layout info from the generic layout function to the specific callbacks.
 pub const GlyphLayoutInfo = struct {
     glyph_id: Atlas.ImageId,
     pos: vec2,
     size: vec2,
 };
 
-/// Generic text layout engine. Iterates through a string and calls a callback for each glyph's calculated position and size.
 pub fn layoutText(
     self: *Batch2D,
-    // Common text parameters
     string: []const u8,
     font_id: AssetCache.FontId,
     font_size: AssetCache.FontSize,
     line_spacing_override: ?u16,
     pos: vec2,
-
-    // Generic callback mechanism
     comptime T: type,
     comptime E: type,
     context: *T,
     callback: fn (context: *T, info: GlyphLayoutInfo) E!void,
 ) (E || error{InvalidFontId})!void {
-    // --- Font Info Lookup ---
     if (font_id >= self.asset_cache.fonts.items.len) {
         log.err("Invalid font_id {d} passed to layoutText", .{font_id});
         return error.InvalidFontId;
     }
     const font_info = &self.asset_cache.fonts.items[font_id].info;
 
-    // --- Identical Setup ---
     const font_size_f32 = @as(f32, @floatFromInt(font_size));
     const font_scale_f32 = stbtt.scaleForPixelHeight(font_info, font_size_f32);
     const font_scale: f64 = font_scale_f32;
@@ -1401,15 +1282,12 @@ pub fn layoutText(
     var line_gap: i32 = 0;
     stbtt.getFontVMetrics(font_info, &ascent, &descent, &line_gap);
 
-    // --- LINE SPACING LOGIC ---
-    // Use the override if provided, otherwise calculate from font metrics.
     const line_height: f64 =
         if (line_spacing_override) |spacing|
             @as(f64, @floatFromInt(spacing))
         else
             @as(f64, @floatFromInt(ascent - descent + line_gap)) * font_scale;
 
-    // --- Layout Loop ---
     var baseline_y: f64 = pos[1] + (@as(f64, @floatFromInt(ascent)) * font_scale);
     var xpos: f64 = pos[0];
     var prev_char: u21 = 0;
@@ -1448,7 +1326,6 @@ pub fn layoutText(
             const rounded_x = @floor(ideal_x + 0.5);
             const rounded_y = @floor(ideal_y + 0.5);
 
-            // Create the layout info and pass it to the callback.
             const info = GlyphLayoutInfo{
                 .pos = .{ @floatCast(rounded_x), @floatCast(rounded_y) },
                 .size = .{ @floatCast(padded_width), @floatCast(padded_height) },
@@ -1471,18 +1348,15 @@ pub fn layoutText(
     }
 }
 
-/// Measures the pixel dimensions of a multi-line string when rendered with the specified font and size.
 pub fn measureText(self: *Batch2D, string: []const u8, font_id: AssetCache.FontId, font_size: AssetCache.FontSize, line_spacing_override: ?u16) ?vec2 {
     if (string.len == 0) return .{ 0, 0 };
 
-    // --- Font Info Lookup ---
     if (font_id >= self.asset_cache.fonts.items.len) {
         log.err("Invalid font_id {d} passed to measureText", .{font_id});
         return null;
     }
     const font_info = &self.asset_cache.fonts.items[font_id].info;
 
-    // --- Font Metrics Setup ---
     const font_size_f32 = @as(f32, @floatFromInt(font_size));
     const font_scale_f32 = stbtt.scaleForPixelHeight(font_info, font_size_f32);
     const font_scale: f64 = font_scale_f32;
@@ -1498,10 +1372,8 @@ pub fn measureText(self: *Batch2D, string: []const u8, font_id: AssetCache.FontI
         @as(f64, @floatFromInt(ascent - descent + line_gap)) * font_scale;
 
     var current_pos = vec2{ 0, 0 };
-    // The height of the first line is determined by the font's ascent/descent.
     var total_size = vec2{ 0, @floatCast(@as(f64, @floatFromInt(ascent - descent)) * font_scale) };
     if (total_size[1] == 0 and string.len > 0) {
-        // Fallback for empty fonts or single-line cases
         total_size[1] = font_size_f32;
     }
 
@@ -1509,7 +1381,6 @@ pub fn measureText(self: *Batch2D, string: []const u8, font_id: AssetCache.FontI
 
     for (string) |char| {
         if (char == '\n') {
-            // Newline: update max width, reset horizontal pos, advance vertical pos.
             total_size[0] = @max(total_size[0], current_pos[0]);
             current_pos[0] = 0;
             total_size[1] += @floatCast(line_height);
@@ -1519,14 +1390,11 @@ pub fn measureText(self: *Batch2D, string: []const u8, font_id: AssetCache.FontI
 
         const char_code = @as(u21, @intCast(char));
 
-        // Add kerning.
         if (prev_char != 0) {
             const kern = stbtt.getCodepointKernAdvance(font_info, prev_char, char_code);
             current_pos[0] += @floatCast(@as(f64, @floatFromInt(kern)) * font_scale);
         }
 
-        // Add character advance width. This is the crucial part that correctly
-        // handles spaces and other characters' full width.
         var adv: i32 = 0;
         stbtt.getCodepointHMetrics(font_info, char_code, &adv, null);
         current_pos[0] += @floatCast(@as(f64, @floatFromInt(adv)) * font_scale);
@@ -1534,27 +1402,22 @@ pub fn measureText(self: *Batch2D, string: []const u8, font_id: AssetCache.FontI
         prev_char = char_code;
     }
 
-    // After the loop, update the max width one last time for the final line.
     total_size[0] = @max(total_size[0], current_pos[0]);
 
-    // If the string was empty or contained only non-visible glyphs, total_size could still be zero.
     if (total_size[0] == 0 and total_size[1] == 0) return null;
 
     return total_size;
 }
 
-// Context for the drawing operation.
 const DrawContext = struct {
     batch: *Batch2D,
     tint: Color,
 
-    // Callback function to draw each glyph's quad.
     fn drawGlyph(self: *DrawContext, info: GlyphLayoutInfo) !void {
         try self.batch.drawTexturedQuad(info.glyph_id, info.pos, info.size, null, self.tint);
     }
 };
 
-/// Draws a formatted string of text, handling multiple lines.
 pub fn formatText(self: *Batch2D, comptime fmt: []const u8, font_id: AssetCache.FontId, font_size: AssetCache.FontSize, line_spacing_override: ?u16, pos: vec2, tint: Color, args: anytype) !void {
     try self.drawText(
         try std.fmt.allocPrint(self.frame_arena.allocator(), fmt, args),
@@ -1566,14 +1429,12 @@ pub fn formatText(self: *Batch2D, comptime fmt: []const u8, font_id: AssetCache.
     );
 }
 
-/// Draws a string of text, handling multiple lines.
 pub fn drawText(self: *Batch2D, string: []const u8, font_id: AssetCache.FontId, font_size: AssetCache.FontSize, line_spacing_override: ?u16, pos: vec2, tint: Color) !void {
     var context = DrawContext{
         .batch = self,
         .tint = tint,
     };
 
-    // Use the generic layout engine with our drawing callback.
     try self.layoutText(
         string,
         font_id,
@@ -1587,18 +1448,10 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_id: AssetCache.FontId, 
     );
 }
 
-/// Pre-packs and uploads all images known to the AssetCache into the renderer's atlas.
-/// This is intended to be called during a loading screen to "prime" the atlas and
-/// prevent stuttering from on-the-fly atlasing during gameplay or interaction.
-///
-/// This function will repeatedly call the atlas's query and flush mechanisms until
-/// all known images have been processed and uploaded to the GPU.
 pub fn preAtlasAllImages(renderer: *Batch2D) !void {
     log.info("Beginning pre-atlasing of {d} images...", .{renderer.asset_cache.images.items.len});
     var timer = try std.time.Timer.start();
 
-    // The Atlas needs a provider context to function. We'll create one here
-    // using a temporary arena that will be cleaned up after this function returns.
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
 
@@ -1608,13 +1461,8 @@ pub fn preAtlasAllImages(renderer: *Batch2D) !void {
         .user_context = @constCast(renderer.asset_cache),
     };
 
-    // We need to iterate over all *logical* images, not the internal storage.
-    // The image_map's value iterator gives us the ImageIds.
     var image_id_iterator = renderer.asset_cache.image_map.valueIterator();
     while (image_id_iterator.next()) |image_id_ptr| {
-        // 1. Query the image. This will add it to the atlas's pending list.
-        //    We expect it to return ImageNotYetPacked. If it returns anything
-        //    else, that's either success (already packed) or an error.
         _ = renderer.atlas.query(image_id_ptr.*, provider_ctx) catch |err| {
             if (err != error.ImageNotYetPacked) {
                 log.err("Error while querying image {d} for pre-atlasing: {any}", .{ image_id_ptr.*, err });
@@ -1623,14 +1471,10 @@ pub fn preAtlasAllImages(renderer: *Batch2D) !void {
         };
     }
 
-    // Now that all images are in the pending list, we flush.
     if (try renderer.atlas.flush()) {
-        // If the flush caused the underlying texture to be recreated, we MUST
-        // recreate the renderer's bind group to point to the new texture view.
-        // This is a critical step that's normally handled in endFrame.
         log.warn("Atlas was recreated during pre-loading, recreating bind group.", .{});
         if (renderer.bind_group != null) {
-            wgpu.bindGroupRelease(renderer.bind_group);
+            wgpu.bindGroupRelease(renderer.bind_group.?);
             renderer.bind_group = null;
         }
         try renderer.recreateBindGroup();
@@ -1643,7 +1487,6 @@ pub fn preAtlasAllImages(renderer: *Batch2D) !void {
 fn pushQuad(self: *Batch2D, encoded_params: u32, pos: vec2, size: vec2, uv_min: vec2, uv_max: vec2, tint: Color, radii: [4]f32, border_thickness: [4]f32) !void {
     try self.ensurePipeline(.quad);
 
-    // We can map 1.0 to pixel density later if we support DPI scaling
     const edge_softness = 1.0;
 
     try self.quads.append(self.allocator, .{
@@ -1670,9 +1513,9 @@ fn pushTriangle(self: *Batch2D, encoded_params: u32, v1: vec2, uv1: vec2, v2: ve
 }
 
 fn recreateBindGroup(self: *Batch2D) !void {
-    const bg = wgpu.deviceCreateBindGroup(self.device, &.{
+    const bg = wgpu.deviceCreateBindGroup(self.gpu.device, &.{
         .label = .fromSlice("Batch2D:atlas_array_bind_group"),
-        .layout = getBindGroupLayout(self.device),
+        .layout = getBindGroupLayout(self.gpu.device),
         .entry_count = 6,
         .entries = &[_]wgpu.BindGroupEntry{
             .{ .binding = 0, .buffer = self.uniform_buffer, .size = @sizeOf(Uniforms) },
@@ -1685,50 +1528,4 @@ fn recreateBindGroup(self: *Batch2D) !void {
     });
     std.debug.assert(bg != null);
     self.bind_group = bg;
-}
-
-/// A helper function to upload a slice of data to a staging buffer, map it, copy the data, and unmap it.
-/// This helper function contains a short, synchronous wait to acquire a memory pointer,
-/// but it enables the much longer data transfer to happen completely asynchronously, which is what prevents rendering hiccups.
-fn uploadSliceToBuffer(device: wgpu.Device, staging_buffer: wgpu.Buffer, slice: anytype) !void {
-    const T = comptime @TypeOf(slice);
-    const TInfo = comptime @typeInfo(T).pointer;
-
-    if (comptime TInfo.size != .slice) @compileError("Batch2D.uploadSliceToBuffer input must be a slice type; got " ++ @typeName(T));
-
-    const data_size: u64 = slice.len * @sizeOf(TInfo.child);
-    var map_finished = false;
-    var map_status: wgpu.MapAsyncStatus = .unknown;
-
-    _ = wgpu.bufferMapAsync(staging_buffer, .writeMode, 0, data_size, .{
-        .callback = &struct {
-            fn handle_map(status: wgpu.MapAsyncStatus, _: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
-                const finished_flag: *bool = @ptrCast(@alignCast(ud1.?));
-                const status_ptr: *wgpu.MapAsyncStatus = @ptrCast(@alignCast(ud2.?));
-                status_ptr.* = status;
-                finished_flag.* = true;
-            }
-        }.handle_map,
-        .userdata1 = &map_finished,
-        .userdata2 = &map_status,
-    });
-
-    while (!map_finished) {
-        _ = wgpu.devicePoll(device, .from(true), null);
-    }
-
-    if (map_status != .success) {
-        log.err("failed to map staging buffer: {any}", .{map_status});
-        return error.StagingBufferMapFailed;
-    }
-
-    const mapped_range: [*]u8 = @ptrCast(@alignCast(wgpu.bufferGetMappedRange(staging_buffer, 0, data_size) orelse {
-        log.err("failed to get mapped range for staging buffer", .{});
-        wgpu.bufferUnmap(staging_buffer);
-        return error.StagingBufferMapFailed;
-    }));
-
-    const byte_slice = std.mem.sliceAsBytes(slice);
-    @memcpy(mapped_range[0..byte_slice.len], byte_slice);
-    wgpu.bufferUnmap(staging_buffer);
 }

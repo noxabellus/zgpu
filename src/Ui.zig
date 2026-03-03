@@ -869,14 +869,14 @@ pub fn bindShaderRect(self: *Ui, config: Widget.ShaderRect.Config) !void {
         gop.value_ptr.seen_this_frame = true;
 
         var ptr: *Widget.ShaderRect = @ptrCast(@alignCast(gop.value_ptr.user_data));
-        if (!ptr.identity.eql(&.init(config.shader, config.texture_bindings))) {
+        if (!ptr.identity.eql(&.init(config.shader, config.texture_bindings, config.uniforms))) {
             // if the identity has changed we need to destroy and recreate the widget
             ptr.deinit(self);
             ptr = try Widget.ShaderRect.init(self, id, config);
             gop.value_ptr.user_data = ptr;
         } else {
             // otherwise, just copy the config textures in case they change from frame to frame
-            try ptr.onSet(self, &Widget.ShaderRect.State.fromSlice(config.textures));
+            try ptr.onSet(self, &Widget.ShaderRect.State.fromSlices(config.textures, config.uniforms));
         }
 
         break :reuse_existing ptr;

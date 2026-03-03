@@ -86,6 +86,11 @@ const SCALE_DIVISOR = 3;
 const UI_MSAA_SAMPLES = 4;
 const DEPTH_FORMAT = wgpu.TextureFormat.depth32_float;
 
+const MouseUniforms = extern struct {
+    mouse_pos: [2]f32,
+    _padding: [2]f32 = .{ 0.0, 0.0 }, // Explicit padding to reach 16 bytes
+};
+
 pub fn main() !void {
     var timer = try std.time.Timer.start();
 
@@ -109,8 +114,7 @@ pub fn main() !void {
 
     const b2d = try Batch2D.init(
         gpa,
-        app.gpu.device,
-        app.gpu.queue,
+        &app.gpu,
         .rgba8_unorm_srgb,
         &asset_cache,
         UI_MSAA_SAMPLES,
@@ -125,8 +129,7 @@ pub fn main() !void {
 
     const b3d = try Batch3D.init(
         gpa,
-        app.gpu.device,
-        app.gpu.queue,
+        &app.gpu,
         .rgba8_unorm_srgb,
         .rgba32_float,
         DEPTH_FORMAT,
@@ -404,6 +407,8 @@ pub fn main() !void {
         inputs.collectAllGlfw();
 
         try ui.dispatchEvents();
+
+        const mouse_pos = inputs.getMousePosition();
 
         // Generate the UI layout and cache rendering commands
         {
@@ -696,6 +701,10 @@ pub fn main() !void {
                         });
                     }
 
+                    const mouse_uniforms = std.mem.asBytes(&MouseUniforms{
+                        .mouse_pos = .{ mouse_pos[0] / SCALE_DIVISOR, mouse_pos[1] / SCALE_DIVISOR },
+                    });
+
                     {
                         try ui.beginElement(.fromSlice("ShaderTest1"));
                         defer ui.closeElement();
@@ -717,6 +726,7 @@ pub fn main() !void {
                                 .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
                             },
                             .textures = &.{demo.picking.view},
+                            .uniforms = mouse_uniforms,
                         });
                     }
 
@@ -741,6 +751,7 @@ pub fn main() !void {
                                 .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
                             },
                             .textures = &.{demo.picking.view},
+                            .uniforms = mouse_uniforms,
                         });
                     }
 

@@ -25,19 +25,24 @@ state: State,
 pub const State = struct {
     count: usize,
     textures: [Batch2D.MAX_CUSTOM_TEXTURES]wgpu.TextureView,
+    uniform_size: usize,
+    uniform_data: [1024]u8,
 
-    pub fn toSlice(self: *const State) []const wgpu.TextureView {
-        return self.textures[0..self.count];
+    pub fn toSlices(self: *const State) struct { []const wgpu.TextureView, []const u8 } {
+        return .{ self.textures[0..self.count], self.uniform_data[0..self.uniform_size] };
     }
 
-    pub fn fromSlice(textures: []const wgpu.TextureView) State {
+    pub fn fromSlices(textures: []const wgpu.TextureView, uniform_data: []const u8) State {
         var s = State{
             .count = textures.len,
             .textures = [1]wgpu.TextureView{null} ** Batch2D.MAX_CUSTOM_TEXTURES,
+            .uniform_size = uniform_data.len,
+            .uniform_data = [1]u8{0} ** 1024,
         };
         for (textures, 0..) |tex, i| {
             s.textures[i] = tex;
         }
+        @memcpy(s.uniform_data[0..uniform_data.len], uniform_data);
         return s;
     }
 };
@@ -60,11 +65,13 @@ pub const TexBindingIdentity = packed struct(u8) {
 pub const PipelineIdentity = struct {
     shader_ptr: wgpu.ShaderModule,
     texture_bindings: [Batch2D.MAX_CUSTOM_TEXTURES]TexBindingIdentity,
+    uniform_size: usize,
 
-    pub fn init(shader_ptr: wgpu.ShaderModule, texture_bindings: []const wgpu.TextureBindingLayout) PipelineIdentity {
+    pub fn init(shader_ptr: wgpu.ShaderModule, texture_bindings: []const wgpu.TextureBindingLayout, uniforms: []const u8) PipelineIdentity {
         var id = PipelineIdentity{
             .shader_ptr = shader_ptr,
             .texture_bindings = [1]TexBindingIdentity{.{}} ** Batch2D.MAX_CUSTOM_TEXTURES,
+            .uniform_size = uniforms.len,
         };
 
         for (texture_bindings, 0..) |binding, i| {
@@ -76,6 +83,7 @@ pub const PipelineIdentity = struct {
 
     pub fn eql(a: *const PipelineIdentity, b: *const PipelineIdentity) bool {
         if (a.shader_ptr != b.shader_ptr) return false;
+        if (a.uniform_size != b.uniform_size) return false;
         for (a.texture_bindings, 0..) |binding, i| {
             if (binding != b.texture_bindings[i]) return false;
         }
@@ -87,6 +95,7 @@ pub const Config = struct {
     shader: wgpu.ShaderModule,
     texture_bindings: []const wgpu.TextureBindingLayout,
     textures: []const wgpu.TextureView = &.{},
+    uniforms: []const u8 = &.{},
 };
 
 var pipeline_cache: std.AutoHashMap(PipelineIdentity, u32) = std.AutoHashMap(PipelineIdentity, u32).init(std.heap.page_allocator);
@@ -99,10 +108,10 @@ pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*ShaderRect {
         return error.TooManyTextures;
     }
 
-    const pipeline_identity = PipelineIdentity.init(config.shader, config.texture_bindings);
+    const pipeline_identity = PipelineIdentity.init(config.shader, config.texture_bindings, config.uniforms);
 
     const shader_id = if (pipeline_cache.get(pipeline_identity)) |sid| sid else create_new_pipeline: {
-        const shader_id, _, _ = try ui.renderer.createCustomPipeline("Ui:ShaderRect:custom_shader", .quad, config.shader, config.texture_bindings, void);
+        const shader_id = try ui.renderer.createCustomPipeline("Ui:ShaderRect:custom_shader", .quad, config.shader, config.texture_bindings, config.uniforms.len);
         try pipeline_cache.put(pipeline_identity, shader_id);
         break :create_new_pipeline shader_id;
     };
@@ -111,7 +120,7 @@ pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*ShaderRect {
         .id = id,
         .shader_id = shader_id,
         .identity = pipeline_identity,
-        .state = .fromSlice(config.textures),
+        .state = .fromSlices(config.textures, config.uniforms),
     };
 
     return self;
@@ -142,7 +151,9 @@ pub fn render(self: *ShaderRect, ui: *Ui, command: Ui.RenderCommand) !void {
     const bb = command.bounding_box;
     const rad = command.render_data.rectangle.corner_radius;
 
-    try ui.renderer.customPipelineStart(self.shader_id, self.state.toSlice(), {});
+    const textures, const custom_uniforms = self.state.toSlices();
+
+    try ui.renderer.customPipelineStart(self.shader_id, textures, custom_uniforms);
     try ui.renderer.drawRoundedRect(
         .{ bb.x, bb.y },
         .{ bb.width, bb.height },
