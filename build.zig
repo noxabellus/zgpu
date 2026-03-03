@@ -251,6 +251,9 @@ pub fn build(b: *std.Build) void {
     exe_mod.addAnonymousImport("shaders/GltfMultiPurpose.wgsl", .{
         .root_source_file = b.path("static/shaders/GltfMultiPurpose.wgsl"),
     });
+    exe_mod.addAnonymousImport("shaders/picking/SkinnedMesh.wgsl", .{
+        .root_source_file = b.path("static/shaders/picking/SkinnedMesh.wgsl"),
+    });
     exe_mod.addAnonymousImport("shaders/GltfShadowed.wgsl", .{
         .root_source_file = b.path("static/shaders/GltfShadowed.wgsl"),
     });

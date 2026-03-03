@@ -91,6 +91,76 @@ const MouseUniforms = extern struct {
     _padding: [2]f32 = .{ 0.0, 0.0 }, // Explicit padding to reach 16 bytes
 };
 
+const PickingUniforms = struct {
+    value: Value,
+    uniform_buffer: wgpu.Buffer = null,
+    bind_group: wgpu.BindGroup = null,
+
+    pub const Value = extern struct {
+        object_id: u32,
+        _padding: [3]u32 = .{ 0, 0, 0 }, // Explicit padding to reach 16 bytes
+    };
+
+    var BIND_GROUP_LAYOUT: wgpu.BindGroupLayout = null;
+    pub fn getBindGroupLayout(gpu: *Gpu) wgpu.BindGroupLayout {
+        if (BIND_GROUP_LAYOUT) |p| return p;
+
+        BIND_GROUP_LAYOUT = gpu.createBindGroupLayout(&.{
+            .label = .fromSlice("PickingUniforms:bind_group_layout"),
+            .entry_count = 1,
+            .entries = &.{
+                .{
+                    .binding = 0,
+                    .visibility = wgpu.ShaderStage.fragmentStage,
+                    .buffer = .{ .type = .uniform },
+                },
+            },
+        });
+
+        return BIND_GROUP_LAYOUT;
+    }
+
+    pub fn init(object_id: u32) PickingUniforms {
+        return PickingUniforms{
+            .value = .{
+                .object_id = object_id,
+            },
+        };
+    }
+
+    pub fn deinit(self: *PickingUniforms) void {
+        if (self.uniform_buffer) |p| wgpu.bufferRelease(p);
+        if (self.bind_group) |p| wgpu.bindGroupRelease(p);
+    }
+
+    pub fn sync(self: *PickingUniforms, gpu: *Gpu) void {
+        if (self.uniform_buffer == null) {
+            self.uniform_buffer = gpu.createBuffer(&.{
+                .usage = .{ .uniform = true, .copy_dst = true },
+                .size = @sizeOf(PickingUniforms.Value),
+            });
+        }
+
+        if (self.bind_group == null) {
+            self.bind_group = gpu.createBindGroup(&.{
+                .label = .fromSlice("PickingUniforms:bind_group"),
+                .layout = getBindGroupLayout(gpu),
+                .entry_count = 1,
+                .entries = &.{
+                    .{
+                        .binding = 0,
+                        .buffer = self.uniform_buffer,
+                        .offset = 0,
+                        .size = @sizeOf(PickingUniforms.Value),
+                    },
+                },
+            });
+        }
+
+        gpu.writeBuffer(self.uniform_buffer, 0, &self.value);
+    }
+};
+
 pub fn main() !void {
     var timer = try std.time.Timer.start();
 
@@ -299,11 +369,14 @@ pub fn main() !void {
         &draw_fps,
     );
 
-    const shader_module = try app.gpu.loadShaderText("static/shaders/GltfMultiPurpose.wgsl", @embedFile("shaders/GltfMultiPurpose.wgsl"));
-    defer wgpu.shaderModuleRelease(shader_module);
+    const skinned_mesh_lit_shader = try app.gpu.loadShaderText("static/shaders/GltfMultiPurpose.wgsl", @embedFile("shaders/GltfMultiPurpose.wgsl"));
+    defer wgpu.shaderModuleRelease(skinned_mesh_lit_shader);
 
-    const pipeline_layout = app.gpu.createPipelineLayout(&.{
-        .label = .fromSlice("pipeline_layout"),
+    const skinned_mesh_picking_shader = try app.gpu.loadShaderText("static/shaders/picking/SkinnedMesh.wgsl", @embedFile("shaders/picking/SkinnedMesh.wgsl"));
+    defer wgpu.shaderModuleRelease(skinned_mesh_picking_shader);
+
+    const skinned_mesh_lit_pipeline_layout = app.gpu.createPipelineLayout(&.{
+        .label = .fromSlice("skinned_mesh_lit_pipeline_layout:pipeline_layout"),
         .bind_group_layout_count = 4,
         .bind_group_layouts = &.{
             Camera.getBindGroupLayout(&app.gpu),
@@ -312,13 +385,24 @@ pub fn main() !void {
             EnvironmentLight.getBindGroupLayout(&app.gpu),
         },
     });
-    defer wgpu.pipelineLayoutRelease(pipeline_layout);
+    defer wgpu.pipelineLayoutRelease(skinned_mesh_lit_pipeline_layout);
 
-    const render_pipeline = app.gpu.createPipeline(&wgpu.RenderPipelineDescriptor{
-        .label = .fromSlice("main_render_pipeline"),
-        .layout = pipeline_layout,
+    const skinned_mesh_picking_pipeline_layout = app.gpu.createPipelineLayout(&.{
+        .label = .fromSlice("skinned_mesh_picking_pipeline_layout:pipeline_layout"),
+        .bind_group_layout_count = 3,
+        .bind_group_layouts = &.{
+            Camera.getBindGroupLayout(&app.gpu),
+            Model.AnimationState.getBindGroupLayout(&app.gpu),
+            PickingUniforms.getBindGroupLayout(&app.gpu),
+        },
+    });
+    defer wgpu.pipelineLayoutRelease(skinned_mesh_picking_pipeline_layout);
+
+    const skinned_mesh_lit_pipeline = app.gpu.createPipeline(&wgpu.RenderPipelineDescriptor{
+        .label = .fromSlice("skinned_mesh_lit_pipeline:render_pipeline"),
+        .layout = skinned_mesh_lit_pipeline_layout,
         .vertex = .{
-            .module = shader_module,
+            .module = skinned_mesh_lit_shader,
             .entry_point = .fromSlice("vs_main"),
             .buffer_count = 1,
             .buffers = &.{Model.Vertex.buffer_layout},
@@ -334,7 +418,7 @@ pub fn main() !void {
             .depth_compare = .less,
         },
         .fragment = &wgpu.FragmentState{
-            .module = shader_module,
+            .module = skinned_mesh_lit_shader,
             .entry_point = .fromSlice("fs_main"),
             .target_count = 1,
             .targets = &.{
@@ -344,7 +428,50 @@ pub fn main() !void {
             },
         },
     });
-    defer wgpu.renderPipelineRelease(render_pipeline);
+    defer wgpu.renderPipelineRelease(skinned_mesh_lit_pipeline);
+
+    const skinned_mesh_picking_pipeline = app.gpu.createPipeline(&wgpu.RenderPipelineDescriptor{
+        .label = .fromSlice("skinned_mesh_picking_pipeline:render_pipeline"),
+        .layout = skinned_mesh_picking_pipeline_layout,
+        .vertex = .{
+            .module = skinned_mesh_picking_shader,
+            .entry_point = .fromSlice("vs_main"),
+            .buffer_count = 1,
+            .buffers = &.{Model.Vertex.buffer_layout},
+        },
+        .primitive = .{
+            .topology = .triangle_list,
+            .cull_mode = .none,
+            .front_face = .ccw,
+        },
+        .depth_stencil = &wgpu.DepthStencilState{
+            .format = DEPTH_FORMAT,
+            .depth_write_enabled = .true,
+            .depth_compare = .less,
+        },
+        .fragment = &wgpu.FragmentState{
+            .module = skinned_mesh_picking_shader,
+            .entry_point = .fromSlice("fs_picking"),
+            .target_count = 1,
+            .targets = &.{
+                wgpu.ColorTargetState{
+                    .format = .rgba32_float,
+                },
+            },
+        },
+    });
+    defer wgpu.renderPipelineRelease(skinned_mesh_picking_pipeline);
+
+    var picking_uniforms = PickingUniforms.init(1);
+    defer picking_uniforms.deinit();
+    picking_uniforms.sync(&app.gpu);
+
+    const readback_buffer = app.gpu.createBuffer(&.{
+        .label = .fromSlice("Picking Readback Buffer"),
+        .size = 256, // 4 * @sizeOf(f32)
+        .usage = .{ .map_read = true, .copy_dst = true },
+    });
+    defer wgpu.bufferRelease(readback_buffer);
 
     const startup_ms = debug.start(&timer);
     log.info("startup completed in {d} ms", .{startup_ms});
@@ -844,7 +971,7 @@ pub fn main() !void {
                 defer wgpu.renderPassEncoderRelease(render_pass);
 
                 if (demo.model) |*model| {
-                    wgpu.renderPassEncoderSetPipeline(render_pass, render_pipeline);
+                    wgpu.renderPassEncoderSetPipeline(render_pass, skinned_mesh_lit_pipeline);
                     for (model.primitives) |primitive| {
                         wgpu.renderPassEncoderSetBindGroup(render_pass, 0, demo.camera.bind_group, 0, null);
                         wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
@@ -858,8 +985,8 @@ pub fn main() !void {
 
                 {
                     b3d.beginFrame(demo.camera.view_proj);
-                    try b3d.drawCylinder(linalg.mat4_scale(.{ 3, 3, 3 }), 3, .{ .r = 1, .g = 0, .b = 1, .a = 1 }, 1);
-                    try b3d.drawCylinder(linalg.mat4_scale(.{ 2, 6, 2 }), 6, .{ .r = 0, .g = 1, .b = 1, .a = 1 }, 2);
+                    try b3d.drawCylinder(linalg.mat4_scale(.{ 0.1, 2, 0.1 }), 3, .{ .r = 1, .g = 0, .b = 1, .a = 1 }, 2);
+                    try b3d.drawCylinder(linalg.mat4_scale(.{ 0.5, 1, 0.5 }), 6, .{ .r = 0, .g = 1, .b = 1, .a = 1 }, 3);
                     try b3d.endFrame();
                     try b3d.render(render_pass);
                 }
@@ -888,7 +1015,48 @@ pub fn main() !void {
 
                 try b3d.renderPicking(picking_pass);
 
+                if (demo.model) |*model| {
+                    wgpu.renderPassEncoderSetPipeline(picking_pass, skinned_mesh_picking_pipeline);
+                    for (model.primitives) |primitive| {
+                        wgpu.renderPassEncoderSetBindGroup(picking_pass, 0, demo.camera.bind_group, 0, null);
+                        wgpu.renderPassEncoderSetBindGroup(picking_pass, 1, demo.anim_state.bind_group, 0, null);
+                        wgpu.renderPassEncoderSetBindGroup(picking_pass, 2, picking_uniforms.bind_group, 0, null);
+                        wgpu.renderPassEncoderSetVertexBuffer(picking_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
+                        wgpu.renderPassEncoderSetIndexBuffer(picking_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
+                        wgpu.renderPassEncoderDrawIndexed(picking_pass, primitive.index_count, 1, 0, 0, 0);
+                    }
+                }
+
                 wgpu.renderPassEncoderEnd(picking_pass);
+            }
+
+            const clicked = inputs.getMouseButton(.button_1) == .released;
+
+            if (clicked) {
+                const m_pos = inputs.getMousePosition();
+                const tx = @as(u32, @intFromFloat(@max(0, m_pos[0] / SCALE_DIVISOR)));
+                const ty = @as(u32, @intFromFloat(@max(0, m_pos[1] / SCALE_DIVISOR)));
+
+                // Ensure we don't read out of bounds
+                if (tx < demo.picking.desc.width and ty < demo.picking.desc.height) {
+                    wgpu.commandEncoderCopyTextureToBuffer(
+                        encoder,
+                        &.{ // Source (Texture)
+                            .texture = demo.picking.texture,
+                            .mip_level = 0,
+                            .origin = .{ .x = tx, .y = ty, .z = 0 },
+                        },
+                        &.{ // Destination (Buffer)
+                            .buffer = readback_buffer,
+                            .layout = .{
+                                .offset = 0,
+                                .bytes_per_row = 256,
+                                .rows_per_image = 1,
+                            },
+                        },
+                        &.{ .width = 1, .height = 1, .depth_or_array_layers = 1 },
+                    );
+                }
             }
 
             try b2d.updateDynamicTexture(encoder, IMAGE_ID_PIP, demo.gltf_color.texture, demo.gltf_color.desc.width, demo.gltf_color.desc.height);
@@ -925,6 +1093,24 @@ pub fn main() !void {
             // --- WGPU Command Submission ---
             const cmd = app.gpu.finalizeCommandEncoder(encoder);
             app.gpu.submitCommands(&.{cmd});
+
+            if (clicked) {
+                _ = wgpu.bufferMapAsync(readback_buffer, .{ .read = true }, 0, 16, .{
+                    .callback = struct {
+                        pub fn picker_read_callback(status: wgpu.MapAsyncStatus, _: wgpu.StringView, userdata1: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+                            if (status == .success) {
+                                const buf: wgpu.Buffer = @ptrCast(@alignCast(userdata1));
+                                const data = wgpu.bufferGetConstMappedRange(buf, 0, 16);
+                                const values: []const f32 = @as([*]const f32, @ptrCast(@alignCast(data)))[0..4];
+
+                                std.debug.print("Picked object value: {any}\n", .{values});
+                                wgpu.bufferUnmap(buf);
+                            }
+                        }
+                    }.picker_read_callback,
+                    .userdata1 = readback_buffer,
+                });
+            }
         }
     }
 }
