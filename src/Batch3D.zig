@@ -45,8 +45,6 @@ picking_wireframe_pipeline: *Gpu.RenderPipeline,
 
 vertex_buffer: ?*Gpu.Buffer,
 vertex_buffer_capacity: usize,
-vertex_staging_buffer: *Gpu.Buffer,
-vertex_staging_buffer_capacity: usize,
 vertices: std.ArrayList(Vertex3D),
 batch_list: std.ArrayList(RenderBatch3D),
 
@@ -71,13 +69,6 @@ pub fn init(
         .label = .fromSlice("batch3d_uniform_buffer"),
         .usage = Gpu.BufferUsage{ .uniform = true, .copy_dst = true },
         .size = @sizeOf(Uniforms3D),
-    });
-
-    const initial_vertex_capacity_bytes = 16384 * @sizeOf(Vertex3D);
-    const vertex_staging_buffer = try gpu.device.createBuffer(&.{
-        .label = .fromSlice("batch3d_vertex_staging_buffer"),
-        .usage = .{ .map_write = true, .copy_src = true },
-        .size = initial_vertex_capacity_bytes,
     });
 
     const bind_group_layout = try gpu.device.createBindGroupLayout(&.{
@@ -205,8 +196,6 @@ pub fn init(
         .picking_wireframe_pipeline = picking_wireframe_pipeline,
         .vertex_buffer = null,
         .vertex_buffer_capacity = 0,
-        .vertex_staging_buffer = vertex_staging_buffer,
-        .vertex_staging_buffer_capacity = initial_vertex_capacity_bytes,
         .vertices = .empty,
         .batch_list = .empty,
         .current_pipeline = null,
@@ -221,7 +210,6 @@ pub fn init(
 
 pub fn deinit(self: *Batch3D) void {
     if (self.vertex_buffer) |vb| vb.release();
-    self.vertex_staging_buffer.release();
     self.uniform_buffer.release();
     self.bind_group.release();
     self.shaded_pipeline.release();
@@ -267,8 +255,6 @@ pub fn endFrame(self: *Batch3D) !void {
 
     if (self.vertices.items.len > 0) {
         const required_size = self.vertices.items.len * @sizeOf(Vertex3D);
-        const upload_encoder = try self.gpu.device.createCommandEncoder(&.{ .label = .fromSlice("batch3d_upload_encoder") });
-        defer upload_encoder.release();
 
         if (self.vertex_buffer_capacity < required_size) {
             if (self.vertex_buffer) |vb| vb.release();
@@ -281,24 +267,7 @@ pub fn endFrame(self: *Batch3D) !void {
             self.vertex_buffer_capacity = new_capacity;
         }
 
-        if (self.vertex_staging_buffer_capacity < required_size) {
-            self.vertex_staging_buffer.release();
-            const new_capacity = @max(@max(self.vertex_staging_buffer_capacity * 2, required_size), 4096);
-            self.vertex_staging_buffer = try self.gpu.device.createBuffer(&.{
-                .label = .fromSlice("batch3d_vertex_staging_buffer"),
-                .usage = .{ .map_write = true, .copy_src = true },
-                .size = new_capacity,
-            });
-            self.vertex_staging_buffer_capacity = new_capacity;
-        }
-
-        // (Assuming you bring over the `uploadSliceToBuffer` helper function from Batch2D)
-        try uploadSliceToBuffer(self.gpu, self.vertex_staging_buffer, self.vertices.items);
-        upload_encoder.copyBufferToBuffer(self.vertex_staging_buffer, 0, self.vertex_buffer.?, 0, required_size);
-
-        const upload_cmd = try upload_encoder.finish(null);
-        defer upload_cmd.release();
-        self.gpu.queue.submit(&.{upload_cmd});
+        self.gpu.queue.writeBuffer(self.vertex_buffer.?, 0, self.vertices.items.ptr, required_size);
     }
 }
 
@@ -589,50 +558,4 @@ pub fn drawIcoSphere(self: *Batch3D, transform: mat4, tint: Color, id: u32) !voi
     while (i < ico_indices.len) : (i += 3) {
         try self.drawTriangle(verts[ico_indices[i]], verts[ico_indices[i + 1]], verts[ico_indices[i + 2]], tint, id);
     }
-}
-
-/// A helper function to upload a slice of data to a staging buffer, map it, copy the data, and unmap it.
-/// This helper function contains a short, synchronous wait to acquire a memory pointer,
-/// but it enables the much longer data transfer to happen completely asynchronously, which is what prevents rendering hiccups.
-fn uploadSliceToBuffer(gpu: *Gpu, staging_buffer: *Gpu.Buffer, slice: anytype) !void {
-    const T = comptime @TypeOf(slice);
-    const TInfo = comptime @typeInfo(T).pointer;
-
-    if (comptime TInfo.size != .slice) @compileError("Batch2D.uploadSliceToBuffer input must be a slice type; got " ++ @typeName(T));
-
-    const data_size: u64 = slice.len * @sizeOf(TInfo.child);
-    var map_finished = false;
-    var map_status: Gpu.MapAsyncStatus = .unknown;
-
-    _ = staging_buffer.mapAsync(.writeMode, 0, data_size, .{
-        .callback = &struct {
-            fn handle_map(status: Gpu.MapAsyncStatus, _: Gpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
-                const finished_flag: *bool = @ptrCast(@alignCast(ud1.?));
-                const status_ptr: *Gpu.MapAsyncStatus = @ptrCast(@alignCast(ud2.?));
-                status_ptr.* = status;
-                finished_flag.* = true;
-            }
-        }.handle_map,
-        .userdata1 = &map_finished,
-        .userdata2 = &map_status,
-    });
-
-    while (!map_finished) {
-        _ = gpu.device.poll(true, null);
-    }
-
-    if (map_status != .success) {
-        log.err("failed to map staging buffer: {any}", .{map_status});
-        return error.StagingBufferMapFailed;
-    }
-
-    const mapped_range: [*]u8 = @ptrCast(@alignCast(staging_buffer.getMappedRange(0, data_size) orelse {
-        log.err("failed to get mapped range for staging buffer", .{});
-        staging_buffer.unmap();
-        return error.StagingBufferMapFailed;
-    }));
-
-    const byte_slice = std.mem.sliceAsBytes(slice);
-    @memcpy(mapped_range[0..byte_slice.len], byte_slice);
-    staging_buffer.unmap();
 }
