@@ -159,6 +159,8 @@ const PickingUniforms = struct {
 };
 
 pub fn main() !void {
+    @setEvalBranchQuota(10_000);
+
     var timer = try std.time.Timer.start();
 
     const app = try Application.init("zgpu picking example");
@@ -394,6 +396,7 @@ pub fn main() !void {
     const BufferDebugMode = enum { None, Framebuffer, @"Picking Position", @"Picking Id" };
     var buffer_debug_mode: BufferDebugMode = .None;
     var text_buffer: std.ArrayList(u8) = .empty;
+    var dummy_slider_value: f32 = 0.0;
 
     var last_frame_time = std.time.milliTimestamp();
     main_loop: while (app.beginFrame()) {
@@ -464,6 +467,13 @@ pub fn main() !void {
             defer ui.endLayout() catch |err| {
                 log.err("Failed to end UI layout: {s}\n", .{@errorName(err)});
             };
+
+            if (bindings.getAction(.open_context_menu) == .released) {
+                log.info("Right click released, opening context menu.", .{});
+                ui.openMenu(.fromSlice("ContextMenuRoot"), .{
+                    .position = mouse_pos,
+                });
+            }
 
             {
                 try ui.openElement(.{
@@ -1049,6 +1059,85 @@ pub fn main() !void {
                         }
                     }
                 }
+            }
+
+            // Root Context Menu
+            if (try ui.beginMenu(.fromSlice("ContextMenuRoot"), .{})) {
+                defer ui.endMenu();
+
+                if (try ui.menuItem(.fromSlice("CopyMenuItem"), "Copy", .{
+                    .font_id = FONT_ID_MONO,
+                    .font_size = 12,
+                })) {
+                    std.debug.print("ContextMenu - Copy\n", .{});
+                }
+                if (try ui.menuItem(.fromSlice("PasteMenuItem"), "Paste", .{
+                    .font_id = FONT_ID_MONO,
+                    .font_size = 12,
+                })) {
+                    std.debug.print("ContextMenu - Paste\n", .{});
+                }
+                try ui.menuSeparator();
+
+                // Submenu Trigger
+                _ = try ui.subMenu(.fromSlice("MoreOptionsMenuItem"), "More Options...", .fromSlice("SubMenu1"), .{
+                    .font_id = FONT_ID_MONO,
+                    .font_size = 12,
+                });
+
+                try ui.menuSeparator();
+
+                // Embedded Widget Test
+                {
+                    try ui.openElement(.{ .id = .fromSlice("MenuSliderContainer"), .layout = .{ .padding = .all(4), .direction = .top_to_bottom } });
+                    defer ui.closeElement();
+
+                    try ui.text("Opacity", .{ .font_id = FONT_ID_MONO, .font_size = 12 });
+                    {
+                        try ui.beginElement(.fromSlice("MenuSlider"));
+                        defer ui.closeElement();
+
+                        const bb = ui.getElementBounds(.fromSlice("ContextMenuRoot")).?; // Note: This is kind of dangerous; if you were to set the fixed width to be exactly the menu width, it would actually grow each frame
+                        try ui.configureElement(.{
+                            .layout = .{ .sizing = .{ .w = .fixed(bb.width - 16), .h = .fixed(20) } },
+                            .widget = true,
+                            .state = .flags(.{
+                                .click = true,
+                                .drag = true,
+                                .focus = true,
+                                .keyboard = true,
+                            }),
+                        });
+                        try ui.menuNavigable(); // makes this element navigable via keyboard in menus
+                        _ = try widgets.slider(ui, f32, .{
+                            .min = 0,
+                            .max = 1,
+                            .value = &dummy_slider_value,
+                            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
+                            .handle_color = COLOR_TEAL,
+                        });
+                    }
+                }
+            }
+
+            // First Level Submenu
+            if (try ui.beginMenu(.fromSlice("SubMenu1"), .{})) {
+                defer ui.endMenu();
+
+                _ = try ui.menuItem(.fromSlice("OptionAMenuItem"), "Option A", .{});
+
+                _ = try ui.menuItem(.fromSlice("OptionBMenuItem"), "Option B", .{});
+
+                _ = try ui.subMenu(.fromSlice("EvenDeeperMenuItem"), "Even Deeper...", .fromSlice("SubMenu2"), .{});
+            }
+
+            // Second Level Submenu
+            if (try ui.beginMenu(.fromSlice("SubMenu2"), .{})) {
+                defer ui.endMenu();
+
+                _ = try ui.menuItem(.fromSlice("FinalOptionMenuItem"), "Final Option!", .{
+                    .font_size = 32,
+                });
             }
         }
 

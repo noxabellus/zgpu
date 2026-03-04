@@ -666,7 +666,7 @@ pub fn endMenu(self: *Ui) void {
 }
 
 /// Creates a menu item. Application logic should be handled by listening for the `.activate_end` or `.clicked` event on the provided `id`.
-pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemConfig) !void {
+pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemConfig) !bool {
     // Get the current menu's ID from the open_ids stack.
     const menu_id = self.open_ids.items[self.open_ids.items.len - 1];
     // Add this item to its parent menu's navigable list.
@@ -714,6 +714,12 @@ pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemCon
         .font_size = config.font_size,
         .color = if (is_highlighted) config.text_color_highlighted else config.text_color,
     });
+
+    if (self.getEvent(id, .activate_end)) |_| {
+        return true;
+    }
+
+    return false;
 }
 
 /// Create a link to a submenu inside the currently open menu.
