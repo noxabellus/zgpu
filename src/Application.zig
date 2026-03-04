@@ -8,14 +8,23 @@ const wgpu = @import("wgpu");
 const stbi = @import("stbi");
 
 const Gpu = @import("Gpu.zig");
+const InputState = @import("InputState.zig");
 
 const log = std.log.scoped(.app);
 
+mem: struct {
+    gpa: std.mem.Allocator,
+    permanent_arena: std.heap.ArenaAllocator,
+    frame_arena: std.heap.ArenaAllocator,
+},
 window: *glfw.Window,
 user_data: *anyopaque,
 gpu: Gpu,
+input_state: InputState,
 
-pub fn init(gpa: std.mem.Allocator, name: [*:0]const u8) !*Application {
+pub fn init(name: [*:0]const u8) !*Application {
+    const gpa = std.heap.smp_allocator;
+
     log.info("application initializing...", .{});
     var timer = try std.time.Timer.start();
 
@@ -39,6 +48,11 @@ pub fn init(gpa: std.mem.Allocator, name: [*:0]const u8) !*Application {
 
     var self = try gpa.create(Application);
     @memset(std.mem.asBytes(self), 0);
+    self.mem = .{
+        .gpa = gpa,
+        .permanent_arena = std.heap.ArenaAllocator.init(gpa),
+        .frame_arena = std.heap.ArenaAllocator.init(gpa),
+    };
 
     log.info("created application structure allocation", .{});
 
@@ -53,6 +67,7 @@ pub fn init(gpa: std.mem.Allocator, name: [*:0]const u8) !*Application {
     log.info("created glfw window", .{});
 
     try self.gpu.init();
+    self.input_state.init();
 
     const elapsed = timer.read();
     const ms = @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms;
@@ -65,6 +80,8 @@ pub fn init(gpa: std.mem.Allocator, name: [*:0]const u8) !*Application {
 pub fn deinit(self: *Application) void {
     log.info("application shutting down ...", .{});
 
+    self.mem.permanent_arena.deinit();
+    self.mem.frame_arena.deinit();
     self.gpu.deinit();
 
     glfw.destroyWindow(self.window);
@@ -72,7 +89,30 @@ pub fn deinit(self: *Application) void {
     glfw.deinit();
     stbi.deinit();
 
-    self.* = undefined;
+    self.mem.gpa.destroy(self);
 
     log.info("application shutdown completed successfully", .{});
+}
+
+pub fn generalAllocator(self: *Application) std.mem.Allocator {
+    return self.mem.gpa;
+}
+
+pub fn permanentAllocator(self: *Application) std.mem.Allocator {
+    return self.mem.permanent_arena.allocator();
+}
+
+pub fn frameAllocator(self: *Application) std.mem.Allocator {
+    return self.mem.frame_arena.allocator();
+}
+
+pub fn beginFrame(self: *Application) bool {
+    glfw.pollEvents();
+
+    const reset = self.mem.frame_arena.reset(.retain_capacity);
+    std.debug.assert(reset);
+
+    self.input_state.collectAllGlfw();
+
+    return !glfw.windowShouldClose(self.window);
 }

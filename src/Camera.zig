@@ -1,11 +1,9 @@
 const Camera = @This();
 
 const std = @import("std");
-const glfw = @import("glfw");
-const wgpu = @import("wgpu");
 
 const Gpu = @import("Gpu.zig");
-const Application = @import("Application.zig");
+const InputState = @import("InputState.zig");
 const linalg = @import("linalg.zig");
 const vec2 = linalg.vec2;
 const vec3 = linalg.vec3;
@@ -30,31 +28,31 @@ roll_speed: f32 = 60.0,
 
 view_proj: mat4 = linalg.mat4_identity,
 
-buffer: wgpu.Buffer = null,
-bind_group: wgpu.BindGroup = null,
+buffer: ?*Gpu.Buffer = null,
+bind_group: ?*Gpu.BindGroup = null,
 
 pub const Uniform = mat4;
 
-var BIND_GROUP_LAYOUT: wgpu.BindGroupLayout = null;
-pub fn getBindGroupLayout(gpu: *Gpu) wgpu.BindGroupLayout {
+var BIND_GROUP_LAYOUT: ?*Gpu.BindGroupLayout = null;
+pub fn getBindGroupLayout(gpu: *Gpu) !*Gpu.BindGroupLayout {
     if (BIND_GROUP_LAYOUT) |p| return p;
 
-    BIND_GROUP_LAYOUT = gpu.createBindGroupLayout(&.{
+    BIND_GROUP_LAYOUT = try gpu.device.createBindGroupLayout(&.{
         .label = .fromSlice("Camera:bind_group_layout"),
         .entry_count = 1,
         .entries = &.{
             .{
                 .binding = 0,
-                .visibility = wgpu.ShaderStage.vertexStage,
+                .visibility = Gpu.ShaderStage.vertexStage,
                 .buffer = .{ .type = .uniform },
             },
         },
     });
 
-    return BIND_GROUP_LAYOUT;
+    return BIND_GROUP_LAYOUT.?;
 }
 
-pub fn fromFrontUp(pos: vec3, front: vec3, up: vec3, world_up: vec3) Camera {
+pub fn fromFrontUp(pos: vec3, front: vec3, up: vec3, world_up: vec3, size: vec2) Camera {
     var self = Camera{
         .pos = pos,
         .front = linalg.normalize(front),
@@ -64,12 +62,12 @@ pub fn fromFrontUp(pos: vec3, front: vec3, up: vec3, world_up: vec3) Camera {
         .world_forward = deduceWorldForward(world_up),
     };
 
-    self.deriveState();
+    self.deriveState(size);
 
     return self;
 }
 
-pub fn fromLookAt(pos: vec3, target: vec3, world_up: vec3) Camera {
+pub fn fromLookAt(pos: vec3, target: vec3, world_up: vec3, size: vec2) Camera {
     const front = linalg.normalize(target - pos);
 
     var self = Camera{
@@ -84,27 +82,27 @@ pub fn fromLookAt(pos: vec3, target: vec3, world_up: vec3) Camera {
     };
 
     // Calculates valid Right/Up vectors and back-calculates Euler angles (Yaw/Pitch/Roll)
-    self.deriveState();
+    self.deriveState(size);
 
     return self;
 }
 
 pub fn deinit(self: *Camera) void {
-    if (self.buffer) |p| wgpu.bufferRelease(p);
-    if (self.bind_group) |p| wgpu.bindGroupRelease(p);
+    if (self.buffer) |p| Gpu.bufferRelease(p);
+    if (self.bind_group) |p| Gpu.bindGroupRelease(p);
 }
 
-pub fn sync(self: *Camera, gpu: *Gpu) void {
+pub fn sync(self: *Camera, gpu: *Gpu) !void {
     if (self.buffer == null) {
-        self.buffer = gpu.createBuffer(&.{
+        self.buffer = try gpu.device.createBuffer(&.{
             .usage = .{ .uniform = true, .copy_dst = true },
             .size = @sizeOf(Camera.Uniform),
         });
     }
     if (self.bind_group == null) {
-        self.bind_group = gpu.createBindGroup(&.{
+        self.bind_group = try gpu.device.createBindGroup(&.{
             .label = .fromSlice("Camera:bind_group"),
-            .layout = getBindGroupLayout(gpu),
+            .layout = try getBindGroupLayout(gpu),
             .entry_count = 1,
             .entries = &.{
                 .{
@@ -117,7 +115,7 @@ pub fn sync(self: *Camera, gpu: *Gpu) void {
         });
     }
 
-    gpu.writeBuffer(self.buffer, 0, &self.view_proj);
+    gpu.queue.writeBuffer(self.buffer.?, 0, &self.view_proj, @sizeOf(Camera.Uniform));
 }
 
 pub fn deduceWorldForward(world_up: vec3) vec3 {
@@ -133,7 +131,7 @@ pub fn deduceWorldForward(world_up: vec3) vec3 {
     return forward;
 }
 
-pub fn deriveState(self: *Camera) void {
+pub fn deriveState(self: *Camera, size: vec2) void {
     // Ensure our basis is orthogonal and normalized based on inputs
     self.right = linalg.normalize(linalg.vec3_cross(self.front, self.up));
     self.up = linalg.normalize(linalg.vec3_cross(self.right, self.front));
@@ -173,15 +171,26 @@ pub fn deriveState(self: *Camera) void {
     const roll_sin = linalg.dot(self.right, ref_up);
 
     self.roll = linalg.rad_to_deg * std.math.atan2(-roll_sin, roll_cos);
+
+    self.calculateViewProj(size);
 }
 
-pub fn handle_mouse_move(self: *Camera, w: *glfw.Window, pos: vec2) callconv(.c) void {
-    const btn_state = glfw.getMouseButton(w, .button_3);
-    if (btn_state != .repeat and btn_state != .press) {
-        self.first_mouse = true;
-        return;
+pub fn update(self: *Camera, input_state: *const InputState, size: vec2, delta_time: f32) bool {
+    if (!input_state.getMouseButton(.middle).isDown()) {
+        // If the middle mouse isn't held, we don't want to process keyboard input
+        self.first_mouse = true; // Reset mouse movement tracking for when we do start moving again
+        return false;
     }
 
+    if (input_state.getMouseButton(.middle) != .pressed and self.first_mouse) {
+        // drag must start in valid region
+        return false;
+    }
+
+    const frame_speed: vec3 = @splat(self.speed * delta_time);
+    const roll_step = self.roll_speed * delta_time;
+
+    const pos = input_state.getMousePosition();
     if (self.first_mouse) {
         self.last_mouse = pos;
         self.first_mouse = false;
@@ -237,46 +246,39 @@ pub fn handle_mouse_move(self: *Camera, w: *glfw.Window, pos: vec2) callconv(.c)
 
     // We could calculate Up using rotation too, but cross product ensures orthogonality errors don't drift
     self.up = linalg.normalize(linalg.vec3_cross(self.right, self.front));
-}
 
-pub fn update(self: *Camera, window: *glfw.Window, delta: f32) void {
-    const frame_speed: vec3 = @splat(self.speed * delta);
-    const roll_step = self.roll_speed * delta;
-
-    const mouse = glfw.getMouseButton(window, .middle);
-    if (mouse != .press and mouse != .repeat) {
-        // If the middle mouse isn't held, we don't want to process keyboard input for movement/roll
-        return;
-    }
-
-    if (glfw.getKey(window, .w) == .press) {
+    if (input_state.getKey(.w).isDown()) {
         self.pos += self.front * frame_speed;
     }
-    if (glfw.getKey(window, .s) == .press) {
+    if (input_state.getKey(.s).isDown()) {
         self.pos -= self.front * frame_speed;
     }
-    if (glfw.getKey(window, .d) == .press) {
+    if (input_state.getKey(.d).isDown()) {
         self.pos += self.right * frame_speed;
     }
-    if (glfw.getKey(window, .a) == .press) {
+    if (input_state.getKey(.a).isDown()) {
         self.pos -= self.right * frame_speed;
     }
-    if (glfw.getKey(window, .left_shift) == .press) {
+    if (input_state.getKey(.left_shift).isDown()) {
         // Move along the LOCAL up vector now, not world up
         self.pos += self.up * frame_speed;
     }
-    if (glfw.getKey(window, .left_control) == .press) {
+    if (input_state.getKey(.left_control).isDown()) {
         self.pos -= self.up * frame_speed;
     }
 
-    if (glfw.getKey(window, .q) == .press) {
+    if (input_state.getKey(.q).isDown()) {
         self.roll -= roll_step;
         self.recalcBasis();
     }
-    if (glfw.getKey(window, .e) == .press) {
+    if (input_state.getKey(.e).isDown()) {
         self.roll += roll_step;
         self.recalcBasis();
     }
+
+    self.calculateViewProj(size);
+
+    return true;
 }
 
 // Helper to apply rotation without mouse movement input
@@ -298,11 +300,8 @@ fn recalcBasis(self: *Camera) void {
     self.up = linalg.normalize(linalg.vec3_cross(self.right, self.front));
 }
 
-pub fn calculateViewProj(self: *Camera, window: *glfw.Window) void {
-    var width: i32 = 0;
-    var height: i32 = 0;
-    glfw.getFramebufferSize(window, &width, &height);
-    const aspect = if (height == 0) 1.0 else @as(f32, @floatFromInt(width)) / @as(f32, @floatFromInt(height));
+pub fn calculateViewProj(self: *Camera, size: vec2) void {
+    const aspect = if (size[1] == 0) 1.0 else size[0] / size[1];
 
     const proj = linalg.mat4_perspective(
         linalg.deg_to_rad * 60.0,

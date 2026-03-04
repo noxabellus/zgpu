@@ -2,10 +2,6 @@ const std = @import("std");
 const log = std.log.scoped(.main);
 const builtin = @import("builtin");
 
-const wgpu = @import("wgpu");
-const glfw = @import("glfw");
-const gltf = @import("gltf");
-const stbi = @import("stbi");
 const nfd = @import("nfd");
 
 const Gpu = @import("../Gpu.zig");
@@ -18,11 +14,11 @@ const debug = @import("../debug.zig");
 const Batch2D = @import("../Batch2D.zig");
 const Batch3D = @import("../Batch3D.zig");
 const AssetCache = @import("../AssetCache.zig");
-const InputState = @import("../InputState.zig");
 const BindingState = @import("../BindingState.zig");
 const Model = @import("../Model.zig");
 const Ui = @import("../Ui.zig");
 const linalg = @import("../linalg.zig");
+const vec2u = linalg.vec2u;
 const vec2 = linalg.vec2;
 const vec3 = linalg.vec3;
 const vec4 = linalg.vec4;
@@ -84,7 +80,7 @@ const COLOR_BLACK = Ui.Color.fromLinearU8(0, 0, 0, 255);
 const SCALE_DIVISOR = 3;
 
 const UI_MSAA_SAMPLES = 4;
-const DEPTH_FORMAT = wgpu.TextureFormat.depth32_float;
+const DEPTH_FORMAT = Gpu.TextureFormat.depth32_float;
 
 const MouseUniforms = extern struct {
     mouse_pos: [2]f32,
@@ -93,31 +89,31 @@ const MouseUniforms = extern struct {
 
 const PickingUniforms = struct {
     value: Value,
-    uniform_buffer: wgpu.Buffer = null,
-    bind_group: wgpu.BindGroup = null,
+    uniform_buffer: ?*Gpu.Buffer = null,
+    bind_group: ?*Gpu.BindGroup = null,
 
     pub const Value = extern struct {
         object_id: u32,
         _padding: [3]u32 = .{ 0, 0, 0 }, // Explicit padding to reach 16 bytes
     };
 
-    var BIND_GROUP_LAYOUT: wgpu.BindGroupLayout = null;
-    pub fn getBindGroupLayout(gpu: *Gpu) wgpu.BindGroupLayout {
+    var BIND_GROUP_LAYOUT: ?*Gpu.BindGroupLayout = null;
+    pub fn getBindGroupLayout(gpu: *Gpu) !*Gpu.BindGroupLayout {
         if (BIND_GROUP_LAYOUT) |p| return p;
 
-        BIND_GROUP_LAYOUT = gpu.createBindGroupLayout(&.{
+        BIND_GROUP_LAYOUT = try gpu.device.createBindGroupLayout(&.{
             .label = .fromSlice("PickingUniforms:bind_group_layout"),
             .entry_count = 1,
             .entries = &.{
                 .{
                     .binding = 0,
-                    .visibility = wgpu.ShaderStage.fragmentStage,
+                    .visibility = Gpu.ShaderStage.fragmentStage,
                     .buffer = .{ .type = .uniform },
                 },
             },
         });
 
-        return BIND_GROUP_LAYOUT;
+        return BIND_GROUP_LAYOUT.?;
     }
 
     pub fn init(object_id: u32) PickingUniforms {
@@ -129,22 +125,22 @@ const PickingUniforms = struct {
     }
 
     pub fn deinit(self: *PickingUniforms) void {
-        if (self.uniform_buffer) |p| wgpu.bufferRelease(p);
-        if (self.bind_group) |p| wgpu.bindGroupRelease(p);
+        if (self.uniform_buffer) |p| p.release();
+        if (self.bind_group) |p| p.release();
     }
 
-    pub fn sync(self: *PickingUniforms, gpu: *Gpu) void {
+    pub fn sync(self: *PickingUniforms, gpu: *Gpu) !void {
         if (self.uniform_buffer == null) {
-            self.uniform_buffer = gpu.createBuffer(&.{
+            self.uniform_buffer = try gpu.device.createBuffer(&.{
                 .usage = .{ .uniform = true, .copy_dst = true },
                 .size = @sizeOf(PickingUniforms.Value),
             });
         }
 
         if (self.bind_group == null) {
-            self.bind_group = gpu.createBindGroup(&.{
+            self.bind_group = try gpu.device.createBindGroup(&.{
                 .label = .fromSlice("PickingUniforms:bind_group"),
-                .layout = getBindGroupLayout(gpu),
+                .layout = try getBindGroupLayout(gpu),
                 .entry_count = 1,
                 .entries = &.{
                     .{
@@ -157,33 +153,25 @@ const PickingUniforms = struct {
             });
         }
 
-        gpu.writeBuffer(self.uniform_buffer, 0, &self.value);
+        gpu.queue.writeBuffer(self.uniform_buffer.?, 0, &self.value, @sizeOf(PickingUniforms.Value));
     }
 };
 
 pub fn main() !void {
     var timer = try std.time.Timer.start();
 
-    const gpa = std.heap.page_allocator;
-
-    // --- Application and UI Library Initialization ---
-    var arena_state = std.heap.ArenaAllocator.init(gpa);
-    defer arena_state.deinit();
-
-    const frame_arena = arena_state.allocator();
+    const app = try Application.init("zgpu lighting example");
+    defer app.deinit();
 
     // Init Asset Cache
-    var asset_cache = AssetCache.init(gpa);
+    var asset_cache = AssetCache.init(app.generalAllocator());
     defer asset_cache.deinit();
-
-    const app = try Application.init(gpa, "zgpu lighting example");
-    defer app.deinit();
 
     try nfd.initAsync();
     defer nfd.deinitAsync();
 
     const b2d = try Batch2D.init(
-        gpa,
+        app.permanentAllocator(),
         &app.gpu,
         .rgba8_unorm_srgb,
         &asset_cache,
@@ -191,14 +179,14 @@ pub fn main() !void {
     );
     defer b2d.deinit();
 
-    const pwp_shader = try app.gpu.loadShaderText("static/shaders/2d/PickerWorldPos.wgsl", @embedFile("shaders/2d/PickerWorldPos.wgsl"));
-    defer wgpu.shaderModuleRelease(pwp_shader);
+    const pwp_shader = try app.gpu.device.loadShaderText("static/shaders/2d/PickerWorldPos.wgsl", @embedFile("shaders/2d/PickerWorldPos.wgsl"));
+    defer pwp_shader.release();
 
-    const pid_shader = try app.gpu.loadShaderText("static/shaders/2d/PickerId.wgsl", @embedFile("shaders/2d/PickerId.wgsl"));
-    defer wgpu.shaderModuleRelease(pid_shader);
+    const pid_shader = try app.gpu.device.loadShaderText("static/shaders/2d/PickerId.wgsl", @embedFile("shaders/2d/PickerId.wgsl"));
+    defer pid_shader.release();
 
     const b3d = try Batch3D.init(
-        gpa,
+        app.permanentAllocator(),
         &app.gpu,
         .rgba8_unorm_srgb,
         .rgba32_float,
@@ -213,6 +201,7 @@ pub fn main() !void {
             vec3{ 10.0, 2.0, 0.0 },
             vec3{ 0, 1.0, 0.0 },
             vec3{ 0.0, 1.0, 0.0 },
+            @floatFromInt(vec2u{ app.gpu.config.width, app.gpu.config.height }),
         ),
         .gltf_color = try RenderTexture.init(&app.gpu, .{
             .label = "gltf_color",
@@ -270,27 +259,16 @@ pub fn main() !void {
 
     app.user_data = &demo;
 
-    _ = glfw.setCursorPosCallback(app.window, struct {
-        pub fn mouse_handler(w: *glfw.Window, xpos: f64, ypos: f64) callconv(.c) void {
-            const a: *Application = @ptrCast(@alignCast(glfw.getWindowUserPointer(w)));
-            const d: *Demo = @ptrCast(@alignCast(a.user_data));
-            d.camera.handle_mouse_move(w, vec2{ @floatCast(xpos), @floatCast(ypos) });
-        }
-    }.mouse_handler);
-
     // Init Ui
 
-    var inputs = InputState.init(demo.app.window);
-    inputs.listenAllGlfw();
-
-    var bindings = BindingState.init(gpa, &inputs);
+    var bindings = BindingState.init(app.permanentAllocator(), &app.input_state);
     defer bindings.deinit();
 
     try bindings.bind(.toggle_debugger, .{ .key = .{ .bind_point = .d, .modifiers = .ctrlMod } });
     try bindings.bind(.dump_atlas, .{ .key = .{ .bind_point = .a, .modifiers = .altMod } });
     try bindings.bind(.open_context_menu, .{ .mouse = .{ .bind_point = .button_2 } });
 
-    var ui = try Ui.init(gpa, frame_arena, b2d, &asset_cache, &bindings);
+    var ui = try Ui.init(app.permanentAllocator(), app.frameAllocator(), b2d, &asset_cache, &bindings);
     defer ui.deinit();
 
     FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/quicksand/semibold.ttf", .linear);
@@ -336,7 +314,7 @@ pub fn main() !void {
 
                 d.anim_state.clearCache();
                 d.anim_state.clearMatrices();
-                d.anim_state.sync(&d.app.gpu);
+                try d.anim_state.sync(&d.app.gpu);
             }
         }.unload_button_listener,
         &demo,
@@ -369,36 +347,36 @@ pub fn main() !void {
         &draw_fps,
     );
 
-    const skinned_mesh_lit_shader = try app.gpu.loadShaderText("static/shaders/GltfMultiPurpose.wgsl", @embedFile("shaders/GltfMultiPurpose.wgsl"));
-    defer wgpu.shaderModuleRelease(skinned_mesh_lit_shader);
+    const skinned_mesh_lit_shader = try app.gpu.device.loadShaderText("static/shaders/GltfMultiPurpose.wgsl", @embedFile("shaders/GltfMultiPurpose.wgsl"));
+    defer skinned_mesh_lit_shader.release();
 
-    const skinned_mesh_picking_shader = try app.gpu.loadShaderText("static/shaders/picking/SkinnedMesh.wgsl", @embedFile("shaders/picking/SkinnedMesh.wgsl"));
-    defer wgpu.shaderModuleRelease(skinned_mesh_picking_shader);
+    const skinned_mesh_picking_shader = try app.gpu.device.loadShaderText("static/shaders/picking/SkinnedMesh.wgsl", @embedFile("shaders/picking/SkinnedMesh.wgsl"));
+    defer skinned_mesh_picking_shader.release();
 
-    const skinned_mesh_lit_pipeline_layout = app.gpu.createPipelineLayout(&.{
+    const skinned_mesh_lit_pipeline_layout = try app.gpu.device.createPipelineLayout(&.{
         .label = .fromSlice("skinned_mesh_lit_pipeline_layout:pipeline_layout"),
         .bind_group_layout_count = 4,
         .bind_group_layouts = &.{
-            Camera.getBindGroupLayout(&app.gpu),
-            Model.getTextureBindGroupLayout(&app.gpu),
-            Model.AnimationState.getBindGroupLayout(&app.gpu),
-            EnvironmentLight.getBindGroupLayout(&app.gpu),
+            try Camera.getBindGroupLayout(&app.gpu),
+            try Model.getTextureBindGroupLayout(&app.gpu),
+            try Model.AnimationState.getBindGroupLayout(&app.gpu),
+            try EnvironmentLight.getBindGroupLayout(&app.gpu),
         },
     });
-    defer wgpu.pipelineLayoutRelease(skinned_mesh_lit_pipeline_layout);
+    defer skinned_mesh_lit_pipeline_layout.release();
 
-    const skinned_mesh_picking_pipeline_layout = app.gpu.createPipelineLayout(&.{
+    const skinned_mesh_picking_pipeline_layout = try app.gpu.device.createPipelineLayout(&.{
         .label = .fromSlice("skinned_mesh_picking_pipeline_layout:pipeline_layout"),
         .bind_group_layout_count = 3,
         .bind_group_layouts = &.{
-            Camera.getBindGroupLayout(&app.gpu),
-            Model.AnimationState.getBindGroupLayout(&app.gpu),
-            PickingUniforms.getBindGroupLayout(&app.gpu),
+            try Camera.getBindGroupLayout(&app.gpu),
+            try Model.AnimationState.getBindGroupLayout(&app.gpu),
+            try PickingUniforms.getBindGroupLayout(&app.gpu),
         },
     });
-    defer wgpu.pipelineLayoutRelease(skinned_mesh_picking_pipeline_layout);
+    defer skinned_mesh_picking_pipeline_layout.release();
 
-    const skinned_mesh_lit_pipeline = app.gpu.createPipeline(&wgpu.RenderPipelineDescriptor{
+    const skinned_mesh_lit_pipeline = try app.gpu.device.createRenderPipeline(&Gpu.RenderPipelineDescriptor{
         .label = .fromSlice("skinned_mesh_lit_pipeline:render_pipeline"),
         .layout = skinned_mesh_lit_pipeline_layout,
         .vertex = .{
@@ -412,25 +390,25 @@ pub fn main() !void {
             .cull_mode = .none,
             .front_face = .ccw,
         },
-        .depth_stencil = &wgpu.DepthStencilState{
+        .depth_stencil = &Gpu.DepthStencilState{
             .format = DEPTH_FORMAT,
             .depth_write_enabled = .true,
             .depth_compare = .less,
         },
-        .fragment = &wgpu.FragmentState{
+        .fragment = &Gpu.FragmentState{
             .module = skinned_mesh_lit_shader,
             .entry_point = .fromSlice("fs_main"),
             .target_count = 1,
             .targets = &.{
-                wgpu.ColorTargetState{
+                Gpu.ColorTargetState{
                     .format = .rgba8_unorm_srgb,
                 },
             },
         },
     });
-    defer wgpu.renderPipelineRelease(skinned_mesh_lit_pipeline);
+    defer skinned_mesh_lit_pipeline.release();
 
-    const skinned_mesh_picking_pipeline = app.gpu.createPipeline(&wgpu.RenderPipelineDescriptor{
+    const skinned_mesh_picking_pipeline = try app.gpu.device.createRenderPipeline(&Gpu.RenderPipelineDescriptor{
         .label = .fromSlice("skinned_mesh_picking_pipeline:render_pipeline"),
         .layout = skinned_mesh_picking_pipeline_layout,
         .vertex = .{
@@ -444,48 +422,47 @@ pub fn main() !void {
             .cull_mode = .none,
             .front_face = .ccw,
         },
-        .depth_stencil = &wgpu.DepthStencilState{
+        .depth_stencil = &Gpu.DepthStencilState{
             .format = DEPTH_FORMAT,
             .depth_write_enabled = .true,
             .depth_compare = .less,
         },
-        .fragment = &wgpu.FragmentState{
+        .fragment = &Gpu.FragmentState{
             .module = skinned_mesh_picking_shader,
             .entry_point = .fromSlice("fs_picking"),
             .target_count = 1,
             .targets = &.{
-                wgpu.ColorTargetState{
+                Gpu.ColorTargetState{
                     .format = .rgba32_float,
                 },
             },
         },
     });
-    defer wgpu.renderPipelineRelease(skinned_mesh_picking_pipeline);
+    defer skinned_mesh_picking_pipeline.release();
 
     var picking_uniforms = PickingUniforms.init(1);
     defer picking_uniforms.deinit();
-    picking_uniforms.sync(&app.gpu);
+    try picking_uniforms.sync(&app.gpu);
 
-    const readback_buffer = app.gpu.createBuffer(&.{
+    const readback_buffer = try app.gpu.device.createBuffer(&.{
         .label = .fromSlice("Picking Readback Buffer"),
         .size = 256, // 4 * @sizeOf(f32)
         .usage = .{ .map_read = true, .copy_dst = true },
     });
-    defer wgpu.bufferRelease(readback_buffer);
+    defer readback_buffer.release();
 
     const startup_ms = debug.start(&timer);
     log.info("startup completed in {d} ms", .{startup_ms});
 
-    var last_frame_time = glfw.getTime();
-    main_loop: while (!glfw.windowShouldClose(app.window)) {
-        const current_time = glfw.getTime();
-        const delta_time: f32 = @floatCast(current_time - last_frame_time);
+    var camera_captured_mouse = false;
+
+    var last_frame_time = std.time.milliTimestamp();
+    main_loop: while (app.beginFrame()) {
+        const current_time = std.time.milliTimestamp();
+        const delta_time: f32 = @as(f32, @floatFromInt(current_time - last_frame_time)) / 1000.0;
         last_frame_time = current_time;
 
         defer debug.lap();
-
-        glfw.pollEvents();
-        _ = arena_state.reset(.retain_capacity);
 
         const w = app.gpu.config.width;
         const h = app.gpu.config.height;
@@ -496,11 +473,11 @@ pub fn main() !void {
                 // Deinit old model if it exists
                 if (demo.model) |*m| m.deinit();
 
-                demo.model = try Model.loadGltf(gpa, &demo.app.gpu, p);
+                demo.model = try Model.loadGltf(app.generalAllocator(), &demo.app.gpu, p);
 
                 demo.anim_state.setIndex(0);
                 demo.anim_state.clearMatrices();
-                demo.anim_state.sync(&demo.app.gpu);
+                try demo.anim_state.sync(&demo.app.gpu);
 
                 try ui.setWidgetState(.fromSlice("animIndexSlider"), u32, 0);
             }
@@ -517,7 +494,7 @@ pub fn main() !void {
                 delta_time,
             );
 
-            demo.anim_state.sync(&demo.app.gpu);
+            try demo.anim_state.sync(&demo.app.gpu);
         }
 
         // Sync Render Targets to current window size
@@ -529,17 +506,19 @@ pub fn main() !void {
         try demo.ui_color.resize(&app.gpu, w, h);
 
         // --- Process events ---
-        demo.camera.update(app.window, delta_time);
 
-        inputs.collectAllGlfw();
+        if (camera_captured_mouse or !ui.wantsMouse(.fullscreen)) {
+            camera_captured_mouse = demo.camera.update(&app.input_state, @floatFromInt(vec2u{ app.gpu.config.width, app.gpu.config.height }), delta_time);
+        }
 
         try ui.dispatchEvents();
 
-        const mouse_pos = inputs.getMousePosition();
+        const mouse_pos = app.input_state.getMousePosition();
 
         // Generate the UI layout and cache rendering commands
         {
             try ui.beginLayout(
+                !camera_captured_mouse,
                 .{ @floatFromInt(w), @floatFromInt(h) },
                 delta_time,
             );
@@ -852,7 +831,7 @@ pub fn main() !void {
                             .texture_bindings = &.{
                                 .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
                             },
-                            .textures = &.{demo.picking.view},
+                            .textures = &.{demo.picking.view.?},
                             .uniforms = mouse_uniforms,
                         });
                     }
@@ -877,7 +856,7 @@ pub fn main() !void {
                             .texture_bindings = &.{
                                 .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
                             },
-                            .textures = &.{demo.picking.view},
+                            .textures = &.{demo.picking.view.?},
                             .uniforms = mouse_uniforms,
                         });
                     }
@@ -940,46 +919,54 @@ pub fn main() !void {
         }
 
         {
-            const frame_view = app.gpu.beginFrame() orelse continue :main_loop;
-            defer app.gpu.endFrame(frame_view);
+            const frame_view = try app.gpu.beginFrame() orelse continue :main_loop;
+            defer {
+                app.gpu.endFrame(frame_view) catch |err| {
+                    log.err("Failed to present frame: {s}\n", .{@errorName(err)});
+                };
+            }
 
-            const encoder = app.gpu.getCommandEncoder("main_encoder");
+            const encoder = try app.gpu.device.createCommandEncoder(&.{ .label = .fromSlice("main_encoder") });
+            defer encoder.release();
 
             // --- Pass 1: GLTF Model (NO MSAA, Depth) ---
-            demo.camera.calculateViewProj(app.window);
-            demo.camera.sync(&app.gpu);
+            try demo.camera.sync(&app.gpu);
 
-            demo.light.sync(&app.gpu);
+            try demo.light.sync(&app.gpu);
 
             {
-                const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
+                const render_pass = try encoder.beginRenderPass(&Gpu.RenderPassDescriptor{
                     .label = .fromSlice("main_render_pass"),
                     .color_attachment_count = 1,
-                    .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
+                    .color_attachments = &[_]Gpu.RenderPassColorAttachment{.{
                         .view = demo.gltf_color.view,
                         .load_op = .clear,
                         .store_op = .store,
-                        .clear_value = wgpu.Color{ .r = 0.1, .g = 0.2, .b = 0.3, .a = 1 },
+                        .clear_value = Gpu.Color{ .r = 0.1, .g = 0.2, .b = 0.3, .a = 1 },
                     }},
-                    .depth_stencil_attachment = &wgpu.RenderPassDepthStencilAttachment{
+                    .depth_stencil_attachment = &Gpu.RenderPassDepthStencilAttachment{
                         .view = demo.gltf_depth.view,
                         .depth_load_op = .clear,
                         .depth_store_op = .store,
                         .depth_clear_value = 1.0,
                     },
                 });
-                defer wgpu.renderPassEncoderRelease(render_pass);
+                defer render_pass.release();
 
                 if (demo.model) |*model| {
-                    wgpu.renderPassEncoderSetPipeline(render_pass, skinned_mesh_lit_pipeline);
+                    render_pass.setPipeline(skinned_mesh_lit_pipeline);
                     for (model.primitives) |primitive| {
-                        wgpu.renderPassEncoderSetBindGroup(render_pass, 0, demo.camera.bind_group, 0, null);
-                        wgpu.renderPassEncoderSetBindGroup(render_pass, 1, primitive.texture_bind_group, 0, null);
-                        wgpu.renderPassEncoderSetBindGroup(render_pass, 2, demo.anim_state.bind_group, 0, null);
-                        wgpu.renderPassEncoderSetBindGroup(render_pass, 3, demo.light.bind_group, 0, null);
-                        wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
-                        wgpu.renderPassEncoderSetIndexBuffer(render_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
-                        wgpu.renderPassEncoderDrawIndexed(render_pass, primitive.index_count, 1, 0, 0, 0);
+                        render_pass.setBindGroup(0, demo.camera.bind_group, &.{});
+                        render_pass.setBindGroup(1, primitive.texture_bind_group, &.{});
+                        render_pass.setBindGroup(2, demo.anim_state.bind_group, &.{});
+                        render_pass.setBindGroup(3, demo.light.bind_group, &.{});
+                        render_pass.setVertexBuffer(0, primitive.vertex_buffer, 0, Gpu.whole_size);
+                        if (primitive.index_buffer) |ib| {
+                            render_pass.setIndexBuffer(ib, primitive.index_format, 0, Gpu.whole_size);
+                            render_pass.drawIndexed(primitive.index_count, 1, 0, 0, 0);
+                        } else {
+                            render_pass.draw(primitive.vertex_count, 1, 0, 0);
+                        }
                     }
                 }
 
@@ -991,56 +978,59 @@ pub fn main() !void {
                     try b3d.render(render_pass);
                 }
 
-                wgpu.renderPassEncoderEnd(render_pass);
+                render_pass.end();
             }
 
             {
-                const picking_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
+                const picking_pass = try encoder.beginRenderPass(&Gpu.RenderPassDescriptor{
                     .label = .fromSlice("picking_render_pass"),
                     .color_attachment_count = 1,
-                    .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
+                    .color_attachments = &[_]Gpu.RenderPassColorAttachment{.{
                         .view = demo.picking.view,
                         .load_op = .clear,
                         .store_op = .store,
-                        .clear_value = wgpu.Color{ .r = 0, .g = 0, .b = 0, .a = 0 },
+                        .clear_value = Gpu.Color{ .r = 0, .g = 0, .b = 0, .a = 0 },
                     }},
-                    .depth_stencil_attachment = &wgpu.RenderPassDepthStencilAttachment{
+                    .depth_stencil_attachment = &Gpu.RenderPassDepthStencilAttachment{
                         .view = demo.picking_depth.view,
                         .depth_load_op = .clear,
                         .depth_store_op = .store,
                         .depth_clear_value = 1.0,
                     },
                 });
-                defer wgpu.renderPassEncoderRelease(picking_pass);
+                defer picking_pass.release();
 
                 try b3d.renderPicking(picking_pass);
 
                 if (demo.model) |*model| {
-                    wgpu.renderPassEncoderSetPipeline(picking_pass, skinned_mesh_picking_pipeline);
+                    picking_pass.setPipeline(skinned_mesh_picking_pipeline);
                     for (model.primitives) |primitive| {
-                        wgpu.renderPassEncoderSetBindGroup(picking_pass, 0, demo.camera.bind_group, 0, null);
-                        wgpu.renderPassEncoderSetBindGroup(picking_pass, 1, demo.anim_state.bind_group, 0, null);
-                        wgpu.renderPassEncoderSetBindGroup(picking_pass, 2, picking_uniforms.bind_group, 0, null);
-                        wgpu.renderPassEncoderSetVertexBuffer(picking_pass, 0, primitive.vertex_buffer, 0, wgpu.whole_size);
-                        wgpu.renderPassEncoderSetIndexBuffer(picking_pass, primitive.index_buffer, primitive.index_format, 0, wgpu.whole_size);
-                        wgpu.renderPassEncoderDrawIndexed(picking_pass, primitive.index_count, 1, 0, 0, 0);
+                        picking_pass.setBindGroup(0, demo.camera.bind_group, &.{});
+                        picking_pass.setBindGroup(1, demo.anim_state.bind_group, &.{});
+                        picking_pass.setBindGroup(2, picking_uniforms.bind_group, &.{});
+                        picking_pass.setVertexBuffer(0, primitive.vertex_buffer, 0, Gpu.whole_size);
+                        if (primitive.index_buffer) |ib| {
+                            picking_pass.setIndexBuffer(ib, primitive.index_format, 0, Gpu.whole_size);
+                            picking_pass.drawIndexed(primitive.index_count, 1, 0, 0, 0);
+                        } else {
+                            picking_pass.draw(primitive.vertex_count, 1, 0, 0);
+                        }
                     }
                 }
 
-                wgpu.renderPassEncoderEnd(picking_pass);
+                picking_pass.end();
             }
 
-            const clicked = inputs.getMouseButton(.button_1) == .released;
+            const clicked = app.input_state.getMouseButton(.left) == .released;
 
             if (clicked) {
-                const m_pos = inputs.getMousePosition();
+                const m_pos = app.input_state.getMousePosition();
                 const tx = @as(u32, @intFromFloat(@max(0, m_pos[0] / SCALE_DIVISOR)));
                 const ty = @as(u32, @intFromFloat(@max(0, m_pos[1] / SCALE_DIVISOR)));
 
                 // Ensure we don't read out of bounds
                 if (tx < demo.picking.desc.width and ty < demo.picking.desc.height) {
-                    wgpu.commandEncoderCopyTextureToBuffer(
-                        encoder,
+                    encoder.copyTextureToBuffer(
                         &.{ // Source (Texture)
                             .texture = demo.picking.texture,
                             .mip_level = 0,
@@ -1059,7 +1049,7 @@ pub fn main() !void {
                 }
             }
 
-            try b2d.updateDynamicTexture(encoder, IMAGE_ID_PIP, demo.gltf_color.texture, demo.gltf_color.desc.width, demo.gltf_color.desc.height);
+            try b2d.updateDynamicTexture(encoder, IMAGE_ID_PIP, demo.gltf_color.texture.?, demo.gltf_color.desc.width, demo.gltf_color.desc.height);
 
             // --- Pass 2: UI (MSAA resolving to UI Color) ---
             {
@@ -1069,42 +1059,42 @@ pub fn main() !void {
                 if (draw_fps) try debug.drawFpsChart(b2d, .{ 0, 0 });
                 try b2d.endFrame();
 
-                const render_pass = wgpu.commandEncoderBeginRenderPass(encoder, &wgpu.RenderPassDescriptor{
+                const render_pass = try encoder.beginRenderPass(&Gpu.RenderPassDescriptor{
                     .label = .fromSlice("ui_render_pass"),
                     .color_attachment_count = 1,
-                    .color_attachments = &[_]wgpu.RenderPassColorAttachment{.{
+                    .color_attachments = &[_]Gpu.RenderPassColorAttachment{.{
                         .view = demo.ui_msaa.view,
                         .resolve_target = demo.ui_color.view,
                         .load_op = .clear,
                         .store_op = .store,
-                        .clear_value = wgpu.Color{ .r = 0, .g = 0, .b = 0, .a = 0 },
+                        .clear_value = Gpu.Color{ .r = 0, .g = 0, .b = 0, .a = 0 },
                     }},
                 });
-                defer wgpu.renderPassEncoderRelease(render_pass);
+                defer render_pass.release();
                 try b2d.render(render_pass);
-                wgpu.renderPassEncoderEnd(render_pass);
+                render_pass.end();
             }
 
             // --- Pass 3: Composition ---
 
-            demo.compositor.draw(&app.gpu, encoder, &demo.gltf_color, frame_view, .clear, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
-            demo.compositor.draw(&app.gpu, encoder, &demo.ui_color, frame_view, .load, .{});
+            try demo.compositor.draw(&app.gpu, encoder, &demo.gltf_color, frame_view, .clear, .{ .r = 0, .g = 0, .b = 0, .a = 1 });
+            try demo.compositor.draw(&app.gpu, encoder, &demo.ui_color, frame_view, .load, .{});
 
             // --- WGPU Command Submission ---
-            const cmd = app.gpu.finalizeCommandEncoder(encoder);
-            app.gpu.submitCommands(&.{cmd});
+            const cmd = try encoder.finish(null);
+            app.gpu.queue.submit(&.{cmd});
 
             if (clicked) {
-                _ = wgpu.bufferMapAsync(readback_buffer, .{ .read = true }, 0, 16, .{
+                _ = readback_buffer.mapAsync(.{ .read = true }, 0, 16, .{
                     .callback = struct {
-                        pub fn picker_read_callback(status: wgpu.MapAsyncStatus, _: wgpu.StringView, userdata1: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+                        pub fn picker_read_callback(status: Gpu.MapAsyncStatus, _: Gpu.StringView, userdata1: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
                             if (status == .success) {
-                                const buf: wgpu.Buffer = @ptrCast(@alignCast(userdata1));
-                                const data = wgpu.bufferGetConstMappedRange(buf, 0, 16);
+                                const buf: *Gpu.Buffer = @ptrCast(@alignCast(userdata1));
+                                const data = buf.getConstMappedRange(0, 16);
                                 const values: []const f32 = @as([*]const f32, @ptrCast(@alignCast(data)))[0..4];
 
                                 std.debug.print("Picked object value: {any}\n", .{values});
-                                wgpu.bufferUnmap(buf);
+                                buf.unmap();
                             }
                         }
                     }.picker_read_callback,

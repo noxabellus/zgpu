@@ -1,7 +1,6 @@
 const Batch3D = @This();
 
 const std = @import("std");
-const wgpu = @import("wgpu");
 const linalg = @import("linalg.zig");
 const vec3 = linalg.vec3;
 const mat4 = linalg.mat4;
@@ -36,17 +35,17 @@ const Uniforms3D = extern struct {
 allocator: std.mem.Allocator,
 gpu: *Gpu,
 
-uniform_buffer: wgpu.Buffer,
-bind_group: wgpu.BindGroup,
+uniform_buffer: *Gpu.Buffer,
+bind_group: *Gpu.BindGroup,
 
-shaded_pipeline: wgpu.RenderPipeline,
-picking_shaded_pipeline: wgpu.RenderPipeline,
-wireframe_pipeline: wgpu.RenderPipeline,
-picking_wireframe_pipeline: wgpu.RenderPipeline,
+shaded_pipeline: *Gpu.RenderPipeline,
+picking_shaded_pipeline: *Gpu.RenderPipeline,
+wireframe_pipeline: *Gpu.RenderPipeline,
+picking_wireframe_pipeline: *Gpu.RenderPipeline,
 
-vertex_buffer: ?wgpu.Buffer,
+vertex_buffer: ?*Gpu.Buffer,
 vertex_buffer_capacity: usize,
-vertex_staging_buffer: wgpu.Buffer,
+vertex_staging_buffer: *Gpu.Buffer,
 vertex_staging_buffer_capacity: usize,
 vertices: std.ArrayList(Vertex3D),
 batch_list: std.ArrayList(RenderBatch3D),
@@ -57,56 +56,56 @@ current_batch_start: usize,
 pub fn init(
     allocator: std.mem.Allocator,
     gpu: *Gpu,
-    surface_format: wgpu.TextureFormat,
-    picking_format: wgpu.TextureFormat,
-    depth_format: wgpu.TextureFormat,
+    surface_format: Gpu.TextureFormat,
+    picking_format: Gpu.TextureFormat,
+    depth_format: Gpu.TextureFormat,
     sample_count: u32,
 ) !*Batch3D {
     const self = try allocator.create(Batch3D);
     errdefer allocator.destroy(self);
 
-    const shader_module = try wgpu.loadShaderText(gpu.device, "static/shaders/Batch3D.wgsl", @embedFile("shaders/Batch3D.wgsl"));
-    defer wgpu.shaderModuleRelease(shader_module);
+    const shader_module = try gpu.device.loadShaderText("static/shaders/Batch3D.wgsl", @embedFile("shaders/Batch3D.wgsl"));
+    defer shader_module.release();
 
-    const uniform_buffer = wgpu.deviceCreateBuffer(gpu.device, &.{
+    const uniform_buffer = try gpu.device.createBuffer(&.{
         .label = .fromSlice("batch3d_uniform_buffer"),
-        .usage = wgpu.BufferUsage{ .uniform = true, .copy_dst = true },
+        .usage = Gpu.BufferUsage{ .uniform = true, .copy_dst = true },
         .size = @sizeOf(Uniforms3D),
     });
 
     const initial_vertex_capacity_bytes = 16384 * @sizeOf(Vertex3D);
-    const vertex_staging_buffer = wgpu.deviceCreateBuffer(gpu.device, &.{
+    const vertex_staging_buffer = try gpu.device.createBuffer(&.{
         .label = .fromSlice("batch3d_vertex_staging_buffer"),
         .usage = .{ .map_write = true, .copy_src = true },
         .size = initial_vertex_capacity_bytes,
     });
 
-    const bind_group_layout = wgpu.deviceCreateBindGroupLayout(gpu.device, &.{
+    const bind_group_layout = try gpu.device.createBindGroupLayout(&.{
         .label = .fromSlice("batch3d_bind_group_layout"),
         .entry_count = 1,
-        .entries = &[_]wgpu.BindGroupLayoutEntry{
+        .entries = &[_]Gpu.BindGroupLayoutEntry{
             .{ .binding = 0, .visibility = .vertexStage, .buffer = .{ .type = .uniform } },
         },
     });
-    defer wgpu.bindGroupLayoutRelease(bind_group_layout);
+    defer bind_group_layout.release();
 
-    const bind_group = wgpu.deviceCreateBindGroup(gpu.device, &.{
+    const bind_group = try gpu.device.createBindGroup(&.{
         .label = .fromSlice("batch3d_bind_group"),
         .layout = bind_group_layout,
         .entry_count = 1,
-        .entries = &[_]wgpu.BindGroupEntry{
+        .entries = &[_]Gpu.BindGroupEntry{
             .{ .binding = 0, .buffer = uniform_buffer, .size = @sizeOf(Uniforms3D) },
         },
     });
 
-    const pipeline_layout = wgpu.deviceCreatePipelineLayout(gpu.device, &.{
+    const pipeline_layout = try gpu.device.createPipelineLayout(&.{
         .label = .fromSlice("batch3d_pipeline_layout"),
         .bind_group_layout_count = 1,
         .bind_group_layouts = &.{bind_group_layout},
     });
-    defer wgpu.pipelineLayoutRelease(pipeline_layout);
+    defer pipeline_layout.release();
 
-    const depth_stencil_state = wgpu.DepthStencilState{
+    const depth_stencil_state = Gpu.DepthStencilState{
         .format = depth_format,
         .depth_write_enabled = .true,
         .depth_compare = .less,
@@ -114,14 +113,14 @@ pub fn init(
         .stencil_back = .{},
     };
 
-    const vertex_attributes = [_]wgpu.VertexAttribute{
+    const vertex_attributes = [_]Gpu.VertexAttribute{
         .{ .shaderLocation = 0, .offset = @offsetOf(Vertex3D, "position"), .format = .float32x3 },
         .{ .shaderLocation = 1, .offset = @offsetOf(Vertex3D, "normal"), .format = .float32x3 },
         .{ .shaderLocation = 2, .offset = @offsetOf(Vertex3D, "color"), .format = .float32x4 },
         .{ .shaderLocation = 3, .offset = @offsetOf(Vertex3D, "id"), .format = .uint32 },
     };
 
-    const vertex_state = wgpu.VertexState{
+    const vertex_state = Gpu.VertexState{
         .module = shader_module,
         .entry_point = .fromSlice("vs_main"),
         .buffer_count = 1,
@@ -134,11 +133,11 @@ pub fn init(
     };
 
     // 1. Shaded Triangle Pipelines
-    const shaded_pipeline = wgpu.deviceCreateRenderPipeline(gpu.device, &wgpu.RenderPipelineDescriptor{
+    const shaded_pipeline = try gpu.device.createRenderPipeline(&Gpu.RenderPipelineDescriptor{
         .label = .fromSlice("batch3d_shaded_pipeline"),
         .layout = pipeline_layout,
         .vertex = vertex_state,
-        .fragment = &wgpu.FragmentState{
+        .fragment = &Gpu.FragmentState{
             .module = shader_module,
             .entry_point = .fromSlice("fs_shaded"),
             .target_count = 1,
@@ -149,11 +148,11 @@ pub fn init(
         .multisample = .{ .count = sample_count, .mask = 0xFFFFFFFF },
     });
 
-    const picking_shaded_pipeline = wgpu.deviceCreateRenderPipeline(gpu.device, &wgpu.RenderPipelineDescriptor{
+    const picking_shaded_pipeline = try gpu.device.createRenderPipeline(&Gpu.RenderPipelineDescriptor{
         .label = .fromSlice("batch3d_picking_shaded_pipeline"),
         .layout = pipeline_layout,
         .vertex = vertex_state,
-        .fragment = &wgpu.FragmentState{
+        .fragment = &Gpu.FragmentState{
             .module = shader_module,
             .entry_point = .fromSlice("fs_picking"),
             .target_count = 1,
@@ -165,11 +164,11 @@ pub fn init(
     });
 
     // 2. Wireframe Line Pipelines
-    const wireframe_pipeline = wgpu.deviceCreateRenderPipeline(gpu.device, &wgpu.RenderPipelineDescriptor{
+    const wireframe_pipeline = try gpu.device.createRenderPipeline(&Gpu.RenderPipelineDescriptor{
         .label = .fromSlice("batch3d_wireframe_pipeline"),
         .layout = pipeline_layout,
         .vertex = vertex_state,
-        .fragment = &wgpu.FragmentState{
+        .fragment = &Gpu.FragmentState{
             .module = shader_module,
             .entry_point = .fromSlice("fs_wireframe"),
             .target_count = 1,
@@ -180,11 +179,11 @@ pub fn init(
         .multisample = .{ .count = sample_count, .mask = 0xFFFFFFFF },
     });
 
-    const picking_wireframe_pipeline = wgpu.deviceCreateRenderPipeline(gpu.device, &wgpu.RenderPipelineDescriptor{
+    const picking_wireframe_pipeline = try gpu.device.createRenderPipeline(&Gpu.RenderPipelineDescriptor{
         .label = .fromSlice("batch3d_wireframe_pipeline"),
         .layout = pipeline_layout,
         .vertex = vertex_state,
-        .fragment = &wgpu.FragmentState{
+        .fragment = &Gpu.FragmentState{
             .module = shader_module,
             .entry_point = .fromSlice("fs_picking"),
             .target_count = 1,
@@ -221,21 +220,21 @@ pub fn init(
 }
 
 pub fn deinit(self: *Batch3D) void {
-    if (self.vertex_buffer) |vb| wgpu.bufferRelease(vb);
-    wgpu.bufferRelease(self.vertex_staging_buffer);
-    wgpu.bufferRelease(self.uniform_buffer);
-    wgpu.bindGroupRelease(self.bind_group);
-    wgpu.renderPipelineRelease(self.shaded_pipeline);
-    wgpu.renderPipelineRelease(self.picking_shaded_pipeline);
-    wgpu.renderPipelineRelease(self.wireframe_pipeline);
-    wgpu.renderPipelineRelease(self.picking_wireframe_pipeline);
+    if (self.vertex_buffer) |vb| vb.release();
+    self.vertex_staging_buffer.release();
+    self.uniform_buffer.release();
+    self.bind_group.release();
+    self.shaded_pipeline.release();
+    self.picking_shaded_pipeline.release();
+    self.wireframe_pipeline.release();
+    self.picking_wireframe_pipeline.release();
     self.vertices.deinit(self.allocator);
     self.batch_list.deinit(self.allocator);
     self.allocator.destroy(self);
 }
 
 pub fn beginFrame(self: *Batch3D, view_projection: mat4) void {
-    wgpu.queueWriteBuffer(self.gpu.queue, self.uniform_buffer, 0, &Uniforms3D{ .view_projection = view_projection }, @sizeOf(Uniforms3D));
+    self.gpu.queue.writeBuffer(self.uniform_buffer, 0, &Uniforms3D{ .view_projection = view_projection }, @sizeOf(Uniforms3D));
     self.vertices.clearRetainingCapacity();
     self.batch_list.clearRetainingCapacity();
     self.current_pipeline = null;
@@ -268,13 +267,13 @@ pub fn endFrame(self: *Batch3D) !void {
 
     if (self.vertices.items.len > 0) {
         const required_size = self.vertices.items.len * @sizeOf(Vertex3D);
-        const upload_encoder = wgpu.deviceCreateCommandEncoder(self.gpu.device, &.{ .label = .fromSlice("batch3d_upload_encoder") });
-        defer wgpu.commandEncoderRelease(upload_encoder);
+        const upload_encoder = try self.gpu.device.createCommandEncoder(&.{ .label = .fromSlice("batch3d_upload_encoder") });
+        defer upload_encoder.release();
 
         if (self.vertex_buffer_capacity < required_size) {
-            if (self.vertex_buffer) |vb| wgpu.bufferRelease(vb);
+            if (self.vertex_buffer) |vb| vb.release();
             const new_capacity = @max(@max(self.vertex_buffer_capacity * 2, required_size), 4096);
-            self.vertex_buffer = wgpu.deviceCreateBuffer(self.gpu.device, &.{
+            self.vertex_buffer = try self.gpu.device.createBuffer(&.{
                 .label = .fromSlice("batch3d_vertex_buffer"),
                 .usage = .{ .vertex = true, .copy_dst = true },
                 .size = new_capacity,
@@ -283,9 +282,9 @@ pub fn endFrame(self: *Batch3D) !void {
         }
 
         if (self.vertex_staging_buffer_capacity < required_size) {
-            wgpu.bufferRelease(self.vertex_staging_buffer);
+            self.vertex_staging_buffer.release();
             const new_capacity = @max(@max(self.vertex_staging_buffer_capacity * 2, required_size), 4096);
-            self.vertex_staging_buffer = wgpu.deviceCreateBuffer(self.gpu.device, &.{
+            self.vertex_staging_buffer = try self.gpu.device.createBuffer(&.{
                 .label = .fromSlice("batch3d_vertex_staging_buffer"),
                 .usage = .{ .map_write = true, .copy_src = true },
                 .size = new_capacity,
@@ -295,19 +294,19 @@ pub fn endFrame(self: *Batch3D) !void {
 
         // (Assuming you bring over the `uploadSliceToBuffer` helper function from Batch2D)
         try uploadSliceToBuffer(self.gpu, self.vertex_staging_buffer, self.vertices.items);
-        wgpu.commandEncoderCopyBufferToBuffer(upload_encoder, self.vertex_staging_buffer, 0, self.vertex_buffer.?, 0, required_size);
+        upload_encoder.copyBufferToBuffer(self.vertex_staging_buffer, 0, self.vertex_buffer.?, 0, required_size);
 
-        const upload_cmd = wgpu.commandEncoderFinish(upload_encoder, null);
-        defer wgpu.commandBufferRelease(upload_cmd);
-        wgpu.queueSubmit(self.gpu.queue, 1, &.{upload_cmd});
+        const upload_cmd = try upload_encoder.finish(null);
+        defer upload_cmd.release();
+        self.gpu.queue.submit(&.{upload_cmd});
     }
 }
 
-pub fn render(self: *Batch3D, render_pass: wgpu.RenderPassEncoder) !void {
+pub fn render(self: *Batch3D, render_pass: *Gpu.RenderPassEncoder) !void {
     if (self.vertex_buffer == null) return;
 
-    wgpu.renderPassEncoderSetBindGroup(render_pass, 0, self.bind_group, 0, null);
-    wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.vertex_buffer.?, 0, self.vertices.items.len * @sizeOf(Vertex3D));
+    render_pass.setBindGroup(0, self.bind_group, &.{});
+    render_pass.setVertexBuffer(0, self.vertex_buffer.?, 0, self.vertices.items.len * @sizeOf(Vertex3D));
 
     var bound_pipeline: ?PipelineKind3D = null;
     for (self.batch_list.items) |batch| {
@@ -315,20 +314,20 @@ pub fn render(self: *Batch3D, render_pass: wgpu.RenderPassEncoder) !void {
 
         if (bound_pipeline != batch.pipeline) {
             switch (batch.pipeline) {
-                .shaded_tri => wgpu.renderPassEncoderSetPipeline(render_pass, self.shaded_pipeline),
-                .wireframe_line => wgpu.renderPassEncoderSetPipeline(render_pass, self.wireframe_pipeline),
+                .shaded_tri => render_pass.setPipeline(self.shaded_pipeline),
+                .wireframe_line => render_pass.setPipeline(self.wireframe_pipeline),
             }
             bound_pipeline = batch.pipeline;
         }
 
-        wgpu.renderPassEncoderDraw(render_pass, @intCast(batch.count), 1, @intCast(batch.start_index), 0);
+        render_pass.draw(@intCast(batch.count), 1, @intCast(batch.start_index), 0);
     }
 }
 
-pub fn renderPicking(self: *Batch3D, render_pass: wgpu.RenderPassEncoder) !void {
+pub fn renderPicking(self: *Batch3D, render_pass: *Gpu.RenderPassEncoder) !void {
     if (self.vertex_buffer == null) return;
-    wgpu.renderPassEncoderSetBindGroup(render_pass, 0, self.bind_group, 0, null);
-    wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.vertex_buffer.?, 0, self.vertices.items.len * @sizeOf(Vertex3D));
+    render_pass.setBindGroup(0, self.bind_group, &.{});
+    render_pass.setVertexBuffer(0, self.vertex_buffer.?, 0, self.vertices.items.len * @sizeOf(Vertex3D));
 
     var bound_pipeline: ?PipelineKind3D = null;
     for (self.batch_list.items) |batch| {
@@ -336,13 +335,13 @@ pub fn renderPicking(self: *Batch3D, render_pass: wgpu.RenderPassEncoder) !void 
 
         if (bound_pipeline != batch.pipeline) {
             switch (batch.pipeline) {
-                .shaded_tri => wgpu.renderPassEncoderSetPipeline(render_pass, self.picking_shaded_pipeline),
-                .wireframe_line => wgpu.renderPassEncoderSetPipeline(render_pass, self.picking_wireframe_pipeline),
+                .shaded_tri => render_pass.setPipeline(self.picking_shaded_pipeline),
+                .wireframe_line => render_pass.setPipeline(self.picking_wireframe_pipeline),
             }
             bound_pipeline = batch.pipeline;
         }
 
-        wgpu.renderPassEncoderDraw(render_pass, @intCast(batch.count), 1, @intCast(batch.start_index), 0);
+        render_pass.draw(@intCast(batch.count), 1, @intCast(batch.start_index), 0);
     }
 }
 
@@ -595,7 +594,7 @@ pub fn drawIcoSphere(self: *Batch3D, transform: mat4, tint: Color, id: u32) !voi
 /// A helper function to upload a slice of data to a staging buffer, map it, copy the data, and unmap it.
 /// This helper function contains a short, synchronous wait to acquire a memory pointer,
 /// but it enables the much longer data transfer to happen completely asynchronously, which is what prevents rendering hiccups.
-fn uploadSliceToBuffer(gpu: *Gpu, staging_buffer: wgpu.Buffer, slice: anytype) !void {
+fn uploadSliceToBuffer(gpu: *Gpu, staging_buffer: *Gpu.Buffer, slice: anytype) !void {
     const T = comptime @TypeOf(slice);
     const TInfo = comptime @typeInfo(T).pointer;
 
@@ -603,13 +602,13 @@ fn uploadSliceToBuffer(gpu: *Gpu, staging_buffer: wgpu.Buffer, slice: anytype) !
 
     const data_size: u64 = slice.len * @sizeOf(TInfo.child);
     var map_finished = false;
-    var map_status: wgpu.MapAsyncStatus = .unknown;
+    var map_status: Gpu.MapAsyncStatus = .unknown;
 
-    _ = wgpu.bufferMapAsync(staging_buffer, .writeMode, 0, data_size, .{
+    _ = staging_buffer.mapAsync(.writeMode, 0, data_size, .{
         .callback = &struct {
-            fn handle_map(status: wgpu.MapAsyncStatus, _: wgpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
+            fn handle_map(status: Gpu.MapAsyncStatus, _: Gpu.StringView, ud1: ?*anyopaque, ud2: ?*anyopaque) callconv(.c) void {
                 const finished_flag: *bool = @ptrCast(@alignCast(ud1.?));
-                const status_ptr: *wgpu.MapAsyncStatus = @ptrCast(@alignCast(ud2.?));
+                const status_ptr: *Gpu.MapAsyncStatus = @ptrCast(@alignCast(ud2.?));
                 status_ptr.* = status;
                 finished_flag.* = true;
             }
@@ -619,7 +618,7 @@ fn uploadSliceToBuffer(gpu: *Gpu, staging_buffer: wgpu.Buffer, slice: anytype) !
     });
 
     while (!map_finished) {
-        _ = wgpu.devicePoll(gpu.device, .from(true), null);
+        _ = gpu.device.poll(true, null);
     }
 
     if (map_status != .success) {
@@ -627,13 +626,13 @@ fn uploadSliceToBuffer(gpu: *Gpu, staging_buffer: wgpu.Buffer, slice: anytype) !
         return error.StagingBufferMapFailed;
     }
 
-    const mapped_range: [*]u8 = @ptrCast(@alignCast(wgpu.bufferGetMappedRange(staging_buffer, 0, data_size) orelse {
+    const mapped_range: [*]u8 = @ptrCast(@alignCast(staging_buffer.getMappedRange(0, data_size) orelse {
         log.err("failed to get mapped range for staging buffer", .{});
-        wgpu.bufferUnmap(staging_buffer);
+        staging_buffer.unmap();
         return error.StagingBufferMapFailed;
     }));
 
     const byte_slice = std.mem.sliceAsBytes(slice);
     @memcpy(mapped_range[0..byte_slice.len], byte_slice);
-    wgpu.bufferUnmap(staging_buffer);
+    staging_buffer.unmap();
 }

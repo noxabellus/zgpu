@@ -3,7 +3,6 @@
 const Atlas = @This();
 
 const std = @import("std");
-const wgpu = @import("wgpu");
 const stbrp = @import("stbrp");
 const stbi = @import("stbi");
 
@@ -70,8 +69,8 @@ const PendingItem = struct {
 
 allocator: std.mem.Allocator,
 gpu: *Gpu,
-texture: wgpu.Texture,
-view: wgpu.TextureView,
+texture: *Gpu.Texture,
+view: *Gpu.TextureView,
 pack_contexts: std.ArrayList(stbrp.Context),
 pack_nodes: std.ArrayList([]stbrp.Node),
 cache: std.AutoHashMapUnmanaged(ImageId, CachedImageInfo),
@@ -117,8 +116,8 @@ pub fn deinit(self: *Atlas) void {
     // NOTE: We no longer need to free pending_items' chains, as they are on the frame arena.
     self.pending_items.deinit(self.allocator);
 
-    wgpu.textureViewRelease(self.view);
-    wgpu.textureRelease(self.texture);
+    self.view.release();
+    self.texture.release();
 
     for (self.pack_nodes.items) |nodes| self.allocator.free(nodes);
     self.pack_nodes.deinit(self.allocator);
@@ -165,9 +164,9 @@ pub fn query(
 /// Blits a source texture into the reserved atlas layer and updates the UV mapping if the size changed.
 pub fn updateDynamicLayer(
     self: *Atlas,
-    encoder: wgpu.CommandEncoder,
+    encoder: *Gpu.CommandEncoder,
     indirection_table_index: u32,
-    source_texture: wgpu.Texture,
+    source_texture: *Gpu.Texture,
     width: u32,
     height: u32,
 ) !void {
@@ -190,25 +189,25 @@ pub fn updateDynamicLayer(
     }
 
     // 3. Perform the blit
-    const copy_src = wgpu.TexelCopyTextureInfo{
+    const copy_src = Gpu.TexelCopyTextureInfo{
         .texture = source_texture,
         .mip_level = 0,
         .origin = .{ .x = 0, .y = 0, .z = 0 },
     };
 
-    const copy_dst = wgpu.TexelCopyTextureInfo{
+    const copy_dst = Gpu.TexelCopyTextureInfo{
         .texture = self.texture,
         .mip_level = 0,
         .origin = .{ .x = 0, .y = 0, .z = layer_idx },
     };
 
-    const copy_size = wgpu.Extent3D{
+    const copy_size = Gpu.Extent3D{
         .width = width,
         .height = height,
         .depth_or_array_layers = 1,
     };
 
-    wgpu.commandEncoderCopyTextureToTexture(encoder, &copy_src, &copy_dst, &copy_size);
+    encoder.copyTextureToTexture(&copy_src, &copy_dst, &copy_size);
 }
 
 /// Reserves an entire atlas layer for a dynamic texture (like a render target).
@@ -330,27 +329,25 @@ pub fn flush(self: *Atlas) !bool {
 }
 
 fn createTextureArray(self: *Atlas, layer_count: u32) !void {
-    const texture_descriptor = wgpu.TextureDescriptor{
+    const texture_descriptor = Gpu.TextureDescriptor{
         .label = .fromSlice("texture_atlas_array"),
         .size = .{ .width = self.atlas_width, .height = self.atlas_height, .depth_or_array_layers = layer_count },
         .mip_level_count = 1,
         .sample_count = 1,
         .dimension = .@"2d",
         .format = .rgba8_unorm_srgb,
-        .usage = wgpu.TextureUsage{ .texture_binding = true, .copy_dst = true, .copy_src = true },
+        .usage = Gpu.TextureUsage{ .texture_binding = true, .copy_dst = true, .copy_src = true },
     };
-    self.texture = wgpu.deviceCreateTexture(self.gpu.device, &texture_descriptor);
-    std.debug.assert(self.texture != null);
+    self.texture = try self.gpu.device.createTexture(&texture_descriptor);
 
-    const view_descriptor = wgpu.TextureViewDescriptor{
+    const view_descriptor = Gpu.TextureViewDescriptor{
         .label = .fromSlice("atlas_array_texture_view"),
         .format = .rgba8_unorm_srgb,
         .dimension = .@"2d_array",
         .base_array_layer = 0,
         .array_layer_count = layer_count,
     };
-    self.view = wgpu.textureCreateView(self.texture, &view_descriptor);
-    std.debug.assert(self.view != null);
+    self.view = try self.texture.createView(&view_descriptor);
 
     try self.pack_contexts.resize(self.allocator, layer_count);
     const old_nodes_len = self.pack_nodes.items.len;
@@ -371,34 +368,37 @@ fn growTextureArray(self: *Atlas, new_layer_count: u32) !void {
 
     try self.createTextureArray(new_layer_count);
 
-    const encoder = wgpu.deviceCreateCommandEncoder(self.gpu.device, &.{ .label = .fromSlice("atlas_copy_encoder") });
-    defer wgpu.commandEncoderRelease(encoder);
+    const encoder = try self.gpu.device.createCommandEncoder(&.{ .label = .fromSlice("atlas_copy_encoder") });
+    defer encoder.release();
 
-    wgpu.commandEncoderCopyTextureToTexture(encoder, &.{ .texture = old_texture }, &.{ .texture = self.texture }, &.{ .width = self.atlas_width, .height = self.atlas_height, .depth_or_array_layers = old_layer_count });
+    encoder.copyTextureToTexture(&.{ .texture = old_texture }, &.{ .texture = self.texture }, &.{ .width = self.atlas_width, .height = self.atlas_height, .depth_or_array_layers = old_layer_count });
 
-    const cmd = wgpu.commandEncoderFinish(encoder, null);
-    defer wgpu.commandBufferRelease(cmd);
-    wgpu.queueSubmit(self.gpu.queue, 1, &.{cmd});
+    const cmd = try encoder.finish(null);
+    defer cmd.release();
+    self.gpu.queue.submit(&.{cmd});
 
-    wgpu.textureViewRelease(old_view);
-    wgpu.textureRelease(old_texture);
+    old_view.release();
+    old_texture.release();
 }
 
 fn uploadImage(self: *Atlas, image: InputImage, x: u32, y: u32, layer: u32) !void {
-    const copy_destination = wgpu.TexelCopyTextureInfo{
-        .texture = self.texture,
-        .origin = .{ .x = x, .y = y, .z = layer },
-    };
-    const copy_size = wgpu.Extent3D{
-        .width = image.width,
-        .height = image.height,
-        .depth_or_array_layers = 1,
-    };
-    const layout = wgpu.TexelCopyBufferLayout{
-        .bytes_per_row = image.width * 4,
-        .rows_per_image = image.height,
-    };
-    wgpu.queueWriteTexture(self.gpu.queue, &copy_destination, image.pixels.ptr, image.pixels.len, &layout, &copy_size);
+    self.gpu.queue.writeTexture(
+        &Gpu.TexelCopyTextureInfo{
+            .texture = self.texture,
+            .origin = .{ .x = x, .y = y, .z = layer },
+        },
+        image.pixels.ptr,
+        image.pixels.len,
+        &Gpu.TexelCopyBufferLayout{
+            .bytes_per_row = image.width * 4,
+            .rows_per_image = image.height,
+        },
+        &Gpu.Extent3D{
+            .width = image.width,
+            .height = image.height,
+            .depth_or_array_layers = 1,
+        },
+    );
 }
 
 /// Now uses the passed-in allocator (the frame arena) for all allocations.
@@ -448,7 +448,7 @@ pub fn debugWriteAllAtlasesToPng(self: *Atlas, base_filename: []const u8) !void 
 pub fn debugWriteLayerToPng(
     gpu: *Gpu,
     allocator: std.mem.Allocator,
-    texture: wgpu.Texture,
+    texture: *Gpu.Texture,
     layer: u32,
     width: u32,
     height: u32,
@@ -460,32 +460,30 @@ pub fn debugWriteLayerToPng(
     const buffer_stride = std.mem.alignForward(u32, width * bytes_per_pixel, 256);
     const aligned_buffer_size = buffer_stride * height;
 
-    const readback_buffer = wgpu.deviceCreateBuffer(gpu.device, &.{
+    const readback_buffer = try gpu.device.createBuffer(&.{
         .label = .fromSlice("debug_readback_buffer"),
-        .usage = wgpu.BufferUsage{ .map_read = true, .copy_dst = true },
+        .usage = Gpu.BufferUsage{ .map_read = true, .copy_dst = true },
         .size = aligned_buffer_size,
     });
-    if (readback_buffer == null) return error.DebugBufferCreationFailed;
-    defer wgpu.bufferRelease(readback_buffer);
+    defer readback_buffer.release();
 
-    const encoder = wgpu.deviceCreateCommandEncoder(gpu.device, &.{ .label = .fromSlice("debug_readback_encoder") });
-    defer wgpu.commandEncoderRelease(encoder);
+    const encoder = try gpu.device.createCommandEncoder(&.{ .label = .fromSlice("debug_readback_encoder") });
+    defer encoder.release();
 
-    wgpu.commandEncoderCopyTextureToBuffer(
-        encoder,
+    encoder.copyTextureToBuffer(
         &.{ .texture = texture, .mip_level = 0, .origin = .{ .z = layer } },
         &.{ .buffer = readback_buffer, .layout = .{ .offset = 0, .bytes_per_row = buffer_stride, .rows_per_image = height } },
         &.{ .width = width, .height = height, .depth_or_array_layers = 1 },
     );
 
-    const cmd = wgpu.commandEncoderFinish(encoder, null);
-    defer wgpu.commandBufferRelease(cmd);
-    wgpu.queueSubmit(gpu.queue, 1, &.{cmd});
+    const cmd = try encoder.finish(null);
+    defer cmd.release();
+    gpu.queue.submit(&.{cmd});
 
     var map_finished = false;
-    _ = wgpu.bufferMapAsync(readback_buffer, .readMode, 0, aligned_buffer_size, .{
+    _ = readback_buffer.mapAsync(.readMode, 0, aligned_buffer_size, .{
         .callback = &struct {
-            fn handle_map(status: wgpu.MapAsyncStatus, _: wgpu.StringView, u: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+            fn handle_map(status: Gpu.MapAsyncStatus, _: Gpu.StringView, u: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
                 if (status == .success) {
                     const finished_flag: *bool = @ptrCast(@alignCast(u.?));
                     finished_flag.* = true;
@@ -496,10 +494,10 @@ pub fn debugWriteLayerToPng(
     });
 
     while (!map_finished) {
-        _ = wgpu.devicePoll(gpu.device, .from(true), null);
+        _ = gpu.device.poll(true, null);
     }
 
-    const mapped_range: [*]const u8 = @ptrCast(@alignCast(wgpu.bufferGetMappedRange(readback_buffer, 0, aligned_buffer_size).?));
+    const mapped_range: [*]const u8 = @ptrCast(@alignCast(readback_buffer.getMappedRange(0, aligned_buffer_size).?));
     const cpu_pixels = try allocator.alloc(u8, width * height * 4);
     defer allocator.free(cpu_pixels);
 
@@ -524,5 +522,5 @@ pub fn debugWriteLayerToPng(
     image.writeToFile(filename_z, .png) catch |err| {
         log.err("failed to write atlas to png: {any}", .{err});
     };
-    wgpu.bufferUnmap(readback_buffer);
+    readback_buffer.unmap();
 }

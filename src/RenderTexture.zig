@@ -1,19 +1,18 @@
 const RenderTexture = @This();
 
 const std = @import("std");
-const wgpu = @import("wgpu");
 const Gpu = @import("Gpu.zig");
 
-texture: wgpu.Texture,
-view: wgpu.TextureView,
 desc: Descriptor,
+texture: ?*Gpu.Texture = null,
+view: ?*Gpu.TextureView = null,
 
 pub const Descriptor = struct {
     label: []const u8 = "RenderTexture",
     width: u32,
     height: u32,
-    format: wgpu.TextureFormat,
-    usage: wgpu.TextureUsage = .{ .render_attachment = true, .texture_binding = true },
+    format: Gpu.TextureFormat,
+    usage: Gpu.TextureUsage = .{ .render_attachment = true, .texture_binding = true },
     sample_count: u32 = 1,
     mip_level_count: u32 = 1,
 };
@@ -21,8 +20,6 @@ pub const Descriptor = struct {
 /// Creates a new texture and its default view.
 pub fn init(gpu: *Gpu, desc: Descriptor) !RenderTexture {
     var self = RenderTexture{
-        .texture = null,
-        .view = null,
         .desc = desc,
     };
 
@@ -50,7 +47,7 @@ pub fn resize(self: *RenderTexture, gpu: *Gpu, new_width: u32, new_height: u32) 
 }
 
 fn sync(self: *RenderTexture, gpu: *Gpu) !void {
-    self.texture = wgpu.deviceCreateTexture(gpu.device, &wgpu.TextureDescriptor{
+    self.texture = try gpu.device.createTexture(&Gpu.TextureDescriptor{
         .label = .fromSlice(self.desc.label),
         .size = .{
             .width = self.desc.width,
@@ -63,10 +60,12 @@ fn sync(self: *RenderTexture, gpu: *Gpu) !void {
         .format = self.desc.format,
         .usage = self.desc.usage,
     });
-    if (self.texture == null) return error.FailedToCreateTexture;
-    errdefer wgpu.textureRelease(self.texture);
+    errdefer {
+        self.texture.?.release();
+        self.texture = null;
+    }
 
-    self.view = wgpu.textureCreateView(self.texture, &wgpu.TextureViewDescriptor{
+    self.view = try self.texture.?.createView(&Gpu.TextureViewDescriptor{
         .label = .fromSlice(self.desc.label),
         .format = self.desc.format,
         .dimension = .@"2d",
@@ -76,14 +75,17 @@ fn sync(self: *RenderTexture, gpu: *Gpu) !void {
         .array_layer_count = 1,
         .aspect = .all,
     });
-    if (self.view == null) return error.FailedToCreateTextureView;
 }
 
 /// Cleans up the WGPU resources.
 fn release(self: *RenderTexture) void {
-    if (self.view != null) wgpu.textureViewRelease(self.view);
-    self.view = null;
+    if (self.view) |x| {
+        x.release();
+        self.view = null;
+    }
 
-    if (self.texture != null) wgpu.textureRelease(self.texture);
-    self.texture = null;
+    if (self.texture) |x| {
+        x.release();
+        self.texture = null;
+    }
 }

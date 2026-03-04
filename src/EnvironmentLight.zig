@@ -1,7 +1,5 @@
 pub const EnvironmentLight = @This();
 
-const wgpu = @import("wgpu");
-
 const Gpu = @import("Gpu.zig");
 const linalg = @import("linalg.zig");
 const vec3 = linalg.vec3;
@@ -14,44 +12,44 @@ pub const Uniform = extern struct {
 };
 
 config: Uniform = .{},
-buffer: wgpu.Buffer = null,
-bind_group: wgpu.BindGroup = null,
+buffer: ?*Gpu.Buffer = null,
+bind_group: ?*Gpu.BindGroup = null,
 
-var BIND_GROUP_LAYOUT: wgpu.BindGroupLayout = null;
-pub fn getBindGroupLayout(gpu: *Gpu) wgpu.BindGroupLayout {
+var BIND_GROUP_LAYOUT: ?*Gpu.BindGroupLayout = null;
+pub fn getBindGroupLayout(gpu: *Gpu) !*Gpu.BindGroupLayout {
     if (BIND_GROUP_LAYOUT) |p| return p;
 
-    BIND_GROUP_LAYOUT = gpu.createBindGroupLayout(&.{
+    BIND_GROUP_LAYOUT = try gpu.device.createBindGroupLayout(&.{
         .label = .fromSlice("EnvironmentLight:bind_group_layout"),
         .entry_count = 1,
         .entries = &.{
             .{
                 .binding = 0,
-                .visibility = wgpu.ShaderStage.fragmentStage,
+                .visibility = Gpu.ShaderStage.fragmentStage,
                 .buffer = .{ .type = .uniform },
             },
         },
     });
 
-    return BIND_GROUP_LAYOUT;
+    return BIND_GROUP_LAYOUT.?;
 }
 
 pub fn deinit(self: *EnvironmentLight) void {
-    if (self.buffer) |p| wgpu.bufferRelease(p);
-    if (self.bind_group) |p| wgpu.bindGroupRelease(p);
+    if (self.buffer) |p| p.release();
+    if (self.bind_group) |p| p.release();
 }
 
-pub fn sync(self: *EnvironmentLight, gpu: *Gpu) void {
+pub fn sync(self: *EnvironmentLight, gpu: *Gpu) !void {
     if (self.buffer == null) {
-        self.buffer = gpu.createBuffer(&.{
+        self.buffer = try gpu.device.createBuffer(&.{
             .usage = .{ .uniform = true, .copy_dst = true },
             .size = @sizeOf(EnvironmentLight.Uniform),
         });
     }
     if (self.bind_group == null) {
-        self.bind_group = gpu.createBindGroup(&.{
+        self.bind_group = try gpu.device.createBindGroup(&.{
             .label = .fromSlice("EnvironmentLight:bind_group"),
-            .layout = getBindGroupLayout(gpu),
+            .layout = try getBindGroupLayout(gpu),
             .entry_count = 1,
             .entries = &.{
                 .{
@@ -64,5 +62,5 @@ pub fn sync(self: *EnvironmentLight, gpu: *Gpu) void {
         });
     }
 
-    gpu.writeBuffer(self.buffer, 0, &self.config);
+    gpu.queue.writeBuffer(self.buffer.?, 0, &self.config, @sizeOf(Uniform));
 }

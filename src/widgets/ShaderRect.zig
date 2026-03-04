@@ -3,9 +3,9 @@
 const ShaderRect = @This();
 
 const std = @import("std");
-const wgpu = @import("wgpu");
 
 const Ui = @import("../Ui.zig");
+const Gpu = @import("../Gpu.zig");
 const Batch2D = @import("../Batch2D.zig");
 const linalg = @import("../linalg.zig");
 const vec2 = linalg.vec2;
@@ -24,18 +24,18 @@ state: State,
 
 pub const State = struct {
     count: usize,
-    textures: [Batch2D.MAX_CUSTOM_TEXTURES]wgpu.TextureView,
+    textures: [Batch2D.MAX_CUSTOM_TEXTURES]?*Gpu.TextureView,
     uniform_size: usize,
     uniform_data: [1024]u8,
 
-    pub fn toSlices(self: *const State) struct { []const wgpu.TextureView, []const u8 } {
-        return .{ self.textures[0..self.count], self.uniform_data[0..self.uniform_size] };
+    pub fn toSlices(self: *const State) struct { []const *Gpu.TextureView, []const u8 } {
+        return .{ @ptrCast(self.textures[0..self.count]), self.uniform_data[0..self.uniform_size] };
     }
 
-    pub fn fromSlices(textures: []const wgpu.TextureView, uniform_data: []const u8) State {
+    pub fn fromSlices(textures: []const *Gpu.TextureView, uniform_data: []const u8) State {
         var s = State{
             .count = textures.len,
-            .textures = [1]wgpu.TextureView{null} ** Batch2D.MAX_CUSTOM_TEXTURES,
+            .textures = [1]?*Gpu.TextureView{null} ** Batch2D.MAX_CUSTOM_TEXTURES,
             .uniform_size = uniform_data.len,
             .uniform_data = [1]u8{0} ** 1024,
         };
@@ -53,7 +53,7 @@ pub const TexBindingIdentity = packed struct(u8) {
     multisampled: bool = false,
     _unused: u1 = 0,
 
-    pub fn fromLayout(layout: wgpu.TextureBindingLayout) TexBindingIdentity {
+    pub fn fromLayout(layout: Gpu.TextureBindingLayout) TexBindingIdentity {
         return TexBindingIdentity{
             .sample_type = @intCast(@intFromEnum(layout.sample_type)),
             .view_dimension = @intCast(@intFromEnum(layout.view_dimension)),
@@ -63,11 +63,11 @@ pub const TexBindingIdentity = packed struct(u8) {
 };
 
 pub const PipelineIdentity = struct {
-    shader_ptr: wgpu.ShaderModule,
+    shader_ptr: *Gpu.ShaderModule,
     texture_bindings: [Batch2D.MAX_CUSTOM_TEXTURES]TexBindingIdentity,
     uniform_size: usize,
 
-    pub fn init(shader_ptr: wgpu.ShaderModule, texture_bindings: []const wgpu.TextureBindingLayout, uniforms: []const u8) PipelineIdentity {
+    pub fn init(shader_ptr: *Gpu.ShaderModule, texture_bindings: []const Gpu.TextureBindingLayout, uniforms: []const u8) PipelineIdentity {
         var id = PipelineIdentity{
             .shader_ptr = shader_ptr,
             .texture_bindings = [1]TexBindingIdentity{.{}} ** Batch2D.MAX_CUSTOM_TEXTURES,
@@ -92,9 +92,9 @@ pub const PipelineIdentity = struct {
 };
 
 pub const Config = struct {
-    shader: wgpu.ShaderModule,
-    texture_bindings: []const wgpu.TextureBindingLayout,
-    textures: []const wgpu.TextureView = &.{},
+    shader: *Gpu.ShaderModule,
+    texture_bindings: []const Gpu.TextureBindingLayout,
+    textures: []const *Gpu.TextureView = &.{},
     uniforms: []const u8 = &.{},
 };
 

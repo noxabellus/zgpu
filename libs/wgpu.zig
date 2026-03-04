@@ -863,71 +863,894 @@ pub const StringView = extern struct {
     }
 };
 
-pub const Adapter = ?*AdapterImpl;
-pub const AdapterImpl = opaque {};
+pub const Adapter = opaque {
+    /// `void wgpuAdapterGetFeatures(WGPUAdapter adapter, WGPUSupportedFeatures * features)`
+    pub inline fn getFeatures(self: *Adapter) SupportedFeatures {
+        var out: SupportedFeatures = .{};
+        adapterGetFeatures(self, &out);
+        return out;
+    }
+    /// `WGPUStatus wgpuAdapterGetInfo(WGPUAdapter adapter, WGPUAdapterInfo * info)`
+    pub inline fn getInfo(self: *Adapter) error{FailedToGetAdapterInfo}!AdapterInfo {
+        var out: AdapterInfo = .{};
+        return if (adapterGetInfo(self, &out) == .success) out else error.FailedToGetAdapterInfo;
+    }
+    /// `WGPUStatus wgpuAdapterGetLimits(WGPUAdapter adapter, WGPULimits * limits)`
+    pub inline fn getLimits(self: *Adapter) error{FailedToGetAdapterLimits}!Limits {
+        var out: Limits = .{};
+        return if (adapterGetLimits(self, &out) == .success) out else error.FailedToGetAdapterLimits;
+    }
+    /// `WGPUBool wgpuAdapterHasFeature(WGPUAdapter adapter, WGPUFeatureName feature)`
+    pub inline fn hasFeature(self: *Adapter, feature: FeatureName) bool {
+        return adapterHasFeature(self, feature).to();
+    }
+    /// `WGPUFuture wgpuAdapterRequestDevice(WGPUAdapter adapter, WGPU_NULLABLE WGPUDeviceDescriptor const * descriptor, WGPURequestDeviceCallbackInfo callbackInfo)`
+    pub inline fn requestDevice(self: *Adapter, descriptor: ?*const DeviceDescriptor, callback: RequestDeviceCallbackInfo) Future {
+        return adapterRequestDevice(self, descriptor, callback);
+    }
+    /// `void wgpuAdapterAddRef(WGPUAdapter adapter)`
+    pub inline fn addRef(self: *Adapter) void {
+        return adapterAddRef(self);
+    }
+    /// `void wgpuAdapterRelease(WGPUAdapter adapter)`
+    pub inline fn release(self: *Adapter) void {
+        return adapterRelease(self);
+    }
+};
+pub const BindGroup = opaque {
+    /// `void wgpuBindGroupSetLabel(WGPUBindGroup bindGroup, WGPUStringView label)`
+    pub inline fn setLabel(self: *BindGroup, label: []const u8) void {
+        return bindGroupSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuBindGroupAddRef(WGPUBindGroup bindGroup)`
+    pub inline fn addRef(self: *BindGroup) void {
+        return bindGroupAddRef(self);
+    }
+    /// `void wgpuBindGroupRelease(WGPUBindGroup bindGroup)`
+    pub inline fn release(self: *BindGroup) void {
+        return bindGroupRelease(self);
+    }
+};
+pub const BindGroupLayout = opaque {
+    /// `void wgpuBindGroupLayoutSetLabel(WGPUBindGroupLayout bindGroupLayout, WGPUStringView label)`
+    pub inline fn setLabel(self: *BindGroupLayout, label: []const u8) void {
+        return bindGroupLayoutSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuBindGroupLayoutAddRef(WGPUBindGroupLayout bindGroupLayout)`
+    pub inline fn addRef(self: *BindGroupLayout) void {
+        return bindGroupLayoutAddRef(self);
+    }
+    /// `void wgpuBindGroupLayoutRelease(WGPUBindGroupLayout bindGroupLayout)`
+    pub inline fn release(self: *BindGroupLayout) void {
+        return bindGroupLayoutRelease(self);
+    }
+};
+pub const Buffer = opaque {
+    /// `void wgpuBufferDestroy(WGPUBuffer buffer)`
+    pub inline fn destroy(self: *Buffer) void {
+        return bufferDestroy(self);
+    }
+    /// `void const * wgpuBufferGetConstMappedRange(WGPUBuffer buffer, size_t offset, size_t size)`
+    pub inline fn getConstMappedRange(self: *Buffer, offset: usize, size: usize) ?*const anyopaque {
+        return bufferGetConstMappedRange(self, offset, size);
+    }
+    /// `WGPUBufferMapState wgpuBufferGetMapState(WGPUBuffer buffer)`
+    pub inline fn getMapState(self: *Buffer) BufferMapState {
+        return bufferGetMapState(self);
+    }
+    /// `void * wgpuBufferGetMappedRange(WGPUBuffer buffer, size_t offset, size_t size)`
+    pub inline fn getMappedRange(self: *Buffer, offset: usize, size: usize) ?*anyopaque {
+        return bufferGetMappedRange(self, offset, size);
+    }
+    /// `uint64_t wgpuBufferGetSize(WGPUBuffer buffer)`
+    pub inline fn getSize(self: *Buffer) u64 {
+        return bufferGetSize(self);
+    }
+    /// `WGPUBufferUsage wgpuBufferGetUsage(WGPUBuffer buffer)`
+    pub inline fn getUsage(self: *Buffer) BufferUsage {
+        return bufferGetUsage(self);
+    }
+    /// `WGPUFuture wgpuBufferMapAsync(WGPUBuffer buffer, WGPUMapMode mode, size_t offset, size_t size, WGPUBufferMapCallbackInfo callbackInfo)`
+    pub inline fn mapAsync(self: *Buffer, mode: MapMode, offset: usize, size: usize, callbackInfo: BufferMapCallbackInfo) Future {
+        return bufferMapAsync(self, mode, offset, size, callbackInfo);
+    }
+    /// `void wgpuBufferSetLabel(WGPUBuffer buffer, WGPUStringView label)`
+    pub inline fn setLabel(self: *Buffer, label: []const u8) void {
+        return bufferSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuBufferUnmap(WGPUBuffer buffer)`
+    pub inline fn unmap(self: *Buffer) void {
+        return bufferUnmap(self);
+    }
+    /// `void wgpuBufferAddRef(WGPUBuffer buffer)`
+    pub inline fn addRef(self: *Buffer) void {
+        return bufferAddRef(self);
+    }
+    /// `void wgpuBufferRelease(WGPUBuffer buffer)`
+    pub inline fn release(self: *Buffer) void {
+        return bufferRelease(self);
+    }
+};
+pub const CommandBuffer = opaque {
+    /// `void wgpuCommandBufferSetLabel(WGPUCommandBuffer commandBuffer, WGPUStringView label)`
+    pub inline fn setLabel(self: *CommandBuffer, label: []const u8) void {
+        return commandBufferSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuCommandBufferAddRef(WGPUCommandBuffer commandBuffer)`
+    pub inline fn addRef(self: *CommandBuffer) void {
+        return commandBufferAddRef(self);
+    }
+    /// `void wgpuCommandBufferRelease(WGPUCommandBuffer commandBuffer)`
+    pub inline fn release(self: *CommandBuffer) void {
+        return commandBufferRelease(self);
+    }
+};
+pub const CommandEncoder = opaque {
+    /// `WGPUComputePassEncoder wgpuCommandEncoderBeginComputePass(WGPUCommandEncoder commandEncoder, WGPU_NULLABLE WGPUComputePassDescriptor const * descriptor)`
+    pub inline fn beginComputePass(self: *CommandEncoder, descriptor: *const ComputePassDescriptor) error{FailedToBeginComputePass}!*ComputePassEncoder {
+        if (commandEncoderBeginComputePass(self, descriptor)) |x| return x else return error.FailedToBeginComputePass;
+    }
+    /// `WGPURenderPassEncoder wgpuCommandEncoderBeginRenderPass(WGPUCommandEncoder commandEncoder, WGPURenderPassDescriptor const * descriptor)`
+    pub inline fn beginRenderPass(self: *CommandEncoder, descriptor: *const RenderPassDescriptor) error{FailedToBeginRenderPass}!*RenderPassEncoder {
+        if (commandEncoderBeginRenderPass(self, descriptor)) |x| return x else return error.FailedToBeginRenderPass;
+    }
+    /// `void wgpuCommandEncoderClearBuffer(WGPUCommandEncoder commandEncoder, WGPUBuffer buffer, uint64_t offset, uint64_t size)`
+    pub inline fn clearBuffer(self: *CommandEncoder, buffer: *Buffer, offset: u64, size: u64) void {
+        return commandEncoderClearBuffer(self, buffer, offset, size);
+    }
+    /// `void wgpuCommandEncoderCopyBufferToBuffer(WGPUCommandEncoder commandEncoder, WGPUBuffer source, uint64_t sourceOffset, WGPUBuffer destination, uint64_t destinationOffset, uint64_t size)`
+    pub inline fn copyBufferToBuffer(self: *CommandEncoder, src: *Buffer, srcOffset: u64, dest: *Buffer, destOffset: u64, size: u64) void {
+        return commandEncoderCopyBufferToBuffer(self, src, srcOffset, dest, destOffset, size);
+    }
+    /// `void wgpuCommandEncoderCopyBufferToTexture(WGPUCommandEncoder commandEncoder, WGPUTexelCopyBufferInfo const * source, WGPUTexelCopyTextureInfo const * destination, WGPUExtent3D const * copySize)`
+    pub inline fn copyBufferToTexture(self: *CommandEncoder, source: *const TexelCopyBufferInfo, destination: *const TexelCopyTextureInfo, copySize: *const Extent3D) void {
+        return commandEncoderCopyBufferToTexture(self, source, destination, copySize);
+    }
+    /// `void wgpuCommandEncoderCopyTextureToBuffer(WGPUCommandEncoder commandEncoder, WGPUTexelCopyTextureInfo const * source, WGPUTexelCopyBufferInfo const * destination, WGPUExtent3D const * copySize)`
+    pub inline fn copyTextureToBuffer(self: *CommandEncoder, source: *const TexelCopyTextureInfo, destination: *const TexelCopyBufferInfo, copySize: *const Extent3D) void {
+        return commandEncoderCopyTextureToBuffer(self, source, destination, copySize);
+    }
+    /// `void wgpuCommandEncoderCopyTextureToTexture(WGPUCommandEncoder commandEncoder, WGPUTexelCopyTextureInfo const * source, WGPUTexelCopyTextureInfo const * destination, WGPUExtent3D const * copySize)`
+    pub inline fn copyTextureToTexture(self: *CommandEncoder, source: *const TexelCopyTextureInfo, destination: *const TexelCopyTextureInfo, copySize: *const Extent3D) void {
+        return commandEncoderCopyTextureToTexture(self, source, destination, copySize);
+    }
+    /// `WGPUCommandBuffer wgpuCommandEncoderFinish(WGPUCommandEncoder commandEncoder, WGPU_NULLABLE WGPUCommandBufferDescriptor const * descriptor)`
+    pub inline fn finish(self: *CommandEncoder, descriptor: ?*const CommandBufferDescriptor) error{FailedToFinishCommandEncode}!*CommandBuffer {
+        if (commandEncoderFinish(self, descriptor)) |x| return x else return error.FailedToFinishCommandEncode;
+    }
+    /// `void wgpuCommandEncoderInsertDebugMarker(WGPUCommandEncoder commandEncoder, WGPUStringView markerLabel)`
+    pub inline fn insertDebugMarker(self: *CommandEncoder, label: []const u8) void {
+        return commandEncoderInsertDebugMarker(self, .fromSlice(label));
+    }
+    /// `void wgpuCommandEncoderPopDebugGroup(WGPUCommandEncoder commandEncoder)`
+    pub inline fn popDebugGroup(self: *CommandEncoder) void {
+        return commandEncoderPopDebugGroup(self);
+    }
+    /// `void wgpuCommandEncoderPushDebugGroup(WGPUCommandEncoder commandEncoder, WGPUStringView groupLabel)`
+    pub inline fn pushDebugGroup(self: *CommandEncoder, label: []const u8) void {
+        return commandEncoderPushDebugGroup(self, .fromSlice(label));
+    }
+    /// `void wgpuCommandEncoderResolveQuerySet(WGPUCommandEncoder commandEncoder, WGPUQuerySet querySet, uint32_t firstQuery, uint32_t queryCount, WGPUBuffer destination, uint64_t destinationOffset)`
+    pub inline fn resolveQuerySet(self: *CommandEncoder, querySet: *QuerySet, firstQuery: u32, queryCount: u32, dest: *Buffer, destOffset: u64) void {
+        return commandEncoderResolveQuerySet(self, querySet, firstQuery, queryCount, dest, destOffset);
+    }
+    /// `void wgpuCommandEncoderSetLabel(WGPUCommandEncoder commandEncoder, WGPUStringView label)`
+    pub inline fn setLabel(self: *CommandEncoder, label: []const u8) void {
+        return commandEncoderSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuCommandEncoderWriteTimestamp(WGPUCommandEncoder commandEncoder, WGPUQuerySet querySet, uint32_t queryIndex)`
+    pub inline fn writeTimestamp(self: *CommandEncoder, querySet: *QuerySet, queryIndex: u32) void {
+        return commandEncoderWriteTimestamp(self, querySet, queryIndex);
+    }
+    /// `void wgpuCommandEncoderAddRef(WGPUCommandEncoder commandEncoder)`
+    pub inline fn addRef(self: *CommandEncoder) void {
+        return commandEncoderAddRef(self);
+    }
+    /// `void wgpuCommandEncoderRelease(WGPUCommandEncoder commandEncoder)`
+    pub inline fn release(self: *CommandEncoder) void {
+        return commandEncoderRelease(self);
+    }
+};
+pub const ComputePassEncoder = opaque {
+    /// `void wgpuComputePassEncoderDispatchWorkgroups(WGPUComputePassEncoder computePassEncoder, uint32_t workgroupCountX, uint32_t workgroupCountY, uint32_t workgroupCountZ)`
+    pub inline fn dispatchWorkgroups(self: *ComputePassEncoder, workgroupCountX: u32, workgroupCountY: u32, workgroupCountZ: u32) void {
+        return computePassEncoderDispatchWorkgroups(self, workgroupCountX, workgroupCountY, workgroupCountZ);
+    }
+    /// `void wgpuComputePassEncoderDispatchWorkgroupsIndirect(WGPUComputePassEncoder computePassEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
+    pub inline fn dispatchWorkgroupsIndirect(self: *ComputePassEncoder, indirectBuffer: *Buffer, indirectOffset: u64) void {
+        return computePassEncoderDispatchWorkgroupsIndirect(self, indirectBuffer, indirectOffset);
+    }
+    /// `void wgpuComputePassEncoderEnd(WGPUComputePassEncoder computePassEncoder)`
+    pub inline fn end(self: *ComputePassEncoder) void {
+        return computePassEncoderEnd(self);
+    }
+    /// `void wgpuComputePassEncoderInsertDebugMarker(WGPUComputePassEncoder computePassEncoder, WGPUStringView markerLabel)`
+    pub inline fn insertDebugMarker(self: *ComputePassEncoder, label: []const u8) void {
+        return computePassEncoderInsertDebugMarker(self, .fromSlice(label));
+    }
+    /// `void wgpuComputePassEncoderPopDebugGroup(WGPUComputePassEncoder computePassEncoder)`
+    pub inline fn popDebugGroup(self: *ComputePassEncoder) void {
+        return computePassEncoderPopDebugGroup(self);
+    }
+    /// `void wgpuComputePassEncoderPushDebugGroup(WGPUComputePassEncoder computePassEncoder, WGPUStringView groupLabel)`
+    pub inline fn pushDebugGroup(self: *ComputePassEncoder, label: []const u8) void {
+        return computePassEncoderPushDebugGroup(self, .fromSlice(label));
+    }
+    /// `void wgpuComputePassEncoderSetBindGroup(WGPUComputePassEncoder computePassEncoder, uint32_t groupIndex, WGPU_NULLABLE WGPUBindGroup group, size_t dynamicOffsetCount, uint32_t const * dynamicOffsets)`
+    pub inline fn setBindGroup(self: *ComputePassEncoder, groupIndex: u32, group: ?*BindGroup, dynamicOffsets: []const u32) void {
+        return computePassEncoderSetBindGroup(self, groupIndex, group, dynamicOffsets.len, dynamicOffsets.ptr);
+    }
+    /// `void wgpuComputePassEncoderSetLabel(WGPUComputePassEncoder computePassEncoder, WGPUStringView label)`
+    pub inline fn setLabel(self: *ComputePassEncoder, label: []const u8) void {
+        return computePassEncoderSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuComputePassEncoderSetPipeline(WGPUComputePassEncoder computePassEncoder, WGPUComputePipeline pipeline)`
+    pub inline fn setPipeline(self: *ComputePassEncoder, pipeline: *ComputePipeline) void {
+        return computePassEncoderSetPipeline(self, pipeline);
+    }
+    /// `void wgpuComputePassEncoderAddRef(WGPUComputePassEncoder computePassEncoder)`
+    pub inline fn addRef(self: *ComputePassEncoder) void {
+        return computePassEncoderAddRef(self);
+    }
+    /// `void wgpuComputePassEncoderRelease(WGPUComputePassEncoder computePassEncoder)`
+    pub inline fn release(self: *ComputePassEncoder) void {
+        return computePassEncoderRelease(self);
+    }
+    /// `void wgpuComputePassEncoderSetPushConstants(WGPUComputePassEncoder encoder, uint32_t offset, uint32_t sizeBytes, void const * data)`
+    pub inline fn setPushConstants(self: *ComputePassEncoder, offset: u32, sizeBytes: u32, data: ?*const anyopaque) void {
+        return computePassEncoderSetPushConstants(self, offset, sizeBytes, data);
+    }
+    /// `void wgpuComputePassEncoderBeginPipelineStatisticsQuery(WGPUComputePassEncoder computePassEncoder, WGPUQuerySet querySet, uint32_t queryIndex)`
+    pub inline fn beginPipelineStatisticsQuery(self: *ComputePassEncoder, querySet: *QuerySet, queryIndex: u32) void {
+        return computePassEncoderBeginPipelineStatisticsQuery(self, querySet, queryIndex);
+    }
+    /// `void wgpuComputePassEncoderEndPipelineStatisticsQuery(WGPUComputePassEncoder computePassEncoder)`
+    pub inline fn endPipelineStatisticsQuery(self: *ComputePassEncoder) void {
+        return computePassEncoderEndPipelineStatisticsQuery(self);
+    }
+    /// `void wgpuComputePassEncoderWriteTimestamp(WGPUComputePassEncoder computePassEncoder, WGPUQuerySet querySet, uint32_t queryIndex)`
+    pub inline fn writeTimestamp(self: *ComputePassEncoder, querySet: *QuerySet, queryIndex: u32) void {
+        return computePassEncoderWriteTimestamp(self, querySet, queryIndex);
+    }
+};
+pub const ComputePipeline = opaque {
+    /// `WGPUBindGroupLayout wgpuComputePipelineGetBindGroupLayout(WGPUComputePipeline computePipeline, uint32_t groupIndex)`
+    pub inline fn getBindGroupLayout(self: *ComputePipeline, groupIndex: u32) ?*BindGroupLayout {
+        return computePipelineGetBindGroupLayout(self, groupIndex);
+    }
+    /// `void wgpuComputePipelineSetLabel(WGPUComputePipeline computePipeline, WGPUStringView label)`
+    pub inline fn setLabel(self: *ComputePipeline, label: []const u8) void {
+        return computePipelineSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuComputePipelineAddRef(WGPUComputePipeline computePipeline)`
+    pub inline fn addRef(self: *ComputePipeline) void {
+        return computePipelineAddRef(self);
+    }
+    /// `void wgpuComputePipelineRelease(WGPUComputePipeline computePipeline)`
+    pub inline fn release(self: *ComputePipeline) void {
+        return computePipelineRelease(self);
+    }
+};
+pub const Device = opaque {
+    /// `WGPUBindGroup wgpuDeviceCreateBindGroup(WGPUDevice device, WGPUBindGroupDescriptor const * descriptor)`
+    pub inline fn createBindGroup(self: *Device, descriptor: *const BindGroupDescriptor) error{FailedToCreateBindGroup}!*BindGroup {
+        return if (deviceCreateBindGroup(self, descriptor)) |x| x else error.FailedToCreateBindGroup;
+    }
+    /// `WGPUBindGroupLayout wgpuDeviceCreateBindGroupLayout(WGPUDevice device, WGPUBindGroupLayoutDescriptor const * descriptor)`
+    pub inline fn createBindGroupLayout(self: *Device, descriptor: *const BindGroupLayoutDescriptor) error{FailedToCreateBindGroupLayout}!*BindGroupLayout {
+        return if (deviceCreateBindGroupLayout(self, descriptor)) |x| x else error.FailedToCreateBindGroupLayout;
+    }
+    /// `WGPUBuffer wgpuDeviceCreateBuffer(WGPUDevice device, WGPUBufferDescriptor const * descriptor)`
+    pub inline fn createBuffer(self: *Device, descriptor: *const BufferDescriptor) error{FailedToCreateBuffer}!*Buffer {
+        return if (deviceCreateBuffer(self, descriptor)) |x| x else error.FailedToCreateBuffer;
+    }
+    /// `WGPUCommandEncoder wgpuDeviceCreateCommandEncoder(WGPUDevice device, WGPU_NULLABLE WGPUCommandEncoderDescriptor const * descriptor)`
+    pub inline fn createCommandEncoder(self: *Device, descriptor: *const CommandEncoderDescriptor) error{FailedToCreateCommandEncoder}!*CommandEncoder {
+        return if (deviceCreateCommandEncoder(self, descriptor)) |x| x else error.FailedToCreateCommandEncoder;
+    }
+    /// `WGPUComputePipeline wgpuDeviceCreateComputePipeline(WGPUDevice device, WGPUComputePipelineDescriptor const * descriptor)`
+    pub inline fn createComputePipeline(self: *Device, descriptor: *const ComputePipelineDescriptor) error{FailedToCreateComputePipeline}!*ComputePipeline {
+        return if (deviceCreateComputePipeline(self, descriptor)) |x| x else error.FailedToCreateComputePipeline;
+    }
+    /// `WGPUFuture wgpuDeviceCreateComputePipelineAsync(WGPUDevice device, WGPUComputePipelineDescriptor const * descriptor, WGPUCreateComputePipelineAsyncCallbackInfo callbackInfo)`
+    pub inline fn createComputePipelineAsync(self: *Device, descriptor: *const ComputePipelineDescriptor, callbackInfo: CreateComputePipelineAsyncCallbackInfo) Future {
+        return deviceCreateComputePipelineAsync(self, descriptor, callbackInfo);
+    }
+    /// `WGPUPipelineLayout wgpuDeviceCreatePipelineLayout(WGPUDevice device, WGPUPipelineLayoutDescriptor const * descriptor)`
+    pub inline fn createPipelineLayout(self: *Device, descriptor: *const PipelineLayoutDescriptor) error{FailedToCreatePipelineLayout}!*PipelineLayout {
+        return if (deviceCreatePipelineLayout(self, descriptor)) |x| x else error.FailedToCreatePipelineLayout;
+    }
+    /// `WGPUQuerySet wgpuDeviceCreateQuerySet(WGPUDevice device, WGPUQuerySetDescriptor const * descriptor)`
+    pub inline fn createQuerySet(self: *Device, descriptor: *const QuerySetDescriptor) error{FailedToCreateQuerySet}!*QuerySet {
+        return if (deviceCreateQuerySet(self, descriptor)) |x| x else error.FailedToCreateQuerySet;
+    }
+    /// `WGPURenderBundleEncoder wgpuDeviceCreateRenderBundleEncoder(WGPUDevice device, WGPURenderBundleEncoderDescriptor const * descriptor)`
+    pub inline fn createRenderBundleEncoder(self: *Device, descriptor: *const RenderBundleEncoderDescriptor) error{FailedToCreateRenderBundleEncoder}!*RenderBundleEncoder {
+        return if (deviceCreateRenderBundleEncoder(self, descriptor)) |x| x else error.FailedToCreateRenderBundleEncoder;
+    }
+    /// `WGPURenderPipeline wgpuDeviceCreateRenderPipeline(WGPUDevice device, WGPURenderPipelineDescriptor const * descriptor)`
+    pub inline fn createRenderPipeline(self: *Device, descriptor: *const RenderPipelineDescriptor) error{FailedToCreateRenderPipeline}!*RenderPipeline {
+        return if (deviceCreateRenderPipeline(self, descriptor)) |x| x else error.FailedToCreateRenderPipeline;
+    }
+    /// `WGPUFuture wgpuDeviceCreateRenderPipelineAsync(WGPUDevice device, WGPURenderPipelineDescriptor const * descriptor, WGPUCreateRenderPipelineAsyncCallbackInfo callbackInfo)`
+    pub inline fn createRenderPipelineAsync(self: *Device, descriptor: *const RenderPipelineDescriptor, callbackInfo: CreateRenderPipelineAsyncCallbackInfo) Future {
+        return deviceCreateRenderPipelineAsync(self, descriptor, callbackInfo);
+    }
+    /// `WGPUSampler wgpuDeviceCreateSampler(WGPUDevice device, WGPU_NULLABLE WGPUSamplerDescriptor const * descriptor)`
+    pub inline fn createSampler(self: *Device, descriptor: *const SamplerDescriptor) error{FailedToCreateSampler}!*Sampler {
+        return if (deviceCreateSampler(self, descriptor)) |x| x else error.FailedToCreateSampler;
+    }
+    /// `WGPUShaderModule wgpuDeviceCreateShaderModule(WGPUDevice device, WGPUShaderModuleDescriptor const * descriptor)`
+    pub inline fn createShaderModule(self: *Device, descriptor: *const ShaderModuleDescriptor) error{FailedToCreateShaderModule}!*ShaderModule {
+        return if (deviceCreateShaderModule(self, descriptor)) |x| x else error.FailedToCreateShaderModule;
+    }
+    /// `WGPUTexture wgpuDeviceCreateTexture(WGPUDevice device, WGPUTextureDescriptor const * descriptor)`
+    pub inline fn createTexture(self: *Device, descriptor: *const TextureDescriptor) error{FailedToCreateTexture}!*Texture {
+        return if (deviceCreateTexture(self, descriptor)) |x| x else error.FailedToCreateTexture;
+    }
+    /// `void wgpuDeviceDestroy(WGPUDevice device)`
+    pub inline fn destroy(self: *Device) void {
+        return deviceDestroy(self);
+    }
+    /// `WGPUAdapterInfo wgpuDeviceGetAdapterInfo(WGPUDevice device)`
+    pub inline fn getAdapterInfo(self: *Device) AdapterInfo {
+        return deviceGetAdapterInfo(self);
+    }
+    /// `void wgpuDeviceGetFeatures(WGPUDevice device, WGPUSupportedFeatures * features)`
+    pub inline fn getFeatures(self: *Device) SupportedFeatures {
+        var out: SupportedFeatures = .{};
+        deviceGetFeatures(self, &out);
+        return out;
+    }
+    /// `WGPUStatus wgpuDeviceGetLimits(WGPUDevice device, WGPULimits * limits)`
+    pub inline fn getLimits(self: *Device) error{FailedToGetLimits}!Limits {
+        var out: Limits = .{};
+        return if (deviceGetLimits(self, &out) == .success) out else error.FailedToGetLimits;
+    }
+    /// `WGPUFuture wgpuDeviceGetLostFuture(WGPUDevice device)`
+    pub inline fn getLostFuture(self: *Device) Future {
+        return deviceGetLostFuture(self);
+    }
+    /// `WGPUQueue wgpuDeviceGetQueue(WGPUDevice device)`
+    pub inline fn getQueue(self: *Device) error{FailedToGetDeviceQueue}!*Queue {
+        return if (deviceGetQueue(self)) |x| x else error.FailedToGetDeviceQueue;
+    }
+    /// `WGPUBool wgpuDeviceHasFeature(WGPUDevice device, WGPUFeatureName feature)`
+    pub inline fn hasFeature(self: *Device, feature: FeatureName) bool {
+        return deviceHasFeature(self, feature).to();
+    }
+    /// `WGPUFuture wgpuDevicePopErrorScope(WGPUDevice device, WGPUPopErrorScopeCallbackInfo callbackInfo)`
+    pub inline fn popErrorScope(self: *Device, callbackInfo: PopErrorScopeCallbackInfo) Future {
+        return devicePopErrorScope(self, callbackInfo);
+    }
+    /// `void wgpuDevicePushErrorScope(WGPUDevice device, WGPUErrorFilter filter)`
+    pub inline fn pushErrorScope(self: *Device, filter: ErrorFilter) void {
+        return devicePushErrorScope(self, filter);
+    }
+    /// `void wgpuDeviceSetLabel(WGPUDevice device, WGPUStringView label)`
+    pub inline fn setLabel(self: *Device, label: []const u8) void {
+        return deviceSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuDeviceAddRef(WGPUDevice device)`
+    pub inline fn addRef(self: *Device) void {
+        return deviceAddRef(self);
+    }
+    /// `void wgpuDeviceRelease(WGPUDevice device)`
+    pub inline fn release(self: *Device) void {
+        return deviceRelease(self);
+    }
+    /// `WGPUBool wgpuDevicePoll(WGPUDevice device, WGPUBool wait, WGPU_NULLABLE WGPUSubmissionIndex const * submissionIndex)`
+    pub inline fn poll(self: *Device, wait: bool, index: ?SubmissionIndex) bool {
+        return devicePoll(self, .from(wait), if (index) |*x| x else null).to();
+    }
+    /// `WGPUShaderModule wgpuDeviceCreateShaderModuleSpirV(WGPUDevice device, WGPUShaderModuleDescriptorSpirV const * descriptor)`
+    pub inline fn createShaderModuleSpirV(self: *Device, descriptor: *const ShaderModuleDescriptorSpirV) error{FailedToCreateShaderModuleSpirV}!*ShaderModule {
+        return if (deviceCreateShaderModuleSpirV(self, descriptor)) |x| x else error.FailedToCreateShaderModuleSpirV;
+    }
 
-pub const BindGroup = ?*BindGroupImpl;
-pub const BindGroupImpl = opaque {};
+    /// Loads a WGSL shader from a file.
+    pub fn loadShader(device: *Device, path: []const u8) !*ShaderModule {
+        const buf = std.fs.cwd().readFileAlloc(path, std.heap.page_allocator, .unlimited) catch {
+            return error.FailedToLoadShader;
+        };
+        defer std.heap.page_allocator.free(buf);
 
-pub const BindGroupLayout = ?*BindGroupLayoutImpl;
-pub const BindGroupLayoutImpl = opaque {};
+        return device.loadShaderText(path, buf);
+    }
 
-pub const Buffer = ?*BufferImpl;
-pub const BufferImpl = opaque {};
+    /// Loads a WGSL shader from a string.
+    pub fn loadShaderText(device: *Device, name: []const u8, source: []const u8) !*ShaderModule {
+        var wgsl_descriptor = ShaderSourceWGSL{
+            .chain = .{ .s_type = .shader_source_wgsl },
+            .code = .fromSlice(source),
+        };
 
-pub const CommandBuffer = ?*CommandBufferImpl;
-pub const CommandBufferImpl = opaque {};
+        return device.createShaderModule(&ShaderModuleDescriptor{
+            .label = .fromSlice(name),
+            .next_in_chain = @ptrCast(&wgsl_descriptor),
+        });
+    }
+};
+pub const Instance = opaque {
+    /// `WGPUSurface wgpuInstanceCreateSurface(WGPUInstance instance, WGPUSurfaceDescriptor const * descriptor)`
+    pub inline fn createSurface(self: *Instance, descriptor: *const SurfaceDescriptor) error{FailedToCreateSurface}!*Surface {
+        return if (instanceCreateSurface(self, descriptor)) |x| x else error.FailedToCreateSurface;
+    }
+    /// `WGPUStatus wgpuInstanceGetWGSLLanguageFeatures(WGPUInstance instance, WGPUSupportedWGSLLanguageFeatures * features)`
+    pub inline fn getWGSLLanguageFeatures(self: *Instance) error{FailedToGetWGSLLanguageFeatures}!SupportedWGSLLanguageFeatures {
+        var out: SupportedWGSLLanguageFeatures = .{};
+        return if (instanceGetWGSLLanguageFeatures(self, &out) == .success) out else error.FailedToGetWGSLLanguageFeatures;
+    }
+    /// `WGPUBool wgpuInstanceHasWGSLLanguageFeature(WGPUInstance instance, WGPUWGSLLanguageFeatureName feature)`
+    pub inline fn hasWGSLLanguageFeature(self: *Instance, feature: WGSLLanguageFeatureName) bool {
+        return instanceHasWGSLLanguageFeature(self, feature).to();
+    }
+    /// `void wgpuInstanceProcessEvents(WGPUInstance instance)`
+    pub inline fn processEvents(self: *Instance) void {
+        return instanceProcessEvents(self);
+    }
+    /// `WGPUFuture wgpuInstanceRequestAdapter(WGPUInstance instance, WGPU_NULLABLE WGPURequestAdapterOptions const * options, WGPURequestAdapterCallbackInfo callbackInfo)`
+    pub inline fn requestAdapter(self: *Instance, options: ?*const RequestAdapterOptions, callbackInfo: RequestAdapterCallbackInfo) Future {
+        return instanceRequestAdapter(self, options, callbackInfo);
+    }
+    /// `WGPUWaitStatus wgpuInstanceWaitAny(WGPUInstance instance, size_t futureCount, WGPU_NULLABLE WGPUFutureWaitInfo * futures, uint64_t timeoutNS)`
+    pub inline fn waitAny(self: *Instance, futures: []FutureWaitInfo, timeoutNS: u64) WaitStatus {
+        return instanceWaitAny(self, futures.len, futures.ptr, timeoutNS);
+    }
+    /// `void wgpuInstanceAddRef(WGPUInstance instance)`
+    pub inline fn addRef(self: *Instance) void {
+        return instanceAddRef(self);
+    }
+    /// `void wgpuInstanceRelease(WGPUInstance instance)`
+    pub inline fn release(self: *Instance) void {
+        return instanceRelease(self);
+    }
+    /// `size_t wgpuInstanceEnumerateAdapters(WGPUInstance instance, WGPU_NULLABLE WGPUInstanceEnumerateAdapterOptions const * options, WGPUAdapter * adapters)`
+    pub inline fn enumerateAdapters(self: *Instance, options: *const InstanceEnumerateAdapterOptions, adapters: [*]?*Adapter) usize {
+        return instanceEnumerateAdapters(self, options, adapters);
+    }
+};
+pub const PipelineLayout = opaque {
+    /// `void wgpuPipelineLayoutSetLabel(WGPUPipelineLayout pipelineLayout, WGPUStringView label)`
+    pub inline fn setLabel(self: *PipelineLayout, label: []const u8) void {
+        return pipelineLayoutSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuPipelineLayoutAddRef(WGPUPipelineLayout pipelineLayout)`
+    pub inline fn addRef(self: *PipelineLayout) void {
+        return pipelineLayoutAddRef(self);
+    }
+    /// `void wgpuPipelineLayoutRelease(WGPUPipelineLayout pipelineLayout)`
+    pub inline fn release(self: *PipelineLayout) void {
+        return pipelineLayoutRelease(self);
+    }
+};
+pub const QuerySet = opaque {
+    /// `void wgpuQuerySetDestroy(WGPUQuerySet querySet)`
+    pub inline fn destroy(self: *QuerySet) void {
+        return querySetDestroy(self);
+    }
+    /// `uint32_t wgpuQuerySetGetCount(WGPUQuerySet querySet)`
+    pub inline fn getCount(self: *QuerySet) u32 {
+        return querySetGetCount(self);
+    }
+    /// `WGPUQueryType wgpuQuerySetGetType(WGPUQuerySet querySet)`
+    pub inline fn getType(self: *QuerySet) QueryType {
+        return querySetGetType(self);
+    }
+    /// `void wgpuQuerySetSetLabel(WGPUQuerySet querySet, WGPUStringView label)`
+    pub inline fn setLabel(self: *QuerySet, label: []const u8) void {
+        return querySetSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuQuerySetAddRef(WGPUQuerySet querySet)`
+    pub inline fn addRef(self: *QuerySet) void {
+        return querySetAddRef(self);
+    }
+    /// `void wgpuQuerySetRelease(WGPUQuerySet querySet)`
+    pub inline fn release(self: *QuerySet) void {
+        return querySetRelease(self);
+    }
+};
+pub const Queue = opaque {
+    /// `WGPUFuture wgpuQueueOnSubmittedWorkDone(WGPUQueue queue, WGPUQueueWorkDoneCallbackInfo callbackInfo)`
+    pub inline fn onSubmittedWorkDone(self: *Queue, callbackInfo: QueueWorkDoneCallbackInfo) Future {
+        return queueOnSubmittedWorkDone(self, callbackInfo);
+    }
+    /// `void wgpuQueueSetLabel(WGPUQueue queue, WGPUStringView label)`
+    pub inline fn setLabel(self: *Queue, label: []const u8) void {
+        return queueSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuQueueSubmit(WGPUQueue queue, size_t commandCount, WGPUCommandBuffer const * commands)`
+    pub inline fn submit(self: *Queue, commands: []const *CommandBuffer) void {
+        return queueSubmit(self, commands.len, commands.ptr);
+    }
+    /// `void wgpuQueueWriteBuffer(WGPUQueue queue, WGPUBuffer buffer, uint64_t bufferOffset, void const * data, size_t size)`
+    pub inline fn writeBuffer(self: *Queue, buffer: *Buffer, bufferOffset: u64, data: ?*const anyopaque, size: usize) void {
+        return queueWriteBuffer(self, buffer, bufferOffset, data, size);
+    }
+    /// `void wgpuQueueWriteTexture(WGPUQueue queue, WGPUTexelCopyTextureInfo const * destination, void const * data, size_t dataSize, WGPUTexelCopyBufferLayout const * dataLayout, WGPUExtent3D const * writeSize)`
+    pub inline fn writeTexture(self: *Queue, destination: *const TexelCopyTextureInfo, data: ?*const anyopaque, dataSize: usize, dataLayout: *const TexelCopyBufferLayout, writeSize: *const Extent3D) void {
+        return queueWriteTexture(self, destination, data, dataSize, dataLayout, writeSize);
+    }
+    /// `void wgpuQueueAddRef(WGPUQueue queue)`
+    pub inline fn addRef(self: *Queue) void {
+        return queueAddRef(self);
+    }
+    /// `void wgpuQueueRelease(WGPUQueue queue)`
+    pub inline fn release(self: *Queue) void {
+        return queueRelease(self);
+    }
+    /// `WGPUSubmissionIndex wgpuQueueSubmitForIndex(WGPUQueue queue, size_t commandCount, WGPUCommandBuffer const * commands)`
+    pub inline fn submitForIndex(self: *Queue, commands: []const *CommandBuffer) SubmissionIndex {
+        return queueSubmitForIndex(self, commands.len, commands.ptr);
+    }
+};
+pub const RenderBundle = opaque {
+    /// `void wgpuRenderBundleSetLabel(WGPURenderBundle renderBundle, WGPUStringView label)`
+    pub inline fn setLabel(self: *RenderBundle, label: []const u8) void {
+        return renderBundleSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuRenderBundleAddRef(WGPURenderBundle renderBundle)`
+    pub inline fn addRef(self: *RenderBundle) void {
+        return renderBundleAddRef(self);
+    }
+    /// `void wgpuRenderBundleRelease(WGPURenderBundle renderBundle)`
+    pub inline fn release(self: *RenderBundle) void {
+        return renderBundleRelease(self);
+    }
+};
+pub const RenderBundleEncoder = opaque {
+    /// `void wgpuRenderBundleEncoderDraw(WGPURenderBundleEncoder renderBundleEncoder, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)`
+    pub inline fn draw(self: *RenderBundleEncoder, vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32) void {
+        return renderBundleEncoderDraw(self, vertexCount, instanceCount, firstVertex, firstInstance);
+    }
+    /// `void wgpuRenderBundleEncoderDrawIndexed(WGPURenderBundleEncoder renderBundleEncoder, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t baseVertex, uint32_t firstInstance)`
+    pub inline fn drawIndexed(self: *RenderBundleEncoder, indexCount: u32, instanceCount: u32, firstIndex: u32, baseVertex: i32, firstInstance: u32) void {
+        return renderBundleEncoderDrawIndexed(self, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
+    }
+    /// `void wgpuRenderBundleEncoderDrawIndexedIndirect(WGPURenderBundleEncoder renderBundleEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
+    pub inline fn drawIndexedIndirect(self: *RenderBundleEncoder, indirectBuffer: *Buffer, indirectOffset: u64) void {
+        return renderBundleEncoderDrawIndexedIndirect(self, indirectBuffer, indirectOffset);
+    }
+    /// `void wgpuRenderBundleEncoderDrawIndirect(WGPURenderBundleEncoder renderBundleEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
+    pub inline fn drawIndirect(self: *RenderBundleEncoder, indirectBuffer: *Buffer, indirectOffset: u64) void {
+        return renderBundleEncoderDrawIndirect(self, indirectBuffer, indirectOffset);
+    }
+    /// `WGPURenderBundle wgpuRenderBundleEncoderFinish(WGPURenderBundleEncoder renderBundleEncoder, WGPU_NULLABLE WGPURenderBundleDescriptor const * descriptor)`
+    pub inline fn finish(self: *RenderBundleEncoder, descriptor: ?*const RenderBundleDescriptor) error{FailedToFinishRenderBundleEncode}!*RenderBundle {
+        return if (renderBundleEncoderFinish(self, descriptor)) |x| x else error.FailedToFinishRenderBundleEncode;
+    }
+    /// `void wgpuRenderBundleEncoderInsertDebugMarker(WGPURenderBundleEncoder renderBundleEncoder, WGPUStringView markerLabel)`
+    pub inline fn insertDebugMarker(self: *RenderBundleEncoder, label: []const u8) void {
+        return renderBundleEncoderInsertDebugMarker(self, .fromSlice(label));
+    }
+    /// `void wgpuRenderBundleEncoderPopDebugGroup(WGPURenderBundleEncoder renderBundleEncoder)`
+    pub inline fn popDebugGroup(self: *RenderBundleEncoder) void {
+        return renderBundleEncoderPopDebugGroup(self);
+    }
+    /// `void wgpuRenderBundleEncoderPushDebugGroup(WGPURenderBundleEncoder renderBundleEncoder, WGPUStringView groupLabel)`
+    pub inline fn pushDebugGroup(self: *RenderBundleEncoder, label: []const u8) void {
+        return renderBundleEncoderPushDebugGroup(self, .fromSlice(label));
+    }
+    /// `void wgpuRenderBundleEncoderSetBindGroup(WGPURenderBundleEncoder renderBundleEncoder, uint32_t groupIndex, WGPU_NULLABLE WGPUBindGroup group, size_t dynamicOffsetCount, uint32_t const * dynamicOffsets)`
+    pub inline fn setBindGroup(self: *RenderBundleEncoder, groupIndex: u32, group: ?*BindGroup, dynamicOffsets: []const u32) void {
+        return renderBundleEncoderSetBindGroup(self, groupIndex, group, dynamicOffsets.len, dynamicOffsets.ptr);
+    }
+    /// `void wgpuRenderBundleEncoderSetIndexBuffer(WGPURenderBundleEncoder renderBundleEncoder, WGPUBuffer buffer, WGPUIndexFormat format, uint64_t offset, uint64_t size)`
+    pub inline fn setIndexBuffer(self: *RenderBundleEncoder, buffer: *Buffer, format: IndexFormat, offset: u64, size: u64) void {
+        return renderBundleEncoderSetIndexBuffer(self, buffer, format, offset, size);
+    }
+    /// `void wgpuRenderBundleEncoderSetLabel(WGPURenderBundleEncoder renderBundleEncoder, WGPUStringView label)`
+    pub inline fn setLabel(self: *RenderBundleEncoder, label: []const u8) void {
+        return renderBundleEncoderSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuRenderBundleEncoderSetPipeline(WGPURenderBundleEncoder renderBundleEncoder, WGPURenderPipeline pipeline)`
+    pub inline fn setPipeline(self: *RenderBundleEncoder, pipeline: *RenderPipeline) void {
+        return renderBundleEncoderSetPipeline(self, pipeline);
+    }
+    /// `void wgpuRenderBundleEncoderSetVertexBuffer(WGPURenderBundleEncoder renderBundleEncoder, uint32_t slot, WGPU_NULLABLE WGPUBuffer buffer, uint64_t offset, uint64_t size)`
+    pub inline fn setVertexBuffer(self: *RenderBundleEncoder, slot: u32, buffer: ?*Buffer, offset: u64, size: u64) void {
+        return renderBundleEncoderSetVertexBuffer(self, slot, buffer, offset, size);
+    }
+    /// `void wgpuRenderBundleEncoderAddRef(WGPURenderBundleEncoder renderBundleEncoder)`
+    pub inline fn addRef(self: *RenderBundleEncoder) void {
+        return renderBundleEncoderAddRef(self);
+    }
+    /// `void wgpuRenderBundleEncoderRelease(WGPURenderBundleEncoder renderBundleEncoder)`
+    pub inline fn release(self: *RenderBundleEncoder) void {
+        return renderBundleEncoderRelease(self);
+    }
+    /// `void wgpuRenderBundleEncoderSetPushConstants(WGPURenderBundleEncoder encoder, WGPUShaderStage stages, uint32_t offset, uint32_t sizeBytes, void const * data)`
+    pub inline fn setPushConstants(self: *RenderBundleEncoder, stages: ShaderStage, offset: u32, sizeBytes: u32, data: ?*const anyopaque) void {
+        return renderBundleEncoderSetPushConstants(self, stages, offset, sizeBytes, data);
+    }
+};
+pub const RenderPassEncoder = opaque {
+    /// `void wgpuRenderPassEncoderBeginOcclusionQuery(WGPURenderPassEncoder renderPassEncoder, uint32_t queryIndex)`
+    pub inline fn beginOcclusionQuery(self: *RenderPassEncoder, queryIndex: u32) void {
+        return renderPassEncoderBeginOcclusionQuery(self, queryIndex);
+    }
+    /// `void wgpuRenderPassEncoderDraw(WGPURenderPassEncoder renderPassEncoder, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)`
+    pub inline fn draw(self: *RenderPassEncoder, vertexCount: u32, instanceCount: u32, firstVertex: u32, firstInstance: u32) void {
+        return renderPassEncoderDraw(self, vertexCount, instanceCount, firstVertex, firstInstance);
+    }
+    /// `void wgpuRenderPassEncoderDrawIndexed(WGPURenderPassEncoder renderPassEncoder, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t baseVertex, uint32_t firstInstance)`
+    pub inline fn drawIndexed(self: *RenderPassEncoder, indexCount: u32, instanceCount: u32, firstIndex: u32, baseVertex: i32, firstInstance: u32) void {
+        return renderPassEncoderDrawIndexed(self, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
+    }
+    /// `void wgpuRenderPassEncoderDrawIndexedIndirect(WGPURenderPassEncoder renderPassEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
+    pub inline fn drawIndexedIndirect(self: *RenderPassEncoder, indirectBuffer: *Buffer, indirectOffset: u64) void {
+        return renderPassEncoderDrawIndexedIndirect(self, indirectBuffer, indirectOffset);
+    }
+    /// `void wgpuRenderPassEncoderDrawIndirect(WGPURenderPassEncoder renderPassEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
+    pub inline fn drawIndirect(self: *RenderPassEncoder, indirectBuffer: *Buffer, indirectOffset: u64) void {
+        return renderPassEncoderDrawIndirect(self, indirectBuffer, indirectOffset);
+    }
+    /// `void wgpuRenderPassEncoderEnd(WGPURenderPassEncoder renderPassEncoder)`
+    pub inline fn end(self: *RenderPassEncoder) void {
+        return renderPassEncoderEnd(self);
+    }
+    /// `void wgpuRenderPassEncoderEndOcclusionQuery(WGPURenderPassEncoder renderPassEncoder)`
+    pub inline fn endOcclusionQuery(self: *RenderPassEncoder) void {
+        return renderPassEncoderEndOcclusionQuery(self);
+    }
+    /// `void wgpuRenderPassEncoderExecuteBundles(WGPURenderPassEncoder renderPassEncoder, size_t bundleCount, WGPURenderBundle const * bundles)`
+    pub inline fn executeBundles(self: *RenderPassEncoder, bundles: []const *RenderBundle) void {
+        return renderPassEncoderExecuteBundles(self, bundles.len, bundles.ptr);
+    }
+    /// `void wgpuRenderPassEncoderInsertDebugMarker(WGPURenderPassEncoder renderPassEncoder, WGPUStringView markerLabel)`
+    pub inline fn insertDebugMarker(self: *RenderPassEncoder, label: []const u8) void {
+        return renderPassEncoderInsertDebugMarker(self, .fromSlice(label));
+    }
+    /// `void wgpuRenderPassEncoderPopDebugGroup(WGPURenderPassEncoder renderPassEncoder)`
+    pub inline fn popDebugGroup(self: *RenderPassEncoder) void {
+        return renderPassEncoderPopDebugGroup(self);
+    }
+    /// `void wgpuRenderPassEncoderPushDebugGroup(WGPURenderPassEncoder renderPassEncoder, WGPUStringView groupLabel)`
+    pub inline fn pushDebugGroup(self: *RenderPassEncoder, label: []const u8) void {
+        return renderPassEncoderPushDebugGroup(self, .fromSlice(label));
+    }
+    /// `void wgpuRenderPassEncoderSetBindGroup(WGPURenderPassEncoder renderPassEncoder, uint32_t groupIndex, WGPU_NULLABLE WGPUBindGroup group, size_t dynamicOffsetCount, uint32_t const * dynamicOffsets)`
+    pub inline fn setBindGroup(self: *RenderPassEncoder, groupIndex: u32, group: ?*BindGroup, dynamicOffsets: []const u32) void {
+        return renderPassEncoderSetBindGroup(self, groupIndex, group, dynamicOffsets.len, dynamicOffsets.ptr);
+    }
+    /// `void wgpuRenderPassEncoderSetBlendConstant(WGPURenderPassEncoder renderPassEncoder, WGPUColor const * color)`
+    pub inline fn setBlendConstant(self: *RenderPassEncoder, color: *const Color) void {
+        return renderPassEncoderSetBlendConstant(self, color);
+    }
+    /// `void wgpuRenderPassEncoderSetIndexBuffer(WGPURenderPassEncoder renderPassEncoder, WGPUBuffer buffer, WGPUIndexFormat format, uint64_t offset, uint64_t size)`
+    pub inline fn setIndexBuffer(self: *RenderPassEncoder, buffer: *Buffer, format: IndexFormat, offset: u64, size: u64) void {
+        return renderPassEncoderSetIndexBuffer(self, buffer, format, offset, size);
+    }
+    /// `void wgpuRenderPassEncoderSetLabel(WGPURenderPassEncoder renderPassEncoder, WGPUStringView label)`
+    pub inline fn setLabel(self: *RenderPassEncoder, label: []const u8) void {
+        return renderPassEncoderSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuRenderPassEncoderSetPipeline(WGPURenderPassEncoder renderPassEncoder, WGPURenderPipeline pipeline)`
+    pub inline fn setPipeline(self: *RenderPassEncoder, pipeline: *RenderPipeline) void {
+        return renderPassEncoderSetPipeline(self, pipeline);
+    }
+    /// `void wgpuRenderPassEncoderSetScissorRect(WGPURenderPassEncoder renderPassEncoder, uint32_t x, uint32_t y, uint32_t width, uint32_t height)`
+    pub inline fn setScissorRect(self: *RenderPassEncoder, x: u32, y: u32, width: u32, height: u32) void {
+        return renderPassEncoderSetScissorRect(self, x, y, width, height);
+    }
+    /// `void wgpuRenderPassEncoderSetStencilReference(WGPURenderPassEncoder renderPassEncoder, uint32_t reference)`
+    pub inline fn setStencilReference(self: *RenderPassEncoder, reference: u32) void {
+        return renderPassEncoderSetStencilReference(self, reference);
+    }
+    /// `void wgpuRenderPassEncoderSetVertexBuffer(WGPURenderPassEncoder renderPassEncoder, uint32_t slot, WGPU_NULLABLE WGPUBuffer buffer, uint64_t offset, uint64_t size)`
+    pub inline fn setVertexBuffer(self: *RenderPassEncoder, slot: u32, buffer: ?*Buffer, offset: u64, size: u64) void {
+        return renderPassEncoderSetVertexBuffer(self, slot, buffer, offset, size);
+    }
+    /// `void wgpuRenderPassEncoderSetViewport(WGPURenderPassEncoder renderPassEncoder, float x, float y, float width, float height, float minDepth, float maxDepth)`
+    pub inline fn setViewport(self: *RenderPassEncoder, x: f32, y: f32, width: f32, height: f32, minDepth: f32, maxDepth: f32) void {
+        return renderPassEncoderSetViewport(self, x, y, width, height, minDepth, maxDepth);
+    }
+    /// `void wgpuRenderPassEncoderAddRef(WGPURenderPassEncoder renderPassEncoder)`
+    pub inline fn addRef(self: *RenderPassEncoder) void {
+        return renderPassEncoderAddRef(self);
+    }
+    /// `void wgpuRenderPassEncoderRelease(WGPURenderPassEncoder renderPassEncoder)`
+    pub inline fn release(self: *RenderPassEncoder) void {
+        return renderPassEncoderRelease(self);
+    }
+    /// `void wgpuRenderPassEncoderSetPushConstants(WGPURenderPassEncoder encoder, WGPUShaderStage stages, uint32_t offset, uint32_t sizeBytes, void const * data)`
+    pub inline fn setPushConstants(self: *RenderPassEncoder, stages: ShaderStage, offset: u32, sizeBytes: u32, data: ?*const anyopaque) void {
+        return renderPassEncoderSetPushConstants(self, stages, offset, sizeBytes, data);
+    }
+    /// `void wgpuRenderPassEncoderMultiDrawIndirect(WGPURenderPassEncoder encoder, WGPUBuffer buffer, uint64_t offset, uint32_t count)`
+    pub inline fn multiDrawIndirect(self: *RenderPassEncoder, buffer: *Buffer, offset: u64, count: u32) void {
+        return renderPassEncoderMultiDrawIndirect(self, buffer, offset, count);
+    }
+    /// `void wgpuRenderPassEncoderMultiDrawIndexedIndirect(WGPURenderPassEncoder encoder, WGPUBuffer buffer, uint64_t offset, uint32_t count)`
+    pub inline fn multiDrawIndexedIndirect(self: *RenderPassEncoder, buffer: *Buffer, offset: u64, count: u32) void {
+        return renderPassEncoderMultiDrawIndexedIndirect(self, buffer, offset, count);
+    }
+    /// `void wgpuRenderPassEncoderMultiDrawIndirectCount(WGPURenderPassEncoder encoder, WGPUBuffer buffer, uint64_t offset, WGPUBuffer count_buffer, uint64_t count_buffer_offset, uint32_t max_count)`
+    pub inline fn multiDrawIndirectCount(self: *RenderPassEncoder, buffer: *Buffer, offset: u64, countBuffer: *Buffer, countBufferOffset: u64, maxCount: u32) void {
+        return renderPassEncoderMultiDrawIndirectCount(self, buffer, offset, countBuffer, countBufferOffset, maxCount);
+    }
+    /// `void wgpuRenderPassEncoderMultiDrawIndexedIndirectCount(WGPURenderPassEncoder encoder, WGPUBuffer buffer, uint64_t offset, WGPUBuffer count_buffer, uint64_t count_buffer_offset, uint32_t max_count)`
+    pub inline fn multiDrawIndexedIndirectCount(self: *RenderPassEncoder, buffer: *Buffer, offset: u64, countBuffer: *Buffer, countBufferOffset: u64, maxCount: u32) void {
+        return renderPassEncoderMultiDrawIndexedIndirectCount(self, buffer, offset, countBuffer, countBufferOffset, maxCount);
+    }
+    /// `void wgpuRenderPassEncoderBeginPipelineStatisticsQuery(WGPURenderPassEncoder renderPassEncoder, WGPUQuerySet querySet, uint32_t queryIndex)`
+    pub inline fn beginPipelineStatisticsQuery(self: *RenderPassEncoder, querySet: *QuerySet, queryIndex: u32) void {
+        return renderPassEncoderBeginPipelineStatisticsQuery(self, querySet, queryIndex);
+    }
+    /// `void wgpuRenderPassEncoderEndPipelineStatisticsQuery(WGPURenderPassEncoder renderPassEncoder)`
+    pub inline fn endPipelineStatisticsQuery(self: *RenderPassEncoder) void {
+        return renderPassEncoderEndPipelineStatisticsQuery(self);
+    }
+    /// `void wgpuRenderPassEncoderWriteTimestamp(WGPURenderPassEncoder renderPassEncoder, WGPUQuerySet querySet, uint32_t queryIndex)`
+    pub inline fn writeTimestamp(self: *RenderPassEncoder, querySet: *QuerySet, queryIndex: u32) void {
+        return renderPassEncoderWriteTimestamp(self, querySet, queryIndex);
+    }
+};
+pub const RenderPipeline = opaque {
+    /// `WGPUBindGroupLayout wgpuRenderPipelineGetBindGroupLayout(WGPURenderPipeline renderPipeline, uint32_t groupIndex)`
+    pub inline fn getBindGroupLayout(self: *RenderPipeline, groupIndex: u32) ?*BindGroupLayout {
+        return renderPipelineGetBindGroupLayout(self, groupIndex);
+    }
+    /// `void wgpuRenderPipelineSetLabel(WGPURenderPipeline renderPipeline, WGPUStringView label)`
+    pub inline fn setLabel(self: *RenderPipeline, label: []const u8) void {
+        return renderPipelineSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuRenderPipelineAddRef(WGPURenderPipeline renderPipeline)`
+    pub inline fn addRef(self: *RenderPipeline) void {
+        return renderPipelineAddRef(self);
+    }
+    /// `void wgpuRenderPipelineRelease(WGPURenderPipeline renderPipeline)`
+    pub inline fn release(self: *RenderPipeline) void {
+        return renderPipelineRelease(self);
+    }
+};
+pub const Sampler = opaque {
+    /// `void wgpuSamplerSetLabel(WGPUSampler sampler, WGPUStringView label)`
+    pub inline fn setLabel(self: *Sampler, label: []const u8) void {
+        return samplerSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuSamplerAddRef(WGPUSampler sampler)`
+    pub inline fn addRef(self: *Sampler) void {
+        return samplerAddRef(self);
+    }
+    /// `void wgpuSamplerRelease(WGPUSampler sampler)`
+    pub inline fn release(self: *Sampler) void {
+        return samplerRelease(self);
+    }
+};
+pub const ShaderModule = opaque {
+    /// `WGPUFuture wgpuShaderModuleGetCompilationInfo(WGPUShaderModule shaderModule, WGPUCompilationInfoCallbackInfo callbackInfo)`
+    pub inline fn getCompilationInfo(self: *ShaderModule, callbackInfo: CompilationInfoCallbackInfo) Future {
+        return shaderModuleGetCompilationInfo(self, callbackInfo);
+    }
+    /// `void wgpuShaderModuleSetLabel(WGPUShaderModule shaderModule, WGPUStringView label)`
+    pub inline fn setLabel(self: *ShaderModule, label: []const u8) void {
+        return shaderModuleSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuShaderModuleAddRef(WGPUShaderModule shaderModule)`
+    pub inline fn addRef(self: *ShaderModule) void {
+        return shaderModuleAddRef(self);
+    }
+    /// `void wgpuShaderModuleRelease(WGPUShaderModule shaderModule)`
+    pub inline fn release(self: *ShaderModule) void {
+        return shaderModuleRelease(self);
+    }
+};
+pub const Surface = opaque {
+    /// `void wgpuSurfaceConfigure(WGPUSurface surface, WGPUSurfaceConfiguration const * config)`
+    pub inline fn configure(self: *Surface, config: *const SurfaceConfiguration) void {
+        return surfaceConfigure(self, config);
+    }
+    /// `WGPUStatus wgpuSurfaceGetCapabilities(WGPUSurface surface, WGPUAdapter adapter, WGPUSurfaceCapabilities * capabilities)`
+    pub inline fn getCapabilities(self: *Surface, adapter: *Adapter) error{ NoSurfaceFormatAvailable, FailedToGetSurfaceCapabilities }!SurfaceCapabilities {
+        var out: SurfaceCapabilities = .{};
 
-pub const CommandEncoder = ?*CommandEncoderImpl;
-pub const CommandEncoderImpl = opaque {};
+        if (surfaceGetCapabilities(self, adapter, &out) == .success) {
+            if (out.format_count == 0) {
+                return error.NoSurfaceFormatAvailable;
+            }
 
-pub const ComputePassEncoder = ?*ComputePassEncoderImpl;
-pub const ComputePassEncoderImpl = opaque {};
-
-pub const ComputePipeline = ?*ComputePipelineImpl;
-pub const ComputePipelineImpl = opaque {};
-
-pub const Device = ?*DeviceImpl;
-pub const DeviceImpl = opaque {};
-
-pub const Instance = ?*InstanceImpl;
-pub const InstanceImpl = opaque {};
-
-pub const PipelineLayout = ?*PipelineLayoutImpl;
-pub const PipelineLayoutImpl = opaque {};
-
-pub const QuerySet = ?*QuerySetImpl;
-pub const QuerySetImpl = opaque {};
-
-pub const Queue = ?*QueueImpl;
-pub const QueueImpl = opaque {};
-
-pub const RenderBundle = ?*RenderBundleImpl;
-pub const RenderBundleImpl = opaque {};
-
-pub const RenderBundleEncoder = ?*RenderBundleEncoderImpl;
-pub const RenderBundleEncoderImpl = opaque {};
-
-pub const RenderPassEncoder = ?*RenderPassEncoderImpl;
-pub const RenderPassEncoderImpl = opaque {};
-
-pub const RenderPipeline = ?*RenderPipelineImpl;
-pub const RenderPipelineImpl = opaque {};
-
-pub const Sampler = ?*SamplerImpl;
-pub const SamplerImpl = opaque {};
-
-pub const ShaderModule = ?*ShaderModuleImpl;
-pub const ShaderModuleImpl = opaque {};
-
-pub const Surface = ?*SurfaceImpl;
-pub const SurfaceImpl = opaque {};
-
-pub const Texture = ?*TextureImpl;
-pub const TextureImpl = opaque {};
-
-pub const TextureView = ?*TextureViewImpl;
-pub const TextureViewImpl = opaque {};
+            return out;
+        } else {
+            return error.FailedToGetSurfaceCapabilities;
+        }
+    }
+    /// `void wgpuSurfaceGetCurrentTexture(WGPUSurface surface, WGPUSurfaceTexture * surfaceTexture)`
+    pub inline fn getCurrentTexture(self: *Surface, out_status: ?*SurfaceGetCurrentTextureStatus) ?*Texture {
+        var out: SurfaceTexture = .{};
+        surfaceGetCurrentTexture(self, &out);
+        if (out_status) |p| p.* = out.status;
+        return out.texture;
+    }
+    /// `WGPUStatus wgpuSurfacePresent(WGPUSurface surface)`
+    pub inline fn present(self: *Surface) error{FailedToPresentSurface}!void {
+        if (surfacePresent(self) != .success) return error.FailedToPresentSurface;
+    }
+    /// `void wgpuSurfaceSetLabel(WGPUSurface surface, WGPUStringView label)`
+    pub inline fn setLabel(self: *Surface, label: []const u8) void {
+        return surfaceSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuSurfaceUnconfigure(WGPUSurface surface)`
+    pub inline fn unconfigure(self: *Surface) void {
+        return surfaceUnconfigure(self);
+    }
+    /// `void wgpuSurfaceAddRef(WGPUSurface surface)`
+    pub inline fn addRef(self: *Surface) void {
+        return surfaceAddRef(self);
+    }
+    /// `void wgpuSurfaceRelease(WGPUSurface surface)`
+    pub inline fn release(self: *Surface) void {
+        return surfaceRelease(self);
+    }
+};
+pub const Texture = opaque {
+    /// `WGPUTextureView wgpuTextureCreateView(WGPUTexture texture, WGPU_NULLABLE WGPUTextureViewDescriptor const * descriptor)`
+    pub inline fn createView(self: *Texture, descriptor: ?*const TextureViewDescriptor) error{FailedToCreateTextureView}!*TextureView {
+        return if (textureCreateView(self, descriptor)) |x| x else error.FailedToCreateTextureView;
+    }
+    /// `void wgpuTextureDestroy(WGPUTexture texture)`
+    pub inline fn destroy(self: *Texture) void {
+        return textureDestroy(self);
+    }
+    /// `uint32_t wgpuTextureGetDepthOrArrayLayers(WGPUTexture texture)`
+    pub inline fn getDepthOrArrayLayers(self: *Texture) u32 {
+        return textureGetDepthOrArrayLayers(self);
+    }
+    /// `WGPUTextureDimension wgpuTextureGetDimension(WGPUTexture texture)`
+    pub inline fn getDimension(self: *Texture) TextureDimension {
+        return textureGetDimension(self);
+    }
+    /// `WGPUTextureFormat wgpuTextureGetFormat(WGPUTexture texture)`
+    pub inline fn getFormat(self: *Texture) TextureFormat {
+        return textureGetFormat(self);
+    }
+    /// `uint32_t wgpuTextureGetHeight(WGPUTexture texture)`
+    pub inline fn getHeight(self: *Texture) u32 {
+        return textureGetHeight(self);
+    }
+    /// `uint32_t wgpuTextureGetMipLevelCount(WGPUTexture texture)`
+    pub inline fn getMipLevelCount(self: *Texture) u32 {
+        return textureGetMipLevelCount(self);
+    }
+    /// `uint32_t wgpuTextureGetSampleCount(WGPUTexture texture)`
+    pub inline fn getSampleCount(self: *Texture) u32 {
+        return textureGetSampleCount(self);
+    }
+    /// `WGPUTextureUsage wgpuTextureGetUsage(WGPUTexture texture)`
+    pub inline fn getUsage(self: *Texture) TextureUsage {
+        return textureGetUsage(self);
+    }
+    /// `uint32_t wgpuTextureGetWidth(WGPUTexture texture)`
+    pub inline fn getWidth(self: *Texture) u32 {
+        return textureGetWidth(self);
+    }
+    /// `void wgpuTextureSetLabel(WGPUTexture texture, WGPUStringView label)`
+    pub inline fn setLabel(self: *Texture, label: []const u8) void {
+        return textureSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuTextureAddRef(WGPUTexture texture)`
+    pub inline fn addRef(self: *Texture) void {
+        return textureAddRef(self);
+    }
+    /// `void wgpuTextureRelease(WGPUTexture texture)`
+    pub inline fn release(self: *Texture) void {
+        return textureRelease(self);
+    }
+};
+pub const TextureView = opaque {
+    /// `void wgpuTextureViewSetLabel(WGPUTextureView textureView, WGPUStringView label)`
+    pub inline fn setLabel(self: *TextureView, label: []const u8) void {
+        return textureViewSetLabel(self, .fromSlice(label));
+    }
+    /// `void wgpuTextureViewAddRef(WGPUTextureView textureView)`
+    pub inline fn addRef(self: *TextureView) void {
+        return textureViewAddRef(self);
+    }
+    /// `void wgpuTextureViewRelease(WGPUTextureView textureView)`
+    pub inline fn release(self: *TextureView) void {
+        return textureViewRelease(self);
+    }
+};
 
 pub const ChainedStructOut = extern struct {
     next: ?*ChainedStructOut = null,
@@ -944,6 +1767,11 @@ pub const AdapterInfo = extern struct {
     adapter_type: AdapterType = .undefined,
     vendor_id: u32 = 0,
     device_id: u32 = 0,
+
+    /// `void wgpuAdapterInfoFreeMembers(WGPUAdapterInfo adapterInfo)`
+    pub inline fn freeMembers(self: AdapterInfo) void {
+        return adapterInfoFreeMembers(self);
+    }
 };
 
 pub const ChainedStruct = extern struct {
@@ -954,11 +1782,11 @@ pub const ChainedStruct = extern struct {
 pub const BindGroupEntry = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
     binding: u32 = 0,
-    buffer: Buffer = null,
+    buffer: ?*Buffer = null,
     offset: u64 = 0,
     size: u64 = 0,
-    sampler: Sampler = null,
-    texture_view: TextureView = null,
+    sampler: ?*Sampler = null,
+    texture_view: ?*TextureView = null,
 };
 
 pub const BlendComponent = extern struct {
@@ -1010,7 +1838,7 @@ pub const CompilationMessage = extern struct {
 };
 
 pub const ComputePassTimestampWrites = extern struct {
-    query_set: QuerySet = null,
+    query_set: ?*QuerySet = null,
     beginning_of_pass_write_index: u32 = 0,
     end_of_pass_write_index: u32 = 0,
 };
@@ -1089,7 +1917,7 @@ pub const PipelineLayoutDescriptor = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
     label: StringView = .{},
     bind_group_layout_count: usize = 0,
-    bind_group_layouts: ?[*]const BindGroupLayout = null,
+    bind_group_layouts: ?[*]const ?*BindGroupLayout = null,
 };
 
 pub const PrimitiveState = extern struct {
@@ -1130,7 +1958,7 @@ pub const RenderBundleEncoderDescriptor = extern struct {
 };
 
 pub const RenderPassDepthStencilAttachment = extern struct {
-    view: TextureView = null,
+    view: ?*TextureView = null,
     depth_load_op: LoadOp = .undefined,
     depth_store_op: StoreOp = .undefined,
     depth_clear_value: f32 = 0.0,
@@ -1147,7 +1975,7 @@ pub const RenderPassMaxDrawCount = extern struct {
 };
 
 pub const RenderPassTimestampWrites = extern struct {
-    query_set: QuerySet = null,
+    query_set: ?*QuerySet = null,
     beginning_of_pass_write_index: u32 = 0,
     end_of_pass_write_index: u32 = 0,
 };
@@ -1158,7 +1986,7 @@ pub const RequestAdapterOptions = extern struct {
     power_preference: PowerPreference = .undefined,
     force_fallback_adapter: BigBool = .False,
     backend_type: BackendType = .undefined,
-    compatible_surface: Surface = null,
+    compatible_surface: ?*Surface = null,
 };
 
 pub const SamplerBindingLayout = extern struct {
@@ -1230,11 +2058,16 @@ pub const SurfaceCapabilities = extern struct {
     present_modes: ?[*]const PresentMode = null,
     alpha_mode_count: usize = 0,
     alpha_modes: ?[*]const CompositeAlphaMode = null,
+
+    /// `void wgpuSurfaceCapabilitiesFreeMembers(WGPUSurfaceCapabilities surfaceCapabilities)`
+    pub inline fn freeMembers(self: SurfaceCapabilities) void {
+        return surfaceCapabilitiesFreeMembers(self);
+    }
 };
 
 pub const SurfaceConfiguration = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
-    device: Device = null,
+    device: ?*Device = null,
     format: TextureFormat = .undefined,
     usage: TextureUsage = .none,
     width: u32 = 0,
@@ -1286,7 +2119,7 @@ pub const SurfaceSourceXlibWindow = extern struct {
 
 pub const SurfaceTexture = extern struct {
     next_in_chain: ?*ChainedStructOut = null,
-    texture: Texture = null,
+    texture: ?*Texture = null,
     status: SurfaceGetCurrentTextureStatus = .undefined,
 };
 
@@ -1325,7 +2158,7 @@ pub const VertexAttribute = extern struct {
 pub const BindGroupDescriptor = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
     label: StringView = .{},
-    layout: BindGroupLayout = null,
+    layout: ?*BindGroupLayout = null,
     entry_count: usize = 0,
     entries: ?[*]const BindGroupEntry = null,
 };
@@ -1409,7 +2242,7 @@ pub const InstanceDescriptor = extern struct {
 
 pub const ProgrammableStageDescriptor = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
-    module: ShaderModule = null,
+    module: ?*ShaderModule = null,
     entry_point: StringView = .{},
     constant_count: usize = 0,
     constants: ?[*]const ConstantEntry = null,
@@ -1417,9 +2250,9 @@ pub const ProgrammableStageDescriptor = extern struct {
 
 pub const RenderPassColorAttachment = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
-    view: TextureView = null,
+    view: ?*TextureView = null,
     depth_slice: u32 = undefined_depth_slice,
-    resolve_target: TextureView = null,
+    resolve_target: ?*TextureView = null,
     load_op: LoadOp = .undefined,
     store_op: StoreOp = .undefined,
     clear_value: Color = .{},
@@ -1427,11 +2260,11 @@ pub const RenderPassColorAttachment = extern struct {
 
 pub const TexelCopyBufferInfo = extern struct {
     layout: TexelCopyBufferLayout = .{},
-    buffer: Buffer = null,
+    buffer: ?*Buffer = null,
 };
 
 pub const TexelCopyTextureInfo = extern struct {
-    texture: Texture = null,
+    texture: ?*Texture = null,
     mip_level: u32 = 0,
     origin: Origin3D = .{},
     aspect: TextureAspect = .undefined,
@@ -1474,7 +2307,7 @@ pub const ColorTargetState = extern struct {
 pub const ComputePipelineDescriptor = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
     label: StringView = .{},
-    layout: PipelineLayout = null,
+    layout: ?*PipelineLayout = null,
     compute: ProgrammableStageDescriptor = .{},
 };
 
@@ -1484,13 +2317,13 @@ pub const RenderPassDescriptor = extern struct {
     color_attachment_count: usize = 0,
     color_attachments: ?[*]const RenderPassColorAttachment = null,
     depth_stencil_attachment: ?*const RenderPassDepthStencilAttachment = null,
-    occlusion_query_set: QuerySet = null,
+    occlusion_query_set: ?*QuerySet = null,
     timestamp_writes: ?*const RenderPassTimestampWrites = null,
 };
 
 pub const VertexState = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
-    module: ShaderModule = null,
+    module: ?*ShaderModule = null,
     entry_point: StringView = .{},
     constant_count: usize = 0,
     constants: ?[*]const ConstantEntry = null,
@@ -1500,7 +2333,7 @@ pub const VertexState = extern struct {
 
 pub const FragmentState = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
-    module: ShaderModule = null,
+    module: ?*ShaderModule = null,
     entry_point: StringView = .{},
     constant_count: usize = 0,
     constants: ?[*]const ConstantEntry = null,
@@ -1511,7 +2344,7 @@ pub const FragmentState = extern struct {
 pub const RenderPipelineDescriptor = extern struct {
     next_in_chain: ?*const ChainedStruct = null,
     label: StringView = .{},
-    layout: PipelineLayout = null,
+    layout: ?*PipelineLayout = null,
     vertex: VertexState = .{},
     primitive: PrimitiveState = .{},
     depth_stencil: ?*const DepthStencilState = null,
@@ -1679,11 +2512,11 @@ pub const InstanceEnumerateAdapterOptions = extern struct {
 
 pub const BindGroupEntryExtras = extern struct {
     chain: ChainedStruct = .{},
-    buffers: ?[*]const Buffer = null,
+    buffers: ?[*]const ?*Buffer = null,
     buffer_count: usize = 0,
-    samplers: ?[*]const Sampler = null,
+    samplers: ?[*]const ?*Sampler = null,
     sampler_count: usize = 0,
-    texture_views: ?[*]const TextureView = null,
+    texture_views: ?[*]const ?*TextureView = null,
     texture_view_count: usize = 0,
 };
 
@@ -1708,471 +2541,443 @@ pub const SurfaceSourceSwapChainPanel = extern struct {
     panel_native: ?*anyopaque = null,
 };
 
-pub const DeviceLostCallback = ?*const fn (Device, DeviceLostReason, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
-pub const UncapturedErrorCallback = ?*const fn (Device, ErrorType, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
+pub const DeviceLostCallback = ?*const fn (*Device, DeviceLostReason, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
+pub const UncapturedErrorCallback = ?*const fn (*Device, ErrorType, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
 pub const BufferMapCallback = ?*const fn (MapAsyncStatus, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
 pub const CompilationInfoCallback = ?*const fn (CompilationInfoRequestStatus, *const CompilationInfo, ?*anyopaque, ?*anyopaque) callconv(.c) void;
-pub const CreateComputePipelineAsyncCallback = ?*const fn (CreatePipelineAsyncStatus, ComputePipeline, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
-pub const CreateRenderPipelineAsyncCallback = ?*const fn (CreatePipelineAsyncStatus, RenderPipeline, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
+pub const CreateComputePipelineAsyncCallback = ?*const fn (CreatePipelineAsyncStatus, *ComputePipeline, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
+pub const CreateRenderPipelineAsyncCallback = ?*const fn (CreatePipelineAsyncStatus, *RenderPipeline, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
 pub const PopErrorScopeCallback = ?*const fn (PopErrorScopeStatus, ErrorType, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
 pub const QueueWorkDoneCallback = ?*const fn (QueueWorkDoneStatus, ?*anyopaque, ?*anyopaque) callconv(.c) void;
-pub const RequestAdapterCallback = ?*const fn (RequestAdapterStatus, Adapter, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
-pub const RequestDeviceCallback = ?*const fn (RequestDeviceStatus, Device, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
+pub const RequestAdapterCallback = ?*const fn (RequestAdapterStatus, *Adapter, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
+pub const RequestDeviceCallback = ?*const fn (RequestDeviceStatus, *Device, StringView, ?*anyopaque, ?*anyopaque) callconv(.c) void;
 pub const LogCallback = ?*const fn (LogLevel, StringView, ?*anyopaque) callconv(.c) void;
 
 /// `WGPUInstance wgpuCreateInstance(WGPU_NULLABLE WGPUInstanceDescriptor const * descriptor)`
-pub const createInstance = @extern(*const fn (?*const InstanceDescriptor) callconv(.c) Instance, .{ .name = "wgpuCreateInstance" });
+pub const createInstance = @extern(*const fn (*const InstanceDescriptor) callconv(.c) ?*Instance, .{ .name = "wgpuCreateInstance" });
 /// `WGPUStatus wgpuGetInstanceCapabilities(WGPUInstanceCapabilities * capabilities)`
 pub const getInstanceCapabilities = @extern(*const fn (*InstanceCapabilities) callconv(.c) Status, .{ .name = "wgpuGetInstanceCapabilities" });
 /// `WGPUProc wgpuGetProcAddress(WGPUStringView procName)`
 pub const getProcAddress = @extern(*const fn (StringView) callconv(.c) Proc, .{ .name = "wgpuGetProcAddress" });
-/// `void wgpuAdapterGetFeatures(WGPUAdapter adapter, WGPUSupportedFeatures * features)`
-pub const adapterGetFeatures = @extern(*const fn (Adapter, *SupportedFeatures) callconv(.c) void, .{ .name = "wgpuAdapterGetFeatures" });
-/// `WGPUStatus wgpuAdapterGetInfo(WGPUAdapter adapter, WGPUAdapterInfo * info)`
-pub const adapterGetInfo = @extern(*const fn (Adapter, *AdapterInfo) callconv(.c) Status, .{ .name = "wgpuAdapterGetInfo" });
-/// `WGPUStatus wgpuAdapterGetLimits(WGPUAdapter adapter, WGPULimits * limits)`
-pub const adapterGetLimits = @extern(*const fn (Adapter, *Limits) callconv(.c) Status, .{ .name = "wgpuAdapterGetLimits" });
-/// `WGPUBool wgpuAdapterHasFeature(WGPUAdapter adapter, WGPUFeatureName feature)`
-pub const adapterHasFeature = @extern(*const fn (Adapter, FeatureName) callconv(.c) BigBool, .{ .name = "wgpuAdapterHasFeature" });
-/// `WGPUFuture wgpuAdapterRequestDevice(WGPUAdapter adapter, WGPU_NULLABLE WGPUDeviceDescriptor const * descriptor, WGPURequestDeviceCallbackInfo callbackInfo)`
-pub const adapterRequestDevice = @extern(*const fn (Adapter, ?*const DeviceDescriptor, RequestDeviceCallbackInfo) callconv(.c) Future, .{ .name = "wgpuAdapterRequestDevice" });
-/// `void wgpuAdapterAddRef(WGPUAdapter adapter)`
-pub const adapterAddRef = @extern(*const fn (Adapter) callconv(.c) void, .{ .name = "wgpuAdapterAddRef" });
-/// `void wgpuAdapterRelease(WGPUAdapter adapter)`
-pub const adapterRelease = @extern(*const fn (Adapter) callconv(.c) void, .{ .name = "wgpuAdapterRelease" });
-/// `void wgpuAdapterInfoFreeMembers(WGPUAdapterInfo adapterInfo)`
-pub const adapterInfoFreeMembers = @extern(*const fn (AdapterInfo) callconv(.c) void, .{ .name = "wgpuAdapterInfoFreeMembers" });
-/// `void wgpuBindGroupSetLabel(WGPUBindGroup bindGroup, WGPUStringView label)`
-pub const bindGroupSetLabel = @extern(*const fn (BindGroup, StringView) callconv(.c) void, .{ .name = "wgpuBindGroupSetLabel" });
-/// `void wgpuBindGroupAddRef(WGPUBindGroup bindGroup)`
-pub const bindGroupAddRef = @extern(*const fn (BindGroup) callconv(.c) void, .{ .name = "wgpuBindGroupAddRef" });
-/// `void wgpuBindGroupRelease(WGPUBindGroup bindGroup)`
-pub const bindGroupRelease = @extern(*const fn (BindGroup) callconv(.c) void, .{ .name = "wgpuBindGroupRelease" });
-/// `void wgpuBindGroupLayoutSetLabel(WGPUBindGroupLayout bindGroupLayout, WGPUStringView label)`
-pub const bindGroupLayoutSetLabel = @extern(*const fn (BindGroupLayout, StringView) callconv(.c) void, .{ .name = "wgpuBindGroupLayoutSetLabel" });
-/// `void wgpuBindGroupLayoutAddRef(WGPUBindGroupLayout bindGroupLayout)`
-pub const bindGroupLayoutAddRef = @extern(*const fn (BindGroupLayout) callconv(.c) void, .{ .name = "wgpuBindGroupLayoutAddRef" });
-/// `void wgpuBindGroupLayoutRelease(WGPUBindGroupLayout bindGroupLayout)`
-pub const bindGroupLayoutRelease = @extern(*const fn (BindGroupLayout) callconv(.c) void, .{ .name = "wgpuBindGroupLayoutRelease" });
-/// `void wgpuBufferDestroy(WGPUBuffer buffer)`
-pub const bufferDestroy = @extern(*const fn (Buffer) callconv(.c) void, .{ .name = "wgpuBufferDestroy" });
-/// `void const * wgpuBufferGetConstMappedRange(WGPUBuffer buffer, size_t offset, size_t size)`
-pub const bufferGetConstMappedRange = @extern(*const fn (Buffer, usize, usize) callconv(.c) ?*const anyopaque, .{ .name = "wgpuBufferGetConstMappedRange" });
-/// `WGPUBufferMapState wgpuBufferGetMapState(WGPUBuffer buffer)`
-pub const bufferGetMapState = @extern(*const fn (Buffer) callconv(.c) BufferMapState, .{ .name = "wgpuBufferGetMapState" });
-/// `void * wgpuBufferGetMappedRange(WGPUBuffer buffer, size_t offset, size_t size)`
-pub const bufferGetMappedRange = @extern(*const fn (Buffer, usize, usize) callconv(.c) ?*anyopaque, .{ .name = "wgpuBufferGetMappedRange" });
-/// `uint64_t wgpuBufferGetSize(WGPUBuffer buffer)`
-pub const bufferGetSize = @extern(*const fn (Buffer) callconv(.c) u64, .{ .name = "wgpuBufferGetSize" });
-/// `WGPUBufferUsage wgpuBufferGetUsage(WGPUBuffer buffer)`
-pub const bufferGetUsage = @extern(*const fn (Buffer) callconv(.c) BufferUsage, .{ .name = "wgpuBufferGetUsage" });
-/// `WGPUFuture wgpuBufferMapAsync(WGPUBuffer buffer, WGPUMapMode mode, size_t offset, size_t size, WGPUBufferMapCallbackInfo callbackInfo)`
-pub const bufferMapAsync = @extern(*const fn (Buffer, MapMode, usize, usize, BufferMapCallbackInfo) callconv(.c) Future, .{ .name = "wgpuBufferMapAsync" });
-/// `void wgpuBufferSetLabel(WGPUBuffer buffer, WGPUStringView label)`
-pub const bufferSetLabel = @extern(*const fn (Buffer, StringView) callconv(.c) void, .{ .name = "wgpuBufferSetLabel" });
-/// `void wgpuBufferUnmap(WGPUBuffer buffer)`
-pub const bufferUnmap = @extern(*const fn (Buffer) callconv(.c) void, .{ .name = "wgpuBufferUnmap" });
-/// `void wgpuBufferAddRef(WGPUBuffer buffer)`
-pub const bufferAddRef = @extern(*const fn (Buffer) callconv(.c) void, .{ .name = "wgpuBufferAddRef" });
-/// `void wgpuBufferRelease(WGPUBuffer buffer)`
-pub const bufferRelease = @extern(*const fn (Buffer) callconv(.c) void, .{ .name = "wgpuBufferRelease" });
-/// `void wgpuCommandBufferSetLabel(WGPUCommandBuffer commandBuffer, WGPUStringView label)`
-pub const commandBufferSetLabel = @extern(*const fn (CommandBuffer, StringView) callconv(.c) void, .{ .name = "wgpuCommandBufferSetLabel" });
-/// `void wgpuCommandBufferAddRef(WGPUCommandBuffer commandBuffer)`
-pub const commandBufferAddRef = @extern(*const fn (CommandBuffer) callconv(.c) void, .{ .name = "wgpuCommandBufferAddRef" });
-/// `void wgpuCommandBufferRelease(WGPUCommandBuffer commandBuffer)`
-pub const commandBufferRelease = @extern(*const fn (CommandBuffer) callconv(.c) void, .{ .name = "wgpuCommandBufferRelease" });
-/// `WGPUComputePassEncoder wgpuCommandEncoderBeginComputePass(WGPUCommandEncoder commandEncoder, WGPU_NULLABLE WGPUComputePassDescriptor const * descriptor)`
-pub const commandEncoderBeginComputePass = @extern(*const fn (CommandEncoder, ?*const ComputePassDescriptor) callconv(.c) ComputePassEncoder, .{ .name = "wgpuCommandEncoderBeginComputePass" });
-/// `WGPURenderPassEncoder wgpuCommandEncoderBeginRenderPass(WGPUCommandEncoder commandEncoder, WGPURenderPassDescriptor const * descriptor)`
-pub const commandEncoderBeginRenderPass = @extern(*const fn (CommandEncoder, *const RenderPassDescriptor) callconv(.c) RenderPassEncoder, .{ .name = "wgpuCommandEncoderBeginRenderPass" });
-/// `void wgpuCommandEncoderClearBuffer(WGPUCommandEncoder commandEncoder, WGPUBuffer buffer, uint64_t offset, uint64_t size)`
-pub const commandEncoderClearBuffer = @extern(*const fn (CommandEncoder, Buffer, u64, u64) callconv(.c) void, .{ .name = "wgpuCommandEncoderClearBuffer" });
-/// `void wgpuCommandEncoderCopyBufferToBuffer(WGPUCommandEncoder commandEncoder, WGPUBuffer source, uint64_t sourceOffset, WGPUBuffer destination, uint64_t destinationOffset, uint64_t size)`
-pub const commandEncoderCopyBufferToBuffer = @extern(*const fn (CommandEncoder, Buffer, u64, Buffer, u64, u64) callconv(.c) void, .{ .name = "wgpuCommandEncoderCopyBufferToBuffer" });
-/// `void wgpuCommandEncoderCopyBufferToTexture(WGPUCommandEncoder commandEncoder, WGPUTexelCopyBufferInfo const * source, WGPUTexelCopyTextureInfo const * destination, WGPUExtent3D const * copySize)`
-pub const commandEncoderCopyBufferToTexture = @extern(*const fn (CommandEncoder, *const TexelCopyBufferInfo, *const TexelCopyTextureInfo, *const Extent3D) callconv(.c) void, .{ .name = "wgpuCommandEncoderCopyBufferToTexture" });
-/// `void wgpuCommandEncoderCopyTextureToBuffer(WGPUCommandEncoder commandEncoder, WGPUTexelCopyTextureInfo const * source, WGPUTexelCopyBufferInfo const * destination, WGPUExtent3D const * copySize)`
-pub const commandEncoderCopyTextureToBuffer = @extern(*const fn (CommandEncoder, *const TexelCopyTextureInfo, *const TexelCopyBufferInfo, *const Extent3D) callconv(.c) void, .{ .name = "wgpuCommandEncoderCopyTextureToBuffer" });
-/// `void wgpuCommandEncoderCopyTextureToTexture(WGPUCommandEncoder commandEncoder, WGPUTexelCopyTextureInfo const * source, WGPUTexelCopyTextureInfo const * destination, WGPUExtent3D const * copySize)`
-pub const commandEncoderCopyTextureToTexture = @extern(*const fn (CommandEncoder, *const TexelCopyTextureInfo, *const TexelCopyTextureInfo, *const Extent3D) callconv(.c) void, .{ .name = "wgpuCommandEncoderCopyTextureToTexture" });
-/// `WGPUCommandBuffer wgpuCommandEncoderFinish(WGPUCommandEncoder commandEncoder, WGPU_NULLABLE WGPUCommandBufferDescriptor const * descriptor)`
-pub const commandEncoderFinish = @extern(*const fn (CommandEncoder, ?*const CommandBufferDescriptor) callconv(.c) CommandBuffer, .{ .name = "wgpuCommandEncoderFinish" });
-/// `void wgpuCommandEncoderInsertDebugMarker(WGPUCommandEncoder commandEncoder, WGPUStringView markerLabel)`
-pub const commandEncoderInsertDebugMarker = @extern(*const fn (CommandEncoder, StringView) callconv(.c) void, .{ .name = "wgpuCommandEncoderInsertDebugMarker" });
-/// `void wgpuCommandEncoderPopDebugGroup(WGPUCommandEncoder commandEncoder)`
-pub const commandEncoderPopDebugGroup = @extern(*const fn (CommandEncoder) callconv(.c) void, .{ .name = "wgpuCommandEncoderPopDebugGroup" });
-/// `void wgpuCommandEncoderPushDebugGroup(WGPUCommandEncoder commandEncoder, WGPUStringView groupLabel)`
-pub const commandEncoderPushDebugGroup = @extern(*const fn (CommandEncoder, StringView) callconv(.c) void, .{ .name = "wgpuCommandEncoderPushDebugGroup" });
-/// `void wgpuCommandEncoderResolveQuerySet(WGPUCommandEncoder commandEncoder, WGPUQuerySet querySet, uint32_t firstQuery, uint32_t queryCount, WGPUBuffer destination, uint64_t destinationOffset)`
-pub const commandEncoderResolveQuerySet = @extern(*const fn (CommandEncoder, QuerySet, u32, u32, Buffer, u64) callconv(.c) void, .{ .name = "wgpuCommandEncoderResolveQuerySet" });
-/// `void wgpuCommandEncoderSetLabel(WGPUCommandEncoder commandEncoder, WGPUStringView label)`
-pub const commandEncoderSetLabel = @extern(*const fn (CommandEncoder, StringView) callconv(.c) void, .{ .name = "wgpuCommandEncoderSetLabel" });
-/// `void wgpuCommandEncoderWriteTimestamp(WGPUCommandEncoder commandEncoder, WGPUQuerySet querySet, uint32_t queryIndex)`
-pub const commandEncoderWriteTimestamp = @extern(*const fn (CommandEncoder, QuerySet, u32) callconv(.c) void, .{ .name = "wgpuCommandEncoderWriteTimestamp" });
-/// `void wgpuCommandEncoderAddRef(WGPUCommandEncoder commandEncoder)`
-pub const commandEncoderAddRef = @extern(*const fn (CommandEncoder) callconv(.c) void, .{ .name = "wgpuCommandEncoderAddRef" });
-/// `void wgpuCommandEncoderRelease(WGPUCommandEncoder commandEncoder)`
-pub const commandEncoderRelease = @extern(*const fn (CommandEncoder) callconv(.c) void, .{ .name = "wgpuCommandEncoderRelease" });
-/// `void wgpuComputePassEncoderDispatchWorkgroups(WGPUComputePassEncoder computePassEncoder, uint32_t workgroupCountX, uint32_t workgroupCountY, uint32_t workgroupCountZ)`
-pub const computePassEncoderDispatchWorkgroups = @extern(*const fn (ComputePassEncoder, u32, u32, u32) callconv(.c) void, .{ .name = "wgpuComputePassEncoderDispatchWorkgroups" });
-/// `void wgpuComputePassEncoderDispatchWorkgroupsIndirect(WGPUComputePassEncoder computePassEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
-pub const computePassEncoderDispatchWorkgroupsIndirect = @extern(*const fn (ComputePassEncoder, Buffer, u64) callconv(.c) void, .{ .name = "wgpuComputePassEncoderDispatchWorkgroupsIndirect" });
-/// `void wgpuComputePassEncoderEnd(WGPUComputePassEncoder computePassEncoder)`
-pub const computePassEncoderEnd = @extern(*const fn (ComputePassEncoder) callconv(.c) void, .{ .name = "wgpuComputePassEncoderEnd" });
-/// `void wgpuComputePassEncoderInsertDebugMarker(WGPUComputePassEncoder computePassEncoder, WGPUStringView markerLabel)`
-pub const computePassEncoderInsertDebugMarker = @extern(*const fn (ComputePassEncoder, StringView) callconv(.c) void, .{ .name = "wgpuComputePassEncoderInsertDebugMarker" });
-/// `void wgpuComputePassEncoderPopDebugGroup(WGPUComputePassEncoder computePassEncoder)`
-pub const computePassEncoderPopDebugGroup = @extern(*const fn (ComputePassEncoder) callconv(.c) void, .{ .name = "wgpuComputePassEncoderPopDebugGroup" });
-/// `void wgpuComputePassEncoderPushDebugGroup(WGPUComputePassEncoder computePassEncoder, WGPUStringView groupLabel)`
-pub const computePassEncoderPushDebugGroup = @extern(*const fn (ComputePassEncoder, StringView) callconv(.c) void, .{ .name = "wgpuComputePassEncoderPushDebugGroup" });
-/// `void wgpuComputePassEncoderSetBindGroup(WGPUComputePassEncoder computePassEncoder, uint32_t groupIndex, WGPU_NULLABLE WGPUBindGroup group, size_t dynamicOffsetCount, uint32_t const * dynamicOffsets)`
-pub const computePassEncoderSetBindGroup = @extern(*const fn (ComputePassEncoder, u32, BindGroup, usize, ?[*]const u32) callconv(.c) void, .{ .name = "wgpuComputePassEncoderSetBindGroup" });
-/// `void wgpuComputePassEncoderSetLabel(WGPUComputePassEncoder computePassEncoder, WGPUStringView label)`
-pub const computePassEncoderSetLabel = @extern(*const fn (ComputePassEncoder, StringView) callconv(.c) void, .{ .name = "wgpuComputePassEncoderSetLabel" });
-/// `void wgpuComputePassEncoderSetPipeline(WGPUComputePassEncoder computePassEncoder, WGPUComputePipeline pipeline)`
-pub const computePassEncoderSetPipeline = @extern(*const fn (ComputePassEncoder, ComputePipeline) callconv(.c) void, .{ .name = "wgpuComputePassEncoderSetPipeline" });
-/// `void wgpuComputePassEncoderAddRef(WGPUComputePassEncoder computePassEncoder)`
-pub const computePassEncoderAddRef = @extern(*const fn (ComputePassEncoder) callconv(.c) void, .{ .name = "wgpuComputePassEncoderAddRef" });
-/// `void wgpuComputePassEncoderRelease(WGPUComputePassEncoder computePassEncoder)`
-pub const computePassEncoderRelease = @extern(*const fn (ComputePassEncoder) callconv(.c) void, .{ .name = "wgpuComputePassEncoderRelease" });
-/// `WGPUBindGroupLayout wgpuComputePipelineGetBindGroupLayout(WGPUComputePipeline computePipeline, uint32_t groupIndex)`
-pub const computePipelineGetBindGroupLayout = @extern(*const fn (ComputePipeline, u32) callconv(.c) BindGroupLayout, .{ .name = "wgpuComputePipelineGetBindGroupLayout" });
-/// `void wgpuComputePipelineSetLabel(WGPUComputePipeline computePipeline, WGPUStringView label)`
-pub const computePipelineSetLabel = @extern(*const fn (ComputePipeline, StringView) callconv(.c) void, .{ .name = "wgpuComputePipelineSetLabel" });
-/// `void wgpuComputePipelineAddRef(WGPUComputePipeline computePipeline)`
-pub const computePipelineAddRef = @extern(*const fn (ComputePipeline) callconv(.c) void, .{ .name = "wgpuComputePipelineAddRef" });
-/// `void wgpuComputePipelineRelease(WGPUComputePipeline computePipeline)`
-pub const computePipelineRelease = @extern(*const fn (ComputePipeline) callconv(.c) void, .{ .name = "wgpuComputePipelineRelease" });
-/// `WGPUBindGroup wgpuDeviceCreateBindGroup(WGPUDevice device, WGPUBindGroupDescriptor const * descriptor)`
-pub const deviceCreateBindGroup = @extern(*const fn (Device, *const BindGroupDescriptor) callconv(.c) BindGroup, .{ .name = "wgpuDeviceCreateBindGroup" });
-/// `WGPUBindGroupLayout wgpuDeviceCreateBindGroupLayout(WGPUDevice device, WGPUBindGroupLayoutDescriptor const * descriptor)`
-pub const deviceCreateBindGroupLayout = @extern(*const fn (Device, *const BindGroupLayoutDescriptor) callconv(.c) BindGroupLayout, .{ .name = "wgpuDeviceCreateBindGroupLayout" });
-/// `WGPUBuffer wgpuDeviceCreateBuffer(WGPUDevice device, WGPUBufferDescriptor const * descriptor)`
-pub const deviceCreateBuffer = @extern(*const fn (Device, *const BufferDescriptor) callconv(.c) Buffer, .{ .name = "wgpuDeviceCreateBuffer" });
-/// `WGPUCommandEncoder wgpuDeviceCreateCommandEncoder(WGPUDevice device, WGPU_NULLABLE WGPUCommandEncoderDescriptor const * descriptor)`
-pub const deviceCreateCommandEncoder = @extern(*const fn (Device, ?*const CommandEncoderDescriptor) callconv(.c) CommandEncoder, .{ .name = "wgpuDeviceCreateCommandEncoder" });
-/// `WGPUComputePipeline wgpuDeviceCreateComputePipeline(WGPUDevice device, WGPUComputePipelineDescriptor const * descriptor)`
-pub const deviceCreateComputePipeline = @extern(*const fn (Device, *const ComputePipelineDescriptor) callconv(.c) ComputePipeline, .{ .name = "wgpuDeviceCreateComputePipeline" });
-/// `WGPUFuture wgpuDeviceCreateComputePipelineAsync(WGPUDevice device, WGPUComputePipelineDescriptor const * descriptor, WGPUCreateComputePipelineAsyncCallbackInfo callbackInfo)`
-pub const deviceCreateComputePipelineAsync = @extern(*const fn (Device, *const ComputePipelineDescriptor, CreateComputePipelineAsyncCallbackInfo) callconv(.c) Future, .{ .name = "wgpuDeviceCreateComputePipelineAsync" });
-/// `WGPUPipelineLayout wgpuDeviceCreatePipelineLayout(WGPUDevice device, WGPUPipelineLayoutDescriptor const * descriptor)`
-pub const deviceCreatePipelineLayout = @extern(*const fn (Device, *const PipelineLayoutDescriptor) callconv(.c) PipelineLayout, .{ .name = "wgpuDeviceCreatePipelineLayout" });
-/// `WGPUQuerySet wgpuDeviceCreateQuerySet(WGPUDevice device, WGPUQuerySetDescriptor const * descriptor)`
-pub const deviceCreateQuerySet = @extern(*const fn (Device, *const QuerySetDescriptor) callconv(.c) QuerySet, .{ .name = "wgpuDeviceCreateQuerySet" });
-/// `WGPURenderBundleEncoder wgpuDeviceCreateRenderBundleEncoder(WGPUDevice device, WGPURenderBundleEncoderDescriptor const * descriptor)`
-pub const deviceCreateRenderBundleEncoder = @extern(*const fn (Device, *const RenderBundleEncoderDescriptor) callconv(.c) RenderBundleEncoder, .{ .name = "wgpuDeviceCreateRenderBundleEncoder" });
-/// `WGPURenderPipeline wgpuDeviceCreateRenderPipeline(WGPUDevice device, WGPURenderPipelineDescriptor const * descriptor)`
-pub const deviceCreateRenderPipeline = @extern(*const fn (Device, *const RenderPipelineDescriptor) callconv(.c) RenderPipeline, .{ .name = "wgpuDeviceCreateRenderPipeline" });
-/// `WGPUFuture wgpuDeviceCreateRenderPipelineAsync(WGPUDevice device, WGPURenderPipelineDescriptor const * descriptor, WGPUCreateRenderPipelineAsyncCallbackInfo callbackInfo)`
-pub const deviceCreateRenderPipelineAsync = @extern(*const fn (Device, *const RenderPipelineDescriptor, CreateRenderPipelineAsyncCallbackInfo) callconv(.c) Future, .{ .name = "wgpuDeviceCreateRenderPipelineAsync" });
-/// `WGPUSampler wgpuDeviceCreateSampler(WGPUDevice device, WGPU_NULLABLE WGPUSamplerDescriptor const * descriptor)`
-pub const deviceCreateSampler = @extern(*const fn (Device, ?*const SamplerDescriptor) callconv(.c) Sampler, .{ .name = "wgpuDeviceCreateSampler" });
-/// `WGPUShaderModule wgpuDeviceCreateShaderModule(WGPUDevice device, WGPUShaderModuleDescriptor const * descriptor)`
-pub const deviceCreateShaderModule = @extern(*const fn (Device, *const ShaderModuleDescriptor) callconv(.c) ShaderModule, .{ .name = "wgpuDeviceCreateShaderModule" });
-/// `WGPUTexture wgpuDeviceCreateTexture(WGPUDevice device, WGPUTextureDescriptor const * descriptor)`
-pub const deviceCreateTexture = @extern(*const fn (Device, *const TextureDescriptor) callconv(.c) Texture, .{ .name = "wgpuDeviceCreateTexture" });
-/// `void wgpuDeviceDestroy(WGPUDevice device)`
-pub const deviceDestroy = @extern(*const fn (Device) callconv(.c) void, .{ .name = "wgpuDeviceDestroy" });
-/// `WGPUAdapterInfo wgpuDeviceGetAdapterInfo(WGPUDevice device)`
-pub const deviceGetAdapterInfo = @extern(*const fn (Device) callconv(.c) AdapterInfo, .{ .name = "wgpuDeviceGetAdapterInfo" });
-/// `void wgpuDeviceGetFeatures(WGPUDevice device, WGPUSupportedFeatures * features)`
-pub const deviceGetFeatures = @extern(*const fn (Device, *SupportedFeatures) callconv(.c) void, .{ .name = "wgpuDeviceGetFeatures" });
-/// `WGPUStatus wgpuDeviceGetLimits(WGPUDevice device, WGPULimits * limits)`
-pub const deviceGetLimits = @extern(*const fn (Device, *Limits) callconv(.c) Status, .{ .name = "wgpuDeviceGetLimits" });
-/// `WGPUFuture wgpuDeviceGetLostFuture(WGPUDevice device)`
-pub const deviceGetLostFuture = @extern(*const fn (Device) callconv(.c) Future, .{ .name = "wgpuDeviceGetLostFuture" });
-/// `WGPUQueue wgpuDeviceGetQueue(WGPUDevice device)`
-pub const deviceGetQueue = @extern(*const fn (Device) callconv(.c) Queue, .{ .name = "wgpuDeviceGetQueue" });
-/// `WGPUBool wgpuDeviceHasFeature(WGPUDevice device, WGPUFeatureName feature)`
-pub const deviceHasFeature = @extern(*const fn (Device, FeatureName) callconv(.c) BigBool, .{ .name = "wgpuDeviceHasFeature" });
-/// `WGPUFuture wgpuDevicePopErrorScope(WGPUDevice device, WGPUPopErrorScopeCallbackInfo callbackInfo)`
-pub const devicePopErrorScope = @extern(*const fn (Device, PopErrorScopeCallbackInfo) callconv(.c) Future, .{ .name = "wgpuDevicePopErrorScope" });
-/// `void wgpuDevicePushErrorScope(WGPUDevice device, WGPUErrorFilter filter)`
-pub const devicePushErrorScope = @extern(*const fn (Device, ErrorFilter) callconv(.c) void, .{ .name = "wgpuDevicePushErrorScope" });
-/// `void wgpuDeviceSetLabel(WGPUDevice device, WGPUStringView label)`
-pub const deviceSetLabel = @extern(*const fn (Device, StringView) callconv(.c) void, .{ .name = "wgpuDeviceSetLabel" });
-/// `void wgpuDeviceAddRef(WGPUDevice device)`
-pub const deviceAddRef = @extern(*const fn (Device) callconv(.c) void, .{ .name = "wgpuDeviceAddRef" });
-/// `void wgpuDeviceRelease(WGPUDevice device)`
-pub const deviceRelease = @extern(*const fn (Device) callconv(.c) void, .{ .name = "wgpuDeviceRelease" });
-/// `WGPUSurface wgpuInstanceCreateSurface(WGPUInstance instance, WGPUSurfaceDescriptor const * descriptor)`
-pub const instanceCreateSurface = @extern(*const fn (Instance, *const SurfaceDescriptor) callconv(.c) Surface, .{ .name = "wgpuInstanceCreateSurface" });
-/// `WGPUStatus wgpuInstanceGetWGSLLanguageFeatures(WGPUInstance instance, WGPUSupportedWGSLLanguageFeatures * features)`
-pub const instanceGetWGSLLanguageFeatures = @extern(*const fn (Instance, *SupportedWGSLLanguageFeatures) callconv(.c) Status, .{ .name = "wgpuInstanceGetWGSLLanguageFeatures" });
-/// `WGPUBool wgpuInstanceHasWGSLLanguageFeature(WGPUInstance instance, WGPUWGSLLanguageFeatureName feature)`
-pub const instanceHasWGSLLanguageFeature = @extern(*const fn (Instance, WGSLLanguageFeatureName) callconv(.c) BigBool, .{ .name = "wgpuInstanceHasWGSLLanguageFeature" });
-/// `void wgpuInstanceProcessEvents(WGPUInstance instance)`
-pub const instanceProcessEvents = @extern(*const fn (Instance) callconv(.c) void, .{ .name = "wgpuInstanceProcessEvents" });
-/// `WGPUFuture wgpuInstanceRequestAdapter(WGPUInstance instance, WGPU_NULLABLE WGPURequestAdapterOptions const * options, WGPURequestAdapterCallbackInfo callbackInfo)`
-pub const instanceRequestAdapter = @extern(*const fn (Instance, ?*const RequestAdapterOptions, RequestAdapterCallbackInfo) callconv(.c) Future, .{ .name = "wgpuInstanceRequestAdapter" });
-/// `WGPUWaitStatus wgpuInstanceWaitAny(WGPUInstance instance, size_t futureCount, WGPU_NULLABLE WGPUFutureWaitInfo * futures, uint64_t timeoutNS)`
-pub const instanceWaitAny = @extern(*const fn (Instance, usize, [*]FutureWaitInfo, u64) callconv(.c) WaitStatus, .{ .name = "wgpuInstanceWaitAny" });
-/// `void wgpuInstanceAddRef(WGPUInstance instance)`
-pub const instanceAddRef = @extern(*const fn (Instance) callconv(.c) void, .{ .name = "wgpuInstanceAddRef" });
-/// `void wgpuInstanceRelease(WGPUInstance instance)`
-pub const instanceRelease = @extern(*const fn (Instance) callconv(.c) void, .{ .name = "wgpuInstanceRelease" });
-/// `void wgpuPipelineLayoutSetLabel(WGPUPipelineLayout pipelineLayout, WGPUStringView label)`
-pub const pipelineLayoutSetLabel = @extern(*const fn (PipelineLayout, StringView) callconv(.c) void, .{ .name = "wgpuPipelineLayoutSetLabel" });
-/// `void wgpuPipelineLayoutAddRef(WGPUPipelineLayout pipelineLayout)`
-pub const pipelineLayoutAddRef = @extern(*const fn (PipelineLayout) callconv(.c) void, .{ .name = "wgpuPipelineLayoutAddRef" });
-/// `void wgpuPipelineLayoutRelease(WGPUPipelineLayout pipelineLayout)`
-pub const pipelineLayoutRelease = @extern(*const fn (PipelineLayout) callconv(.c) void, .{ .name = "wgpuPipelineLayoutRelease" });
-/// `void wgpuQuerySetDestroy(WGPUQuerySet querySet)`
-pub const querySetDestroy = @extern(*const fn (QuerySet) callconv(.c) void, .{ .name = "wgpuQuerySetDestroy" });
-/// `uint32_t wgpuQuerySetGetCount(WGPUQuerySet querySet)`
-pub const querySetGetCount = @extern(*const fn (QuerySet) callconv(.c) u32, .{ .name = "wgpuQuerySetGetCount" });
-/// `WGPUQueryType wgpuQuerySetGetType(WGPUQuerySet querySet)`
-pub const querySetGetType = @extern(*const fn (QuerySet) callconv(.c) QueryType, .{ .name = "wgpuQuerySetGetType" });
-/// `void wgpuQuerySetSetLabel(WGPUQuerySet querySet, WGPUStringView label)`
-pub const querySetSetLabel = @extern(*const fn (QuerySet, StringView) callconv(.c) void, .{ .name = "wgpuQuerySetSetLabel" });
-/// `void wgpuQuerySetAddRef(WGPUQuerySet querySet)`
-pub const querySetAddRef = @extern(*const fn (QuerySet) callconv(.c) void, .{ .name = "wgpuQuerySetAddRef" });
-/// `void wgpuQuerySetRelease(WGPUQuerySet querySet)`
-pub const querySetRelease = @extern(*const fn (QuerySet) callconv(.c) void, .{ .name = "wgpuQuerySetRelease" });
-/// `WGPUFuture wgpuQueueOnSubmittedWorkDone(WGPUQueue queue, WGPUQueueWorkDoneCallbackInfo callbackInfo)`
-pub const queueOnSubmittedWorkDone = @extern(*const fn (Queue, QueueWorkDoneCallbackInfo) callconv(.c) Future, .{ .name = "wgpuQueueOnSubmittedWorkDone" });
-/// `void wgpuQueueSetLabel(WGPUQueue queue, WGPUStringView label)`
-pub const queueSetLabel = @extern(*const fn (Queue, StringView) callconv(.c) void, .{ .name = "wgpuQueueSetLabel" });
-/// `void wgpuQueueSubmit(WGPUQueue queue, size_t commandCount, WGPUCommandBuffer const * commands)`
-pub const queueSubmit = @extern(*const fn (Queue, usize, ?[*]const CommandBuffer) callconv(.c) void, .{ .name = "wgpuQueueSubmit" });
-/// `void wgpuQueueWriteBuffer(WGPUQueue queue, WGPUBuffer buffer, uint64_t bufferOffset, void const * data, size_t size)`
-pub const queueWriteBuffer = @extern(*const fn (Queue, Buffer, u64, ?*const anyopaque, usize) callconv(.c) void, .{ .name = "wgpuQueueWriteBuffer" });
-/// `void wgpuQueueWriteTexture(WGPUQueue queue, WGPUTexelCopyTextureInfo const * destination, void const * data, size_t dataSize, WGPUTexelCopyBufferLayout const * dataLayout, WGPUExtent3D const * writeSize)`
-pub const queueWriteTexture = @extern(*const fn (Queue, *const TexelCopyTextureInfo, ?*const anyopaque, usize, *const TexelCopyBufferLayout, *const Extent3D) callconv(.c) void, .{ .name = "wgpuQueueWriteTexture" });
-/// `void wgpuQueueAddRef(WGPUQueue queue)`
-pub const queueAddRef = @extern(*const fn (Queue) callconv(.c) void, .{ .name = "wgpuQueueAddRef" });
-/// `void wgpuQueueRelease(WGPUQueue queue)`
-pub const queueRelease = @extern(*const fn (Queue) callconv(.c) void, .{ .name = "wgpuQueueRelease" });
-/// `void wgpuRenderBundleSetLabel(WGPURenderBundle renderBundle, WGPUStringView label)`
-pub const renderBundleSetLabel = @extern(*const fn (RenderBundle, StringView) callconv(.c) void, .{ .name = "wgpuRenderBundleSetLabel" });
-/// `void wgpuRenderBundleAddRef(WGPURenderBundle renderBundle)`
-pub const renderBundleAddRef = @extern(*const fn (RenderBundle) callconv(.c) void, .{ .name = "wgpuRenderBundleAddRef" });
-/// `void wgpuRenderBundleRelease(WGPURenderBundle renderBundle)`
-pub const renderBundleRelease = @extern(*const fn (RenderBundle) callconv(.c) void, .{ .name = "wgpuRenderBundleRelease" });
-/// `void wgpuRenderBundleEncoderDraw(WGPURenderBundleEncoder renderBundleEncoder, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)`
-pub const renderBundleEncoderDraw = @extern(*const fn (RenderBundleEncoder, u32, u32, u32, u32) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderDraw" });
-/// `void wgpuRenderBundleEncoderDrawIndexed(WGPURenderBundleEncoder renderBundleEncoder, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t baseVertex, uint32_t firstInstance)`
-pub const renderBundleEncoderDrawIndexed = @extern(*const fn (RenderBundleEncoder, u32, u32, u32, i32, u32) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderDrawIndexed" });
-/// `void wgpuRenderBundleEncoderDrawIndexedIndirect(WGPURenderBundleEncoder renderBundleEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
-pub const renderBundleEncoderDrawIndexedIndirect = @extern(*const fn (RenderBundleEncoder, Buffer, u64) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderDrawIndexedIndirect" });
-/// `void wgpuRenderBundleEncoderDrawIndirect(WGPURenderBundleEncoder renderBundleEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
-pub const renderBundleEncoderDrawIndirect = @extern(*const fn (RenderBundleEncoder, Buffer, u64) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderDrawIndirect" });
-/// `WGPURenderBundle wgpuRenderBundleEncoderFinish(WGPURenderBundleEncoder renderBundleEncoder, WGPU_NULLABLE WGPURenderBundleDescriptor const * descriptor)`
-pub const renderBundleEncoderFinish = @extern(*const fn (RenderBundleEncoder, ?*const RenderBundleDescriptor) callconv(.c) RenderBundle, .{ .name = "wgpuRenderBundleEncoderFinish" });
-/// `void wgpuRenderBundleEncoderInsertDebugMarker(WGPURenderBundleEncoder renderBundleEncoder, WGPUStringView markerLabel)`
-pub const renderBundleEncoderInsertDebugMarker = @extern(*const fn (RenderBundleEncoder, StringView) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderInsertDebugMarker" });
-/// `void wgpuRenderBundleEncoderPopDebugGroup(WGPURenderBundleEncoder renderBundleEncoder)`
-pub const renderBundleEncoderPopDebugGroup = @extern(*const fn (RenderBundleEncoder) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderPopDebugGroup" });
-/// `void wgpuRenderBundleEncoderPushDebugGroup(WGPURenderBundleEncoder renderBundleEncoder, WGPUStringView groupLabel)`
-pub const renderBundleEncoderPushDebugGroup = @extern(*const fn (RenderBundleEncoder, StringView) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderPushDebugGroup" });
-/// `void wgpuRenderBundleEncoderSetBindGroup(WGPURenderBundleEncoder renderBundleEncoder, uint32_t groupIndex, WGPU_NULLABLE WGPUBindGroup group, size_t dynamicOffsetCount, uint32_t const * dynamicOffsets)`
-pub const renderBundleEncoderSetBindGroup = @extern(*const fn (RenderBundleEncoder, u32, BindGroup, usize, ?[*]const u32) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderSetBindGroup" });
-/// `void wgpuRenderBundleEncoderSetIndexBuffer(WGPURenderBundleEncoder renderBundleEncoder, WGPUBuffer buffer, WGPUIndexFormat format, uint64_t offset, uint64_t size)`
-pub const renderBundleEncoderSetIndexBuffer = @extern(*const fn (RenderBundleEncoder, Buffer, IndexFormat, u64, u64) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderSetIndexBuffer" });
-/// `void wgpuRenderBundleEncoderSetLabel(WGPURenderBundleEncoder renderBundleEncoder, WGPUStringView label)`
-pub const renderBundleEncoderSetLabel = @extern(*const fn (RenderBundleEncoder, StringView) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderSetLabel" });
-/// `void wgpuRenderBundleEncoderSetPipeline(WGPURenderBundleEncoder renderBundleEncoder, WGPURenderPipeline pipeline)`
-pub const renderBundleEncoderSetPipeline = @extern(*const fn (RenderBundleEncoder, RenderPipeline) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderSetPipeline" });
-/// `void wgpuRenderBundleEncoderSetVertexBuffer(WGPURenderBundleEncoder renderBundleEncoder, uint32_t slot, WGPU_NULLABLE WGPUBuffer buffer, uint64_t offset, uint64_t size)`
-pub const renderBundleEncoderSetVertexBuffer = @extern(*const fn (RenderBundleEncoder, u32, Buffer, u64, u64) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderSetVertexBuffer" });
-/// `void wgpuRenderBundleEncoderAddRef(WGPURenderBundleEncoder renderBundleEncoder)`
-pub const renderBundleEncoderAddRef = @extern(*const fn (RenderBundleEncoder) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderAddRef" });
-/// `void wgpuRenderBundleEncoderRelease(WGPURenderBundleEncoder renderBundleEncoder)`
-pub const renderBundleEncoderRelease = @extern(*const fn (RenderBundleEncoder) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderRelease" });
-/// `void wgpuRenderPassEncoderBeginOcclusionQuery(WGPURenderPassEncoder renderPassEncoder, uint32_t queryIndex)`
-pub const renderPassEncoderBeginOcclusionQuery = @extern(*const fn (RenderPassEncoder, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderBeginOcclusionQuery" });
-/// `void wgpuRenderPassEncoderDraw(WGPURenderPassEncoder renderPassEncoder, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)`
-pub const renderPassEncoderDraw = @extern(*const fn (RenderPassEncoder, u32, u32, u32, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderDraw" });
-/// `void wgpuRenderPassEncoderDrawIndexed(WGPURenderPassEncoder renderPassEncoder, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t baseVertex, uint32_t firstInstance)`
-pub const renderPassEncoderDrawIndexed = @extern(*const fn (RenderPassEncoder, u32, u32, u32, i32, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderDrawIndexed" });
-/// `void wgpuRenderPassEncoderDrawIndexedIndirect(WGPURenderPassEncoder renderPassEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
-pub const renderPassEncoderDrawIndexedIndirect = @extern(*const fn (RenderPassEncoder, Buffer, u64) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderDrawIndexedIndirect" });
-/// `void wgpuRenderPassEncoderDrawIndirect(WGPURenderPassEncoder renderPassEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
-pub const renderPassEncoderDrawIndirect = @extern(*const fn (RenderPassEncoder, Buffer, u64) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderDrawIndirect" });
-/// `void wgpuRenderPassEncoderEnd(WGPURenderPassEncoder renderPassEncoder)`
-pub const renderPassEncoderEnd = @extern(*const fn (RenderPassEncoder) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderEnd" });
-/// `void wgpuRenderPassEncoderEndOcclusionQuery(WGPURenderPassEncoder renderPassEncoder)`
-pub const renderPassEncoderEndOcclusionQuery = @extern(*const fn (RenderPassEncoder) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderEndOcclusionQuery" });
-/// `void wgpuRenderPassEncoderExecuteBundles(WGPURenderPassEncoder renderPassEncoder, size_t bundleCount, WGPURenderBundle const * bundles)`
-pub const renderPassEncoderExecuteBundles = @extern(*const fn (RenderPassEncoder, usize, ?[*]const RenderBundle) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderExecuteBundles" });
-/// `void wgpuRenderPassEncoderInsertDebugMarker(WGPURenderPassEncoder renderPassEncoder, WGPUStringView markerLabel)`
-pub const renderPassEncoderInsertDebugMarker = @extern(*const fn (RenderPassEncoder, StringView) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderInsertDebugMarker" });
-/// `void wgpuRenderPassEncoderPopDebugGroup(WGPURenderPassEncoder renderPassEncoder)`
-pub const renderPassEncoderPopDebugGroup = @extern(*const fn (RenderPassEncoder) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderPopDebugGroup" });
-/// `void wgpuRenderPassEncoderPushDebugGroup(WGPURenderPassEncoder renderPassEncoder, WGPUStringView groupLabel)`
-pub const renderPassEncoderPushDebugGroup = @extern(*const fn (RenderPassEncoder, StringView) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderPushDebugGroup" });
-/// `void wgpuRenderPassEncoderSetBindGroup(WGPURenderPassEncoder renderPassEncoder, uint32_t groupIndex, WGPU_NULLABLE WGPUBindGroup group, size_t dynamicOffsetCount, uint32_t const * dynamicOffsets)`
-pub const renderPassEncoderSetBindGroup = @extern(*const fn (RenderPassEncoder, u32, BindGroup, usize, ?[*]const u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetBindGroup" });
-/// `void wgpuRenderPassEncoderSetBlendConstant(WGPURenderPassEncoder renderPassEncoder, WGPUColor const * color)`
-pub const renderPassEncoderSetBlendConstant = @extern(*const fn (RenderPassEncoder, *const Color) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetBlendConstant" });
-/// `void wgpuRenderPassEncoderSetIndexBuffer(WGPURenderPassEncoder renderPassEncoder, WGPUBuffer buffer, WGPUIndexFormat format, uint64_t offset, uint64_t size)`
-pub const renderPassEncoderSetIndexBuffer = @extern(*const fn (RenderPassEncoder, Buffer, IndexFormat, u64, u64) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetIndexBuffer" });
-/// `void wgpuRenderPassEncoderSetLabel(WGPURenderPassEncoder renderPassEncoder, WGPUStringView label)`
-pub const renderPassEncoderSetLabel = @extern(*const fn (RenderPassEncoder, StringView) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetLabel" });
-/// `void wgpuRenderPassEncoderSetPipeline(WGPURenderPassEncoder renderPassEncoder, WGPURenderPipeline pipeline)`
-pub const renderPassEncoderSetPipeline = @extern(*const fn (RenderPassEncoder, RenderPipeline) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetPipeline" });
-/// `void wgpuRenderPassEncoderSetScissorRect(WGPURenderPassEncoder renderPassEncoder, uint32_t x, uint32_t y, uint32_t width, uint32_t height)`
-pub const renderPassEncoderSetScissorRect = @extern(*const fn (RenderPassEncoder, u32, u32, u32, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetScissorRect" });
-/// `void wgpuRenderPassEncoderSetStencilReference(WGPURenderPassEncoder renderPassEncoder, uint32_t reference)`
-pub const renderPassEncoderSetStencilReference = @extern(*const fn (RenderPassEncoder, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetStencilReference" });
-/// `void wgpuRenderPassEncoderSetVertexBuffer(WGPURenderPassEncoder renderPassEncoder, uint32_t slot, WGPU_NULLABLE WGPUBuffer buffer, uint64_t offset, uint64_t size)`
-pub const renderPassEncoderSetVertexBuffer = @extern(*const fn (RenderPassEncoder, u32, Buffer, u64, u64) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetVertexBuffer" });
-/// `void wgpuRenderPassEncoderSetViewport(WGPURenderPassEncoder renderPassEncoder, float x, float y, float width, float height, float minDepth, float maxDepth)`
-pub const renderPassEncoderSetViewport = @extern(*const fn (RenderPassEncoder, f32, f32, f32, f32, f32, f32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetViewport" });
-/// `void wgpuRenderPassEncoderAddRef(WGPURenderPassEncoder renderPassEncoder)`
-pub const renderPassEncoderAddRef = @extern(*const fn (RenderPassEncoder) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderAddRef" });
-/// `void wgpuRenderPassEncoderRelease(WGPURenderPassEncoder renderPassEncoder)`
-pub const renderPassEncoderRelease = @extern(*const fn (RenderPassEncoder) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderRelease" });
-/// `WGPUBindGroupLayout wgpuRenderPipelineGetBindGroupLayout(WGPURenderPipeline renderPipeline, uint32_t groupIndex)`
-pub const renderPipelineGetBindGroupLayout = @extern(*const fn (RenderPipeline, u32) callconv(.c) BindGroupLayout, .{ .name = "wgpuRenderPipelineGetBindGroupLayout" });
-/// `void wgpuRenderPipelineSetLabel(WGPURenderPipeline renderPipeline, WGPUStringView label)`
-pub const renderPipelineSetLabel = @extern(*const fn (RenderPipeline, StringView) callconv(.c) void, .{ .name = "wgpuRenderPipelineSetLabel" });
-/// `void wgpuRenderPipelineAddRef(WGPURenderPipeline renderPipeline)`
-pub const renderPipelineAddRef = @extern(*const fn (RenderPipeline) callconv(.c) void, .{ .name = "wgpuRenderPipelineAddRef" });
-/// `void wgpuRenderPipelineRelease(WGPURenderPipeline renderPipeline)`
-pub const renderPipelineRelease = @extern(*const fn (RenderPipeline) callconv(.c) void, .{ .name = "wgpuRenderPipelineRelease" });
-/// `void wgpuSamplerSetLabel(WGPUSampler sampler, WGPUStringView label)`
-pub const samplerSetLabel = @extern(*const fn (Sampler, StringView) callconv(.c) void, .{ .name = "wgpuSamplerSetLabel" });
-/// `void wgpuSamplerAddRef(WGPUSampler sampler)`
-pub const samplerAddRef = @extern(*const fn (Sampler) callconv(.c) void, .{ .name = "wgpuSamplerAddRef" });
-/// `void wgpuSamplerRelease(WGPUSampler sampler)`
-pub const samplerRelease = @extern(*const fn (Sampler) callconv(.c) void, .{ .name = "wgpuSamplerRelease" });
-/// `WGPUFuture wgpuShaderModuleGetCompilationInfo(WGPUShaderModule shaderModule, WGPUCompilationInfoCallbackInfo callbackInfo)`
-pub const shaderModuleGetCompilationInfo = @extern(*const fn (ShaderModule, CompilationInfoCallbackInfo) callconv(.c) Future, .{ .name = "wgpuShaderModuleGetCompilationInfo" });
-/// `void wgpuShaderModuleSetLabel(WGPUShaderModule shaderModule, WGPUStringView label)`
-pub const shaderModuleSetLabel = @extern(*const fn (ShaderModule, StringView) callconv(.c) void, .{ .name = "wgpuShaderModuleSetLabel" });
-/// `void wgpuShaderModuleAddRef(WGPUShaderModule shaderModule)`
-pub const shaderModuleAddRef = @extern(*const fn (ShaderModule) callconv(.c) void, .{ .name = "wgpuShaderModuleAddRef" });
-/// `void wgpuShaderModuleRelease(WGPUShaderModule shaderModule)`
-pub const shaderModuleRelease = @extern(*const fn (ShaderModule) callconv(.c) void, .{ .name = "wgpuShaderModuleRelease" });
-/// `void wgpuSupportedFeaturesFreeMembers(WGPUSupportedFeatures supportedFeatures)`
-pub const supportedFeaturesFreeMembers = @extern(*const fn (SupportedFeatures) callconv(.c) void, .{ .name = "wgpuSupportedFeaturesFreeMembers" });
-/// `void wgpuSupportedWGSLLanguageFeaturesFreeMembers(WGPUSupportedWGSLLanguageFeatures supportedWGSLLanguageFeatures)`
-pub const supportedWGSLLanguageFeaturesFreeMembers = @extern(*const fn (SupportedWGSLLanguageFeatures) callconv(.c) void, .{ .name = "wgpuSupportedWGSLLanguageFeaturesFreeMembers" });
-/// `void wgpuSurfaceConfigure(WGPUSurface surface, WGPUSurfaceConfiguration const * config)`
-pub const surfaceConfigure = @extern(*const fn (Surface, *const SurfaceConfiguration) callconv(.c) void, .{ .name = "wgpuSurfaceConfigure" });
-/// `WGPUStatus wgpuSurfaceGetCapabilities(WGPUSurface surface, WGPUAdapter adapter, WGPUSurfaceCapabilities * capabilities)`
-pub const surfaceGetCapabilities = @extern(*const fn (Surface, Adapter, *SurfaceCapabilities) callconv(.c) Status, .{ .name = "wgpuSurfaceGetCapabilities" });
-/// `void wgpuSurfaceGetCurrentTexture(WGPUSurface surface, WGPUSurfaceTexture * surfaceTexture)`
-pub const surfaceGetCurrentTexture = @extern(*const fn (Surface, *SurfaceTexture) callconv(.c) void, .{ .name = "wgpuSurfaceGetCurrentTexture" });
-/// `WGPUStatus wgpuSurfacePresent(WGPUSurface surface)`
-pub const surfacePresent = @extern(*const fn (Surface) callconv(.c) Status, .{ .name = "wgpuSurfacePresent" });
-/// `void wgpuSurfaceSetLabel(WGPUSurface surface, WGPUStringView label)`
-pub const surfaceSetLabel = @extern(*const fn (Surface, StringView) callconv(.c) void, .{ .name = "wgpuSurfaceSetLabel" });
-/// `void wgpuSurfaceUnconfigure(WGPUSurface surface)`
-pub const surfaceUnconfigure = @extern(*const fn (Surface) callconv(.c) void, .{ .name = "wgpuSurfaceUnconfigure" });
-/// `void wgpuSurfaceAddRef(WGPUSurface surface)`
-pub const surfaceAddRef = @extern(*const fn (Surface) callconv(.c) void, .{ .name = "wgpuSurfaceAddRef" });
-/// `void wgpuSurfaceRelease(WGPUSurface surface)`
-pub const surfaceRelease = @extern(*const fn (Surface) callconv(.c) void, .{ .name = "wgpuSurfaceRelease" });
-/// `void wgpuSurfaceCapabilitiesFreeMembers(WGPUSurfaceCapabilities surfaceCapabilities)`
-pub const surfaceCapabilitiesFreeMembers = @extern(*const fn (SurfaceCapabilities) callconv(.c) void, .{ .name = "wgpuSurfaceCapabilitiesFreeMembers" });
-/// `WGPUTextureView wgpuTextureCreateView(WGPUTexture texture, WGPU_NULLABLE WGPUTextureViewDescriptor const * descriptor)`
-pub const textureCreateView = @extern(*const fn (Texture, ?*const TextureViewDescriptor) callconv(.c) TextureView, .{ .name = "wgpuTextureCreateView" });
-/// `void wgpuTextureDestroy(WGPUTexture texture)`
-pub const textureDestroy = @extern(*const fn (Texture) callconv(.c) void, .{ .name = "wgpuTextureDestroy" });
-/// `uint32_t wgpuTextureGetDepthOrArrayLayers(WGPUTexture texture)`
-pub const textureGetDepthOrArrayLayers = @extern(*const fn (Texture) callconv(.c) u32, .{ .name = "wgpuTextureGetDepthOrArrayLayers" });
-/// `WGPUTextureDimension wgpuTextureGetDimension(WGPUTexture texture)`
-pub const textureGetDimension = @extern(*const fn (Texture) callconv(.c) TextureDimension, .{ .name = "wgpuTextureGetDimension" });
-/// `WGPUTextureFormat wgpuTextureGetFormat(WGPUTexture texture)`
-pub const textureGetFormat = @extern(*const fn (Texture) callconv(.c) TextureFormat, .{ .name = "wgpuTextureGetFormat" });
-/// `uint32_t wgpuTextureGetHeight(WGPUTexture texture)`
-pub const textureGetHeight = @extern(*const fn (Texture) callconv(.c) u32, .{ .name = "wgpuTextureGetHeight" });
-/// `uint32_t wgpuTextureGetMipLevelCount(WGPUTexture texture)`
-pub const textureGetMipLevelCount = @extern(*const fn (Texture) callconv(.c) u32, .{ .name = "wgpuTextureGetMipLevelCount" });
-/// `uint32_t wgpuTextureGetSampleCount(WGPUTexture texture)`
-pub const textureGetSampleCount = @extern(*const fn (Texture) callconv(.c) u32, .{ .name = "wgpuTextureGetSampleCount" });
-/// `WGPUTextureUsage wgpuTextureGetUsage(WGPUTexture texture)`
-pub const textureGetUsage = @extern(*const fn (Texture) callconv(.c) TextureUsage, .{ .name = "wgpuTextureGetUsage" });
-/// `uint32_t wgpuTextureGetWidth(WGPUTexture texture)`
-pub const textureGetWidth = @extern(*const fn (Texture) callconv(.c) u32, .{ .name = "wgpuTextureGetWidth" });
-/// `void wgpuTextureSetLabel(WGPUTexture texture, WGPUStringView label)`
-pub const textureSetLabel = @extern(*const fn (Texture, StringView) callconv(.c) void, .{ .name = "wgpuTextureSetLabel" });
-/// `void wgpuTextureAddRef(WGPUTexture texture)`
-pub const textureAddRef = @extern(*const fn (Texture) callconv(.c) void, .{ .name = "wgpuTextureAddRef" });
-/// `void wgpuTextureRelease(WGPUTexture texture)`
-pub const textureRelease = @extern(*const fn (Texture) callconv(.c) void, .{ .name = "wgpuTextureRelease" });
-/// `void wgpuTextureViewSetLabel(WGPUTextureView textureView, WGPUStringView label)`
-pub const textureViewSetLabel = @extern(*const fn (TextureView, StringView) callconv(.c) void, .{ .name = "wgpuTextureViewSetLabel" });
-/// `void wgpuTextureViewAddRef(WGPUTextureView textureView)`
-pub const textureViewAddRef = @extern(*const fn (TextureView) callconv(.c) void, .{ .name = "wgpuTextureViewAddRef" });
-/// `void wgpuTextureViewRelease(WGPUTextureView textureView)`
-pub const textureViewRelease = @extern(*const fn (TextureView) callconv(.c) void, .{ .name = "wgpuTextureViewRelease" });
-/// `void wgpuGenerateReport(WGPUInstance instance, WGPUGlobalReport * report)`
-pub const generateReport = @extern(*const fn (Instance, *GlobalReport) callconv(.c) void, .{ .name = "wgpuGenerateReport" });
-/// `size_t wgpuInstanceEnumerateAdapters(WGPUInstance instance, WGPU_NULLABLE WGPUInstanceEnumerateAdapterOptions const * options, WGPUAdapter * adapters)`
-pub const instanceEnumerateAdapters = @extern(*const fn (Instance, ?*const InstanceEnumerateAdapterOptions, [*]Adapter) callconv(.c) usize, .{ .name = "wgpuInstanceEnumerateAdapters" });
-/// `WGPUSubmissionIndex wgpuQueueSubmitForIndex(WGPUQueue queue, size_t commandCount, WGPUCommandBuffer const * commands)`
-pub const queueSubmitForIndex = @extern(*const fn (Queue, usize, ?[*]const CommandBuffer) callconv(.c) SubmissionIndex, .{ .name = "wgpuQueueSubmitForIndex" });
-/// `WGPUBool wgpuDevicePoll(WGPUDevice device, WGPUBool wait, WGPU_NULLABLE WGPUSubmissionIndex const * submissionIndex)`
-pub const devicePoll = @extern(*const fn (Device, BigBool, ?*const SubmissionIndex) callconv(.c) BigBool, .{ .name = "wgpuDevicePoll" });
-/// `WGPUShaderModule wgpuDeviceCreateShaderModuleSpirV(WGPUDevice device, WGPUShaderModuleDescriptorSpirV const * descriptor)`
-pub const deviceCreateShaderModuleSpirV = @extern(*const fn (Device, *const ShaderModuleDescriptorSpirV) callconv(.c) ShaderModule, .{ .name = "wgpuDeviceCreateShaderModuleSpirV" });
 /// `void wgpuSetLogCallback(WGPULogCallback callback, void * userdata)`
 pub const setLogCallback = @extern(*const fn (LogCallback, ?*anyopaque) callconv(.c) void, .{ .name = "wgpuSetLogCallback" });
 /// `void wgpuSetLogLevel(WGPULogLevel level)`
 pub const setLogLevel = @extern(*const fn (LogLevel) callconv(.c) void, .{ .name = "wgpuSetLogLevel" });
 /// `uint32_t wgpuGetVersion(void)`
 pub const getVersion = @extern(*const fn () callconv(.c) u32, .{ .name = "wgpuGetVersion" });
+
+/// `void wgpuAdapterGetFeatures(WGPUAdapter adapter, WGPUSupportedFeatures * features)`
+const adapterGetFeatures = @extern(*const fn (*Adapter, *SupportedFeatures) callconv(.c) void, .{ .name = "wgpuAdapterGetFeatures" });
+/// `WGPUStatus wgpuAdapterGetInfo(WGPUAdapter adapter, WGPUAdapterInfo * info)`
+const adapterGetInfo = @extern(*const fn (*Adapter, *AdapterInfo) callconv(.c) Status, .{ .name = "wgpuAdapterGetInfo" });
+/// `WGPUStatus wgpuAdapterGetLimits(WGPUAdapter adapter, WGPULimits * limits)`
+const adapterGetLimits = @extern(*const fn (*Adapter, *Limits) callconv(.c) Status, .{ .name = "wgpuAdapterGetLimits" });
+/// `WGPUBool wgpuAdapterHasFeature(WGPUAdapter adapter, WGPUFeatureName feature)`
+const adapterHasFeature = @extern(*const fn (*Adapter, FeatureName) callconv(.c) BigBool, .{ .name = "wgpuAdapterHasFeature" });
+/// `WGPUFuture wgpuAdapterRequestDevice(WGPUAdapter adapter, WGPU_NULLABLE WGPUDeviceDescriptor const * descriptor, WGPURequestDeviceCallbackInfo callbackInfo)`
+const adapterRequestDevice = @extern(*const fn (*Adapter, ?*const DeviceDescriptor, RequestDeviceCallbackInfo) callconv(.c) Future, .{ .name = "wgpuAdapterRequestDevice" });
+/// `void wgpuAdapterAddRef(WGPUAdapter adapter)`
+const adapterAddRef = @extern(*const fn (*Adapter) callconv(.c) void, .{ .name = "wgpuAdapterAddRef" });
+/// `void wgpuAdapterRelease(WGPUAdapter adapter)`
+const adapterRelease = @extern(*const fn (*Adapter) callconv(.c) void, .{ .name = "wgpuAdapterRelease" });
+/// `void wgpuAdapterInfoFreeMembers(WGPUAdapterInfo adapterInfo)`
+const adapterInfoFreeMembers = @extern(*const fn (AdapterInfo) callconv(.c) void, .{ .name = "wgpuAdapterInfoFreeMembers" });
+/// `void wgpuBindGroupSetLabel(WGPUBindGroup bindGroup, WGPUStringView label)`
+const bindGroupSetLabel = @extern(*const fn (*BindGroup, StringView) callconv(.c) void, .{ .name = "wgpuBindGroupSetLabel" });
+/// `void wgpuBindGroupAddRef(WGPUBindGroup bindGroup)`
+const bindGroupAddRef = @extern(*const fn (*BindGroup) callconv(.c) void, .{ .name = "wgpuBindGroupAddRef" });
+/// `void wgpuBindGroupRelease(WGPUBindGroup bindGroup)`
+const bindGroupRelease = @extern(*const fn (*BindGroup) callconv(.c) void, .{ .name = "wgpuBindGroupRelease" });
+/// `void wgpuBindGroupLayoutSetLabel(WGPUBindGroupLayout bindGroupLayout, WGPUStringView label)`
+const bindGroupLayoutSetLabel = @extern(*const fn (*BindGroupLayout, StringView) callconv(.c) void, .{ .name = "wgpuBindGroupLayoutSetLabel" });
+/// `void wgpuBindGroupLayoutAddRef(WGPUBindGroupLayout bindGroupLayout)`
+const bindGroupLayoutAddRef = @extern(*const fn (*BindGroupLayout) callconv(.c) void, .{ .name = "wgpuBindGroupLayoutAddRef" });
+/// `void wgpuBindGroupLayoutRelease(WGPUBindGroupLayout bindGroupLayout)`
+const bindGroupLayoutRelease = @extern(*const fn (*BindGroupLayout) callconv(.c) void, .{ .name = "wgpuBindGroupLayoutRelease" });
+/// `void wgpuBufferDestroy(WGPUBuffer buffer)`
+const bufferDestroy = @extern(*const fn (*Buffer) callconv(.c) void, .{ .name = "wgpuBufferDestroy" });
+/// `void const * wgpuBufferGetConstMappedRange(WGPUBuffer buffer, size_t offset, size_t size)`
+const bufferGetConstMappedRange = @extern(*const fn (*Buffer, usize, usize) callconv(.c) ?*const anyopaque, .{ .name = "wgpuBufferGetConstMappedRange" });
+/// `WGPUBufferMapState wgpuBufferGetMapState(WGPUBuffer buffer)`
+const bufferGetMapState = @extern(*const fn (*Buffer) callconv(.c) BufferMapState, .{ .name = "wgpuBufferGetMapState" });
+/// `void * wgpuBufferGetMappedRange(WGPUBuffer buffer, size_t offset, size_t size)`
+const bufferGetMappedRange = @extern(*const fn (*Buffer, usize, usize) callconv(.c) ?*anyopaque, .{ .name = "wgpuBufferGetMappedRange" });
+/// `uint64_t wgpuBufferGetSize(WGPUBuffer buffer)`
+const bufferGetSize = @extern(*const fn (*Buffer) callconv(.c) u64, .{ .name = "wgpuBufferGetSize" });
+/// `WGPUBufferUsage wgpuBufferGetUsage(WGPUBuffer buffer)`
+const bufferGetUsage = @extern(*const fn (*Buffer) callconv(.c) BufferUsage, .{ .name = "wgpuBufferGetUsage" });
+/// `WGPUFuture wgpuBufferMapAsync(WGPUBuffer buffer, WGPUMapMode mode, size_t offset, size_t size, WGPUBufferMapCallbackInfo callbackInfo)`
+const bufferMapAsync = @extern(*const fn (*Buffer, MapMode, usize, usize, BufferMapCallbackInfo) callconv(.c) Future, .{ .name = "wgpuBufferMapAsync" });
+/// `void wgpuBufferSetLabel(WGPUBuffer buffer, WGPUStringView label)`
+const bufferSetLabel = @extern(*const fn (*Buffer, StringView) callconv(.c) void, .{ .name = "wgpuBufferSetLabel" });
+/// `void wgpuBufferUnmap(WGPUBuffer buffer)`
+const bufferUnmap = @extern(*const fn (*Buffer) callconv(.c) void, .{ .name = "wgpuBufferUnmap" });
+/// `void wgpuBufferAddRef(WGPUBuffer buffer)`
+const bufferAddRef = @extern(*const fn (*Buffer) callconv(.c) void, .{ .name = "wgpuBufferAddRef" });
+/// `void wgpuBufferRelease(WGPUBuffer buffer)`
+const bufferRelease = @extern(*const fn (*Buffer) callconv(.c) void, .{ .name = "wgpuBufferRelease" });
+/// `void wgpuCommandBufferSetLabel(WGPUCommandBuffer commandBuffer, WGPUStringView label)`
+const commandBufferSetLabel = @extern(*const fn (*CommandBuffer, StringView) callconv(.c) void, .{ .name = "wgpuCommandBufferSetLabel" });
+/// `void wgpuCommandBufferAddRef(WGPUCommandBuffer commandBuffer)`
+const commandBufferAddRef = @extern(*const fn (*CommandBuffer) callconv(.c) void, .{ .name = "wgpuCommandBufferAddRef" });
+/// `void wgpuCommandBufferRelease(WGPUCommandBuffer commandBuffer)`
+const commandBufferRelease = @extern(*const fn (*CommandBuffer) callconv(.c) void, .{ .name = "wgpuCommandBufferRelease" });
+/// `WGPUComputePassEncoder wgpuCommandEncoderBeginComputePass(WGPUCommandEncoder commandEncoder, WGPU_NULLABLE WGPUComputePassDescriptor const * descriptor)`
+const commandEncoderBeginComputePass = @extern(*const fn (*CommandEncoder, *const ComputePassDescriptor) callconv(.c) ?*ComputePassEncoder, .{ .name = "wgpuCommandEncoderBeginComputePass" });
+/// `WGPURenderPassEncoder wgpuCommandEncoderBeginRenderPass(WGPUCommandEncoder commandEncoder, WGPURenderPassDescriptor const * descriptor)`
+const commandEncoderBeginRenderPass = @extern(*const fn (*CommandEncoder, *const RenderPassDescriptor) callconv(.c) ?*RenderPassEncoder, .{ .name = "wgpuCommandEncoderBeginRenderPass" });
+/// `void wgpuCommandEncoderClearBuffer(WGPUCommandEncoder commandEncoder, WGPUBuffer buffer, uint64_t offset, uint64_t size)`
+const commandEncoderClearBuffer = @extern(*const fn (*CommandEncoder, *Buffer, u64, u64) callconv(.c) void, .{ .name = "wgpuCommandEncoderClearBuffer" });
+/// `void wgpuCommandEncoderCopyBufferToBuffer(WGPUCommandEncoder commandEncoder, WGPUBuffer source, uint64_t sourceOffset, WGPUBuffer destination, uint64_t destinationOffset, uint64_t size)`
+const commandEncoderCopyBufferToBuffer = @extern(*const fn (*CommandEncoder, *Buffer, u64, *Buffer, u64, u64) callconv(.c) void, .{ .name = "wgpuCommandEncoderCopyBufferToBuffer" });
+/// `void wgpuCommandEncoderCopyBufferToTexture(WGPUCommandEncoder commandEncoder, WGPUTexelCopyBufferInfo const * source, WGPUTexelCopyTextureInfo const * destination, WGPUExtent3D const * copySize)`
+const commandEncoderCopyBufferToTexture = @extern(*const fn (*CommandEncoder, *const TexelCopyBufferInfo, *const TexelCopyTextureInfo, *const Extent3D) callconv(.c) void, .{ .name = "wgpuCommandEncoderCopyBufferToTexture" });
+/// `void wgpuCommandEncoderCopyTextureToBuffer(WGPUCommandEncoder commandEncoder, WGPUTexelCopyTextureInfo const * source, WGPUTexelCopyBufferInfo const * destination, WGPUExtent3D const * copySize)`
+const commandEncoderCopyTextureToBuffer = @extern(*const fn (*CommandEncoder, *const TexelCopyTextureInfo, *const TexelCopyBufferInfo, *const Extent3D) callconv(.c) void, .{ .name = "wgpuCommandEncoderCopyTextureToBuffer" });
+/// `void wgpuCommandEncoderCopyTextureToTexture(WGPUCommandEncoder commandEncoder, WGPUTexelCopyTextureInfo const * source, WGPUTexelCopyTextureInfo const * destination, WGPUExtent3D const * copySize)`
+const commandEncoderCopyTextureToTexture = @extern(*const fn (*CommandEncoder, *const TexelCopyTextureInfo, *const TexelCopyTextureInfo, *const Extent3D) callconv(.c) void, .{ .name = "wgpuCommandEncoderCopyTextureToTexture" });
+/// `WGPUCommandBuffer wgpuCommandEncoderFinish(WGPUCommandEncoder commandEncoder, WGPU_NULLABLE WGPUCommandBufferDescriptor const * descriptor)`
+const commandEncoderFinish = @extern(*const fn (*CommandEncoder, ?*const CommandBufferDescriptor) callconv(.c) ?*CommandBuffer, .{ .name = "wgpuCommandEncoderFinish" });
+/// `void wgpuCommandEncoderInsertDebugMarker(WGPUCommandEncoder commandEncoder, WGPUStringView markerLabel)`
+const commandEncoderInsertDebugMarker = @extern(*const fn (*CommandEncoder, StringView) callconv(.c) void, .{ .name = "wgpuCommandEncoderInsertDebugMarker" });
+/// `void wgpuCommandEncoderPopDebugGroup(WGPUCommandEncoder commandEncoder)`
+const commandEncoderPopDebugGroup = @extern(*const fn (*CommandEncoder) callconv(.c) void, .{ .name = "wgpuCommandEncoderPopDebugGroup" });
+/// `void wgpuCommandEncoderPushDebugGroup(WGPUCommandEncoder commandEncoder, WGPUStringView groupLabel)`
+const commandEncoderPushDebugGroup = @extern(*const fn (*CommandEncoder, StringView) callconv(.c) void, .{ .name = "wgpuCommandEncoderPushDebugGroup" });
+/// `void wgpuCommandEncoderResolveQuerySet(WGPUCommandEncoder commandEncoder, WGPUQuerySet querySet, uint32_t firstQuery, uint32_t queryCount, WGPUBuffer destination, uint64_t destinationOffset)`
+const commandEncoderResolveQuerySet = @extern(*const fn (*CommandEncoder, *QuerySet, u32, u32, *Buffer, u64) callconv(.c) void, .{ .name = "wgpuCommandEncoderResolveQuerySet" });
+/// `void wgpuCommandEncoderSetLabel(WGPUCommandEncoder commandEncoder, WGPUStringView label)`
+const commandEncoderSetLabel = @extern(*const fn (*CommandEncoder, StringView) callconv(.c) void, .{ .name = "wgpuCommandEncoderSetLabel" });
+/// `void wgpuCommandEncoderWriteTimestamp(WGPUCommandEncoder commandEncoder, WGPUQuerySet querySet, uint32_t queryIndex)`
+const commandEncoderWriteTimestamp = @extern(*const fn (*CommandEncoder, *QuerySet, u32) callconv(.c) void, .{ .name = "wgpuCommandEncoderWriteTimestamp" });
+/// `void wgpuCommandEncoderAddRef(WGPUCommandEncoder commandEncoder)`
+const commandEncoderAddRef = @extern(*const fn (*CommandEncoder) callconv(.c) void, .{ .name = "wgpuCommandEncoderAddRef" });
+/// `void wgpuCommandEncoderRelease(WGPUCommandEncoder commandEncoder)`
+const commandEncoderRelease = @extern(*const fn (*CommandEncoder) callconv(.c) void, .{ .name = "wgpuCommandEncoderRelease" });
+/// `void wgpuComputePassEncoderDispatchWorkgroups(WGPUComputePassEncoder computePassEncoder, uint32_t workgroupCountX, uint32_t workgroupCountY, uint32_t workgroupCountZ)`
+const computePassEncoderDispatchWorkgroups = @extern(*const fn (*ComputePassEncoder, u32, u32, u32) callconv(.c) void, .{ .name = "wgpuComputePassEncoderDispatchWorkgroups" });
+/// `void wgpuComputePassEncoderDispatchWorkgroupsIndirect(WGPUComputePassEncoder computePassEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
+const computePassEncoderDispatchWorkgroupsIndirect = @extern(*const fn (*ComputePassEncoder, *Buffer, u64) callconv(.c) void, .{ .name = "wgpuComputePassEncoderDispatchWorkgroupsIndirect" });
+/// `void wgpuComputePassEncoderEnd(WGPUComputePassEncoder computePassEncoder)`
+const computePassEncoderEnd = @extern(*const fn (*ComputePassEncoder) callconv(.c) void, .{ .name = "wgpuComputePassEncoderEnd" });
+/// `void wgpuComputePassEncoderInsertDebugMarker(WGPUComputePassEncoder computePassEncoder, WGPUStringView markerLabel)`
+const computePassEncoderInsertDebugMarker = @extern(*const fn (*ComputePassEncoder, StringView) callconv(.c) void, .{ .name = "wgpuComputePassEncoderInsertDebugMarker" });
+/// `void wgpuComputePassEncoderPopDebugGroup(WGPUComputePassEncoder computePassEncoder)`
+const computePassEncoderPopDebugGroup = @extern(*const fn (*ComputePassEncoder) callconv(.c) void, .{ .name = "wgpuComputePassEncoderPopDebugGroup" });
+/// `void wgpuComputePassEncoderPushDebugGroup(WGPUComputePassEncoder computePassEncoder, WGPUStringView groupLabel)`
+const computePassEncoderPushDebugGroup = @extern(*const fn (*ComputePassEncoder, StringView) callconv(.c) void, .{ .name = "wgpuComputePassEncoderPushDebugGroup" });
+/// `void wgpuComputePassEncoderSetBindGroup(WGPUComputePassEncoder computePassEncoder, uint32_t groupIndex, WGPU_NULLABLE WGPUBindGroup group, size_t dynamicOffsetCount, uint32_t const * dynamicOffsets)`
+const computePassEncoderSetBindGroup = @extern(*const fn (*ComputePassEncoder, u32, ?*BindGroup, usize, ?[*]const u32) callconv(.c) void, .{ .name = "wgpuComputePassEncoderSetBindGroup" });
+/// `void wgpuComputePassEncoderSetLabel(WGPUComputePassEncoder computePassEncoder, WGPUStringView label)`
+const computePassEncoderSetLabel = @extern(*const fn (*ComputePassEncoder, StringView) callconv(.c) void, .{ .name = "wgpuComputePassEncoderSetLabel" });
+/// `void wgpuComputePassEncoderSetPipeline(WGPUComputePassEncoder computePassEncoder, WGPUComputePipeline pipeline)`
+const computePassEncoderSetPipeline = @extern(*const fn (*ComputePassEncoder, *ComputePipeline) callconv(.c) void, .{ .name = "wgpuComputePassEncoderSetPipeline" });
+/// `void wgpuComputePassEncoderAddRef(WGPUComputePassEncoder computePassEncoder)`
+const computePassEncoderAddRef = @extern(*const fn (*ComputePassEncoder) callconv(.c) void, .{ .name = "wgpuComputePassEncoderAddRef" });
+/// `void wgpuComputePassEncoderRelease(WGPUComputePassEncoder computePassEncoder)`
+const computePassEncoderRelease = @extern(*const fn (*ComputePassEncoder) callconv(.c) void, .{ .name = "wgpuComputePassEncoderRelease" });
+/// `WGPUBindGroupLayout wgpuComputePipelineGetBindGroupLayout(WGPUComputePipeline computePipeline, uint32_t groupIndex)`
+const computePipelineGetBindGroupLayout = @extern(*const fn (*ComputePipeline, u32) callconv(.c) ?*BindGroupLayout, .{ .name = "wgpuComputePipelineGetBindGroupLayout" });
+/// `void wgpuComputePipelineSetLabel(WGPUComputePipeline computePipeline, WGPUStringView label)`
+const computePipelineSetLabel = @extern(*const fn (*ComputePipeline, StringView) callconv(.c) void, .{ .name = "wgpuComputePipelineSetLabel" });
+/// `void wgpuComputePipelineAddRef(WGPUComputePipeline computePipeline)`
+const computePipelineAddRef = @extern(*const fn (*ComputePipeline) callconv(.c) void, .{ .name = "wgpuComputePipelineAddRef" });
+/// `void wgpuComputePipelineRelease(WGPUComputePipeline computePipeline)`
+const computePipelineRelease = @extern(*const fn (*ComputePipeline) callconv(.c) void, .{ .name = "wgpuComputePipelineRelease" });
+/// `WGPUBindGroup wgpuDeviceCreateBindGroup(WGPUDevice device, WGPUBindGroupDescriptor const * descriptor)`
+const deviceCreateBindGroup = @extern(*const fn (*Device, *const BindGroupDescriptor) callconv(.c) ?*BindGroup, .{ .name = "wgpuDeviceCreateBindGroup" });
+/// `WGPUBindGroupLayout wgpuDeviceCreateBindGroupLayout(WGPUDevice device, WGPUBindGroupLayoutDescriptor const * descriptor)`
+const deviceCreateBindGroupLayout = @extern(*const fn (*Device, *const BindGroupLayoutDescriptor) callconv(.c) ?*BindGroupLayout, .{ .name = "wgpuDeviceCreateBindGroupLayout" });
+/// `WGPUBuffer wgpuDeviceCreateBuffer(WGPUDevice device, WGPUBufferDescriptor const * descriptor)`
+const deviceCreateBuffer = @extern(*const fn (*Device, *const BufferDescriptor) callconv(.c) ?*Buffer, .{ .name = "wgpuDeviceCreateBuffer" });
+/// `WGPUCommandEncoder wgpuDeviceCreateCommandEncoder(WGPUDevice device, WGPU_NULLABLE WGPUCommandEncoderDescriptor const * descriptor)`
+const deviceCreateCommandEncoder = @extern(*const fn (*Device, ?*const CommandEncoderDescriptor) callconv(.c) ?*CommandEncoder, .{ .name = "wgpuDeviceCreateCommandEncoder" });
+/// `WGPUComputePipeline wgpuDeviceCreateComputePipeline(WGPUDevice device, WGPUComputePipelineDescriptor const * descriptor)`
+const deviceCreateComputePipeline = @extern(*const fn (*Device, *const ComputePipelineDescriptor) callconv(.c) ?*ComputePipeline, .{ .name = "wgpuDeviceCreateComputePipeline" });
+/// `WGPUFuture wgpuDeviceCreateComputePipelineAsync(WGPUDevice device, WGPUComputePipelineDescriptor const * descriptor, WGPUCreateComputePipelineAsyncCallbackInfo callbackInfo)`
+const deviceCreateComputePipelineAsync = @extern(*const fn (*Device, *const ComputePipelineDescriptor, CreateComputePipelineAsyncCallbackInfo) callconv(.c) Future, .{ .name = "wgpuDeviceCreateComputePipelineAsync" });
+/// `WGPUPipelineLayout wgpuDeviceCreatePipelineLayout(WGPUDevice device, WGPUPipelineLayoutDescriptor const * descriptor)`
+const deviceCreatePipelineLayout = @extern(*const fn (*Device, *const PipelineLayoutDescriptor) callconv(.c) ?*PipelineLayout, .{ .name = "wgpuDeviceCreatePipelineLayout" });
+/// `WGPUQuerySet wgpuDeviceCreateQuerySet(WGPUDevice device, WGPUQuerySetDescriptor const * descriptor)`
+const deviceCreateQuerySet = @extern(*const fn (*Device, *const QuerySetDescriptor) callconv(.c) ?*QuerySet, .{ .name = "wgpuDeviceCreateQuerySet" });
+/// `WGPURenderBundleEncoder wgpuDeviceCreateRenderBundleEncoder(WGPUDevice device, WGPURenderBundleEncoderDescriptor const * descriptor)`
+const deviceCreateRenderBundleEncoder = @extern(*const fn (*Device, *const RenderBundleEncoderDescriptor) callconv(.c) ?*RenderBundleEncoder, .{ .name = "wgpuDeviceCreateRenderBundleEncoder" });
+/// `WGPURenderPipeline wgpuDeviceCreateRenderPipeline(WGPUDevice device, WGPURenderPipelineDescriptor const * descriptor)`
+const deviceCreateRenderPipeline = @extern(*const fn (*Device, *const RenderPipelineDescriptor) callconv(.c) ?*RenderPipeline, .{ .name = "wgpuDeviceCreateRenderPipeline" });
+/// `WGPUFuture wgpuDeviceCreateRenderPipelineAsync(WGPUDevice device, WGPURenderPipelineDescriptor const * descriptor, WGPUCreateRenderPipelineAsyncCallbackInfo callbackInfo)`
+const deviceCreateRenderPipelineAsync = @extern(*const fn (*Device, *const RenderPipelineDescriptor, CreateRenderPipelineAsyncCallbackInfo) callconv(.c) Future, .{ .name = "wgpuDeviceCreateRenderPipelineAsync" });
+/// `WGPUSampler wgpuDeviceCreateSampler(WGPUDevice device, WGPU_NULLABLE WGPUSamplerDescriptor const * descriptor)`
+const deviceCreateSampler = @extern(*const fn (*Device, ?*const SamplerDescriptor) callconv(.c) ?*Sampler, .{ .name = "wgpuDeviceCreateSampler" });
+/// `WGPUShaderModule wgpuDeviceCreateShaderModule(WGPUDevice device, WGPUShaderModuleDescriptor const * descriptor)`
+const deviceCreateShaderModule = @extern(*const fn (*Device, *const ShaderModuleDescriptor) callconv(.c) ?*ShaderModule, .{ .name = "wgpuDeviceCreateShaderModule" });
+/// `WGPUTexture wgpuDeviceCreateTexture(WGPUDevice device, WGPUTextureDescriptor const * descriptor)`
+const deviceCreateTexture = @extern(*const fn (*Device, *const TextureDescriptor) callconv(.c) ?*Texture, .{ .name = "wgpuDeviceCreateTexture" });
+/// `void wgpuDeviceDestroy(WGPUDevice device)`
+const deviceDestroy = @extern(*const fn (*Device) callconv(.c) void, .{ .name = "wgpuDeviceDestroy" });
+/// `WGPUAdapterInfo wgpuDeviceGetAdapterInfo(WGPUDevice device)`
+const deviceGetAdapterInfo = @extern(*const fn (*Device) callconv(.c) AdapterInfo, .{ .name = "wgpuDeviceGetAdapterInfo" });
+/// `void wgpuDeviceGetFeatures(WGPUDevice device, WGPUSupportedFeatures * features)`
+const deviceGetFeatures = @extern(*const fn (*Device, *SupportedFeatures) callconv(.c) void, .{ .name = "wgpuDeviceGetFeatures" });
+/// `WGPUStatus wgpuDeviceGetLimits(WGPUDevice device, WGPULimits * limits)`
+const deviceGetLimits = @extern(*const fn (*Device, *Limits) callconv(.c) Status, .{ .name = "wgpuDeviceGetLimits" });
+/// `WGPUFuture wgpuDeviceGetLostFuture(WGPUDevice device)`
+const deviceGetLostFuture = @extern(*const fn (*Device) callconv(.c) Future, .{ .name = "wgpuDeviceGetLostFuture" });
+/// `WGPUQueue wgpuDeviceGetQueue(WGPUDevice device)`
+const deviceGetQueue = @extern(*const fn (*Device) callconv(.c) ?*Queue, .{ .name = "wgpuDeviceGetQueue" });
+/// `WGPUBool wgpuDeviceHasFeature(WGPUDevice device, WGPUFeatureName feature)`
+const deviceHasFeature = @extern(*const fn (*Device, FeatureName) callconv(.c) BigBool, .{ .name = "wgpuDeviceHasFeature" });
+/// `WGPUFuture wgpuDevicePopErrorScope(WGPUDevice device, WGPUPopErrorScopeCallbackInfo callbackInfo)`
+const devicePopErrorScope = @extern(*const fn (*Device, PopErrorScopeCallbackInfo) callconv(.c) Future, .{ .name = "wgpuDevicePopErrorScope" });
+/// `void wgpuDevicePushErrorScope(WGPUDevice device, WGPUErrorFilter filter)`
+const devicePushErrorScope = @extern(*const fn (*Device, ErrorFilter) callconv(.c) void, .{ .name = "wgpuDevicePushErrorScope" });
+/// `void wgpuDeviceSetLabel(WGPUDevice device, WGPUStringView label)`
+const deviceSetLabel = @extern(*const fn (*Device, StringView) callconv(.c) void, .{ .name = "wgpuDeviceSetLabel" });
+/// `void wgpuDeviceAddRef(WGPUDevice device)`
+const deviceAddRef = @extern(*const fn (*Device) callconv(.c) void, .{ .name = "wgpuDeviceAddRef" });
+/// `void wgpuDeviceRelease(WGPUDevice device)`
+const deviceRelease = @extern(*const fn (*Device) callconv(.c) void, .{ .name = "wgpuDeviceRelease" });
+/// `WGPUSurface wgpuInstanceCreateSurface(WGPUInstance instance, WGPUSurfaceDescriptor const * descriptor)`
+const instanceCreateSurface = @extern(*const fn (*Instance, *const SurfaceDescriptor) callconv(.c) ?*Surface, .{ .name = "wgpuInstanceCreateSurface" });
+/// `WGPUStatus wgpuInstanceGetWGSLLanguageFeatures(WGPUInstance instance, WGPUSupportedWGSLLanguageFeatures * features)`
+const instanceGetWGSLLanguageFeatures = @extern(*const fn (*Instance, *SupportedWGSLLanguageFeatures) callconv(.c) Status, .{ .name = "wgpuInstanceGetWGSLLanguageFeatures" });
+/// `WGPUBool wgpuInstanceHasWGSLLanguageFeature(WGPUInstance instance, WGPUWGSLLanguageFeatureName feature)`
+const instanceHasWGSLLanguageFeature = @extern(*const fn (*Instance, WGSLLanguageFeatureName) callconv(.c) BigBool, .{ .name = "wgpuInstanceHasWGSLLanguageFeature" });
+/// `void wgpuInstanceProcessEvents(WGPUInstance instance)`
+const instanceProcessEvents = @extern(*const fn (*Instance) callconv(.c) void, .{ .name = "wgpuInstanceProcessEvents" });
+/// `WGPUFuture wgpuInstanceRequestAdapter(WGPUInstance instance, WGPU_NULLABLE WGPURequestAdapterOptions const * options, WGPURequestAdapterCallbackInfo callbackInfo)`
+const instanceRequestAdapter = @extern(*const fn (*Instance, ?*const RequestAdapterOptions, RequestAdapterCallbackInfo) callconv(.c) Future, .{ .name = "wgpuInstanceRequestAdapter" });
+/// `WGPUWaitStatus wgpuInstanceWaitAny(WGPUInstance instance, size_t futureCount, WGPU_NULLABLE WGPUFutureWaitInfo * futures, uint64_t timeoutNS)`
+const instanceWaitAny = @extern(*const fn (*Instance, usize, ?[*]FutureWaitInfo, u64) callconv(.c) WaitStatus, .{ .name = "wgpuInstanceWaitAny" });
+/// `void wgpuInstanceAddRef(WGPUInstance instance)`
+const instanceAddRef = @extern(*const fn (*Instance) callconv(.c) void, .{ .name = "wgpuInstanceAddRef" });
+/// `void wgpuInstanceRelease(WGPUInstance instance)`
+const instanceRelease = @extern(*const fn (*Instance) callconv(.c) void, .{ .name = "wgpuInstanceRelease" });
+/// `void wgpuPipelineLayoutSetLabel(WGPUPipelineLayout pipelineLayout, WGPUStringView label)`
+const pipelineLayoutSetLabel = @extern(*const fn (*PipelineLayout, StringView) callconv(.c) void, .{ .name = "wgpuPipelineLayoutSetLabel" });
+/// `void wgpuPipelineLayoutAddRef(WGPUPipelineLayout pipelineLayout)`
+const pipelineLayoutAddRef = @extern(*const fn (*PipelineLayout) callconv(.c) void, .{ .name = "wgpuPipelineLayoutAddRef" });
+/// `void wgpuPipelineLayoutRelease(WGPUPipelineLayout pipelineLayout)`
+const pipelineLayoutRelease = @extern(*const fn (*PipelineLayout) callconv(.c) void, .{ .name = "wgpuPipelineLayoutRelease" });
+/// `void wgpuQuerySetDestroy(WGPUQuerySet querySet)`
+const querySetDestroy = @extern(*const fn (*QuerySet) callconv(.c) void, .{ .name = "wgpuQuerySetDestroy" });
+/// `uint32_t wgpuQuerySetGetCount(WGPUQuerySet querySet)`
+const querySetGetCount = @extern(*const fn (*QuerySet) callconv(.c) u32, .{ .name = "wgpuQuerySetGetCount" });
+/// `WGPUQueryType wgpuQuerySetGetType(WGPUQuerySet querySet)`
+const querySetGetType = @extern(*const fn (*QuerySet) callconv(.c) QueryType, .{ .name = "wgpuQuerySetGetType" });
+/// `void wgpuQuerySetSetLabel(WGPUQuerySet querySet, WGPUStringView label)`
+const querySetSetLabel = @extern(*const fn (*QuerySet, StringView) callconv(.c) void, .{ .name = "wgpuQuerySetSetLabel" });
+/// `void wgpuQuerySetAddRef(WGPUQuerySet querySet)`
+const querySetAddRef = @extern(*const fn (*QuerySet) callconv(.c) void, .{ .name = "wgpuQuerySetAddRef" });
+/// `void wgpuQuerySetRelease(WGPUQuerySet querySet)`
+const querySetRelease = @extern(*const fn (*QuerySet) callconv(.c) void, .{ .name = "wgpuQuerySetRelease" });
+/// `WGPUFuture wgpuQueueOnSubmittedWorkDone(WGPUQueue queue, WGPUQueueWorkDoneCallbackInfo callbackInfo)`
+const queueOnSubmittedWorkDone = @extern(*const fn (*Queue, QueueWorkDoneCallbackInfo) callconv(.c) Future, .{ .name = "wgpuQueueOnSubmittedWorkDone" });
+/// `void wgpuQueueSetLabel(WGPUQueue queue, WGPUStringView label)`
+const queueSetLabel = @extern(*const fn (*Queue, StringView) callconv(.c) void, .{ .name = "wgpuQueueSetLabel" });
+/// `void wgpuQueueSubmit(WGPUQueue queue, size_t commandCount, WGPUCommandBuffer const * commands)`
+const queueSubmit = @extern(*const fn (*Queue, usize, ?[*]const *CommandBuffer) callconv(.c) void, .{ .name = "wgpuQueueSubmit" });
+/// `void wgpuQueueWriteBuffer(WGPUQueue queue, WGPUBuffer buffer, uint64_t bufferOffset, void const * data, size_t size)`
+const queueWriteBuffer = @extern(*const fn (*Queue, *Buffer, u64, ?*const anyopaque, usize) callconv(.c) void, .{ .name = "wgpuQueueWriteBuffer" });
+/// `void wgpuQueueWriteTexture(WGPUQueue queue, WGPUTexelCopyTextureInfo const * destination, void const * data, size_t dataSize, WGPUTexelCopyBufferLayout const * dataLayout, WGPUExtent3D const * writeSize)`
+const queueWriteTexture = @extern(*const fn (*Queue, *const TexelCopyTextureInfo, ?*const anyopaque, usize, *const TexelCopyBufferLayout, *const Extent3D) callconv(.c) void, .{ .name = "wgpuQueueWriteTexture" });
+/// `void wgpuQueueAddRef(WGPUQueue queue)`
+const queueAddRef = @extern(*const fn (*Queue) callconv(.c) void, .{ .name = "wgpuQueueAddRef" });
+/// `void wgpuQueueRelease(WGPUQueue queue)`
+const queueRelease = @extern(*const fn (*Queue) callconv(.c) void, .{ .name = "wgpuQueueRelease" });
+/// `void wgpuRenderBundleSetLabel(WGPURenderBundle renderBundle, WGPUStringView label)`
+const renderBundleSetLabel = @extern(*const fn (*RenderBundle, StringView) callconv(.c) void, .{ .name = "wgpuRenderBundleSetLabel" });
+/// `void wgpuRenderBundleAddRef(WGPURenderBundle renderBundle)`
+const renderBundleAddRef = @extern(*const fn (*RenderBundle) callconv(.c) void, .{ .name = "wgpuRenderBundleAddRef" });
+/// `void wgpuRenderBundleRelease(WGPURenderBundle renderBundle)`
+const renderBundleRelease = @extern(*const fn (*RenderBundle) callconv(.c) void, .{ .name = "wgpuRenderBundleRelease" });
+/// `void wgpuRenderBundleEncoderDraw(WGPURenderBundleEncoder renderBundleEncoder, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)`
+const renderBundleEncoderDraw = @extern(*const fn (*RenderBundleEncoder, u32, u32, u32, u32) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderDraw" });
+/// `void wgpuRenderBundleEncoderDrawIndexed(WGPURenderBundleEncoder renderBundleEncoder, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t baseVertex, uint32_t firstInstance)`
+const renderBundleEncoderDrawIndexed = @extern(*const fn (*RenderBundleEncoder, u32, u32, u32, i32, u32) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderDrawIndexed" });
+/// `void wgpuRenderBundleEncoderDrawIndexedIndirect(WGPURenderBundleEncoder renderBundleEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
+const renderBundleEncoderDrawIndexedIndirect = @extern(*const fn (*RenderBundleEncoder, *Buffer, u64) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderDrawIndexedIndirect" });
+/// `void wgpuRenderBundleEncoderDrawIndirect(WGPURenderBundleEncoder renderBundleEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
+const renderBundleEncoderDrawIndirect = @extern(*const fn (*RenderBundleEncoder, *Buffer, u64) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderDrawIndirect" });
+/// `WGPURenderBundle wgpuRenderBundleEncoderFinish(WGPURenderBundleEncoder renderBundleEncoder, WGPU_NULLABLE WGPURenderBundleDescriptor const * descriptor)`
+const renderBundleEncoderFinish = @extern(*const fn (*RenderBundleEncoder, *const RenderBundleDescriptor) callconv(.c) ?*RenderBundle, .{ .name = "wgpuRenderBundleEncoderFinish" });
+/// `void wgpuRenderBundleEncoderInsertDebugMarker(WGPURenderBundleEncoder renderBundleEncoder, WGPUStringView markerLabel)`
+const renderBundleEncoderInsertDebugMarker = @extern(*const fn (*RenderBundleEncoder, StringView) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderInsertDebugMarker" });
+/// `void wgpuRenderBundleEncoderPopDebugGroup(WGPURenderBundleEncoder renderBundleEncoder)`
+const renderBundleEncoderPopDebugGroup = @extern(*const fn (*RenderBundleEncoder) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderPopDebugGroup" });
+/// `void wgpuRenderBundleEncoderPushDebugGroup(WGPURenderBundleEncoder renderBundleEncoder, WGPUStringView groupLabel)`
+const renderBundleEncoderPushDebugGroup = @extern(*const fn (*RenderBundleEncoder, StringView) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderPushDebugGroup" });
+/// `void wgpuRenderBundleEncoderSetBindGroup(WGPURenderBundleEncoder renderBundleEncoder, uint32_t groupIndex, WGPU_NULLABLE WGPUBindGroup group, size_t dynamicOffsetCount, uint32_t const * dynamicOffsets)`
+const renderBundleEncoderSetBindGroup = @extern(*const fn (*RenderBundleEncoder, u32, *BindGroup, usize, ?[*]const u32) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderSetBindGroup" });
+/// `void wgpuRenderBundleEncoderSetIndexBuffer(WGPURenderBundleEncoder renderBundleEncoder, WGPUBuffer buffer, WGPUIndexFormat format, uint64_t offset, uint64_t size)`
+const renderBundleEncoderSetIndexBuffer = @extern(*const fn (*RenderBundleEncoder, *Buffer, IndexFormat, u64, u64) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderSetIndexBuffer" });
+/// `void wgpuRenderBundleEncoderSetLabel(WGPURenderBundleEncoder renderBundleEncoder, WGPUStringView label)`
+const renderBundleEncoderSetLabel = @extern(*const fn (*RenderBundleEncoder, StringView) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderSetLabel" });
+/// `void wgpuRenderBundleEncoderSetPipeline(WGPURenderBundleEncoder renderBundleEncoder, WGPURenderPipeline pipeline)`
+const renderBundleEncoderSetPipeline = @extern(*const fn (*RenderBundleEncoder, *RenderPipeline) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderSetPipeline" });
+/// `void wgpuRenderBundleEncoderSetVertexBuffer(WGPURenderBundleEncoder renderBundleEncoder, uint32_t slot, WGPU_NULLABLE WGPUBuffer buffer, uint64_t offset, uint64_t size)`
+const renderBundleEncoderSetVertexBuffer = @extern(*const fn (*RenderBundleEncoder, u32, *Buffer, u64, u64) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderSetVertexBuffer" });
+/// `void wgpuRenderBundleEncoderAddRef(WGPURenderBundleEncoder renderBundleEncoder)`
+const renderBundleEncoderAddRef = @extern(*const fn (*RenderBundleEncoder) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderAddRef" });
+/// `void wgpuRenderBundleEncoderRelease(WGPURenderBundleEncoder renderBundleEncoder)`
+const renderBundleEncoderRelease = @extern(*const fn (*RenderBundleEncoder) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderRelease" });
+/// `void wgpuRenderPassEncoderBeginOcclusionQuery(WGPURenderPassEncoder renderPassEncoder, uint32_t queryIndex)`
+const renderPassEncoderBeginOcclusionQuery = @extern(*const fn (*RenderPassEncoder, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderBeginOcclusionQuery" });
+/// `void wgpuRenderPassEncoderDraw(WGPURenderPassEncoder renderPassEncoder, uint32_t vertexCount, uint32_t instanceCount, uint32_t firstVertex, uint32_t firstInstance)`
+const renderPassEncoderDraw = @extern(*const fn (*RenderPassEncoder, u32, u32, u32, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderDraw" });
+/// `void wgpuRenderPassEncoderDrawIndexed(WGPURenderPassEncoder renderPassEncoder, uint32_t indexCount, uint32_t instanceCount, uint32_t firstIndex, int32_t baseVertex, uint32_t firstInstance)`
+const renderPassEncoderDrawIndexed = @extern(*const fn (*RenderPassEncoder, u32, u32, u32, i32, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderDrawIndexed" });
+/// `void wgpuRenderPassEncoderDrawIndexedIndirect(WGPURenderPassEncoder renderPassEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
+const renderPassEncoderDrawIndexedIndirect = @extern(*const fn (*RenderPassEncoder, *Buffer, u64) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderDrawIndexedIndirect" });
+/// `void wgpuRenderPassEncoderDrawIndirect(WGPURenderPassEncoder renderPassEncoder, WGPUBuffer indirectBuffer, uint64_t indirectOffset)`
+const renderPassEncoderDrawIndirect = @extern(*const fn (*RenderPassEncoder, *Buffer, u64) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderDrawIndirect" });
+/// `void wgpuRenderPassEncoderEnd(WGPURenderPassEncoder renderPassEncoder)`
+const renderPassEncoderEnd = @extern(*const fn (*RenderPassEncoder) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderEnd" });
+/// `void wgpuRenderPassEncoderEndOcclusionQuery(WGPURenderPassEncoder renderPassEncoder)`
+const renderPassEncoderEndOcclusionQuery = @extern(*const fn (*RenderPassEncoder) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderEndOcclusionQuery" });
+/// `void wgpuRenderPassEncoderExecuteBundles(WGPURenderPassEncoder renderPassEncoder, size_t bundleCount, WGPURenderBundle const * bundles)`
+const renderPassEncoderExecuteBundles = @extern(*const fn (*RenderPassEncoder, usize, ?[*]const *RenderBundle) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderExecuteBundles" });
+/// `void wgpuRenderPassEncoderInsertDebugMarker(WGPURenderPassEncoder renderPassEncoder, WGPUStringView markerLabel)`
+const renderPassEncoderInsertDebugMarker = @extern(*const fn (*RenderPassEncoder, StringView) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderInsertDebugMarker" });
+/// `void wgpuRenderPassEncoderPopDebugGroup(WGPURenderPassEncoder renderPassEncoder)`
+const renderPassEncoderPopDebugGroup = @extern(*const fn (*RenderPassEncoder) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderPopDebugGroup" });
+/// `void wgpuRenderPassEncoderPushDebugGroup(WGPURenderPassEncoder renderPassEncoder, WGPUStringView groupLabel)`
+const renderPassEncoderPushDebugGroup = @extern(*const fn (*RenderPassEncoder, StringView) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderPushDebugGroup" });
+/// `void wgpuRenderPassEncoderSetBindGroup(WGPURenderPassEncoder renderPassEncoder, uint32_t groupIndex, WGPU_NULLABLE WGPUBindGroup group, size_t dynamicOffsetCount, uint32_t const * dynamicOffsets)`
+const renderPassEncoderSetBindGroup = @extern(*const fn (*RenderPassEncoder, u32, ?*BindGroup, usize, ?[*]const u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetBindGroup" });
+/// `void wgpuRenderPassEncoderSetBlendConstant(WGPURenderPassEncoder renderPassEncoder, WGPUColor const * color)`
+const renderPassEncoderSetBlendConstant = @extern(*const fn (*RenderPassEncoder, *const Color) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetBlendConstant" });
+/// `void wgpuRenderPassEncoderSetIndexBuffer(WGPURenderPassEncoder renderPassEncoder, WGPUBuffer buffer, WGPUIndexFormat format, uint64_t offset, uint64_t size)`
+const renderPassEncoderSetIndexBuffer = @extern(*const fn (*RenderPassEncoder, *Buffer, IndexFormat, u64, u64) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetIndexBuffer" });
+/// `void wgpuRenderPassEncoderSetLabel(WGPURenderPassEncoder renderPassEncoder, WGPUStringView label)`
+const renderPassEncoderSetLabel = @extern(*const fn (*RenderPassEncoder, StringView) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetLabel" });
+/// `void wgpuRenderPassEncoderSetPipeline(WGPURenderPassEncoder renderPassEncoder, WGPURenderPipeline pipeline)`
+const renderPassEncoderSetPipeline = @extern(*const fn (*RenderPassEncoder, *RenderPipeline) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetPipeline" });
+/// `void wgpuRenderPassEncoderSetScissorRect(WGPURenderPassEncoder renderPassEncoder, uint32_t x, uint32_t y, uint32_t width, uint32_t height)`
+const renderPassEncoderSetScissorRect = @extern(*const fn (*RenderPassEncoder, u32, u32, u32, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetScissorRect" });
+/// `void wgpuRenderPassEncoderSetStencilReference(WGPURenderPassEncoder renderPassEncoder, uint32_t reference)`
+const renderPassEncoderSetStencilReference = @extern(*const fn (*RenderPassEncoder, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetStencilReference" });
+/// `void wgpuRenderPassEncoderSetVertexBuffer(WGPURenderPassEncoder renderPassEncoder, uint32_t slot, WGPU_NULLABLE WGPUBuffer buffer, uint64_t offset, uint64_t size)`
+const renderPassEncoderSetVertexBuffer = @extern(*const fn (*RenderPassEncoder, u32, ?*Buffer, u64, u64) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetVertexBuffer" });
+/// `void wgpuRenderPassEncoderSetViewport(WGPURenderPassEncoder renderPassEncoder, float x, float y, float width, float height, float minDepth, float maxDepth)`
+const renderPassEncoderSetViewport = @extern(*const fn (*RenderPassEncoder, f32, f32, f32, f32, f32, f32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetViewport" });
+/// `void wgpuRenderPassEncoderAddRef(WGPURenderPassEncoder renderPassEncoder)`
+const renderPassEncoderAddRef = @extern(*const fn (*RenderPassEncoder) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderAddRef" });
+/// `void wgpuRenderPassEncoderRelease(WGPURenderPassEncoder renderPassEncoder)`
+const renderPassEncoderRelease = @extern(*const fn (*RenderPassEncoder) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderRelease" });
+/// `WGPUBindGroupLayout wgpuRenderPipelineGetBindGroupLayout(WGPURenderPipeline renderPipeline, uint32_t groupIndex)`
+const renderPipelineGetBindGroupLayout = @extern(*const fn (*RenderPipeline, u32) callconv(.c) ?*BindGroupLayout, .{ .name = "wgpuRenderPipelineGetBindGroupLayout" });
+/// `void wgpuRenderPipelineSetLabel(WGPURenderPipeline renderPipeline, WGPUStringView label)`
+const renderPipelineSetLabel = @extern(*const fn (*RenderPipeline, StringView) callconv(.c) void, .{ .name = "wgpuRenderPipelineSetLabel" });
+/// `void wgpuRenderPipelineAddRef(WGPURenderPipeline renderPipeline)`
+const renderPipelineAddRef = @extern(*const fn (*RenderPipeline) callconv(.c) void, .{ .name = "wgpuRenderPipelineAddRef" });
+/// `void wgpuRenderPipelineRelease(WGPURenderPipeline renderPipeline)`
+const renderPipelineRelease = @extern(*const fn (*RenderPipeline) callconv(.c) void, .{ .name = "wgpuRenderPipelineRelease" });
+/// `void wgpuSamplerSetLabel(WGPUSampler sampler, WGPUStringView label)`
+const samplerSetLabel = @extern(*const fn (*Sampler, StringView) callconv(.c) void, .{ .name = "wgpuSamplerSetLabel" });
+/// `void wgpuSamplerAddRef(WGPUSampler sampler)`
+const samplerAddRef = @extern(*const fn (*Sampler) callconv(.c) void, .{ .name = "wgpuSamplerAddRef" });
+/// `void wgpuSamplerRelease(WGPUSampler sampler)`
+const samplerRelease = @extern(*const fn (*Sampler) callconv(.c) void, .{ .name = "wgpuSamplerRelease" });
+/// `WGPUFuture wgpuShaderModuleGetCompilationInfo(WGPUShaderModule shaderModule, WGPUCompilationInfoCallbackInfo callbackInfo)`
+const shaderModuleGetCompilationInfo = @extern(*const fn (*ShaderModule, CompilationInfoCallbackInfo) callconv(.c) Future, .{ .name = "wgpuShaderModuleGetCompilationInfo" });
+/// `void wgpuShaderModuleSetLabel(WGPUShaderModule shaderModule, WGPUStringView label)`
+const shaderModuleSetLabel = @extern(*const fn (*ShaderModule, StringView) callconv(.c) void, .{ .name = "wgpuShaderModuleSetLabel" });
+/// `void wgpuShaderModuleAddRef(WGPUShaderModule shaderModule)`
+const shaderModuleAddRef = @extern(*const fn (*ShaderModule) callconv(.c) void, .{ .name = "wgpuShaderModuleAddRef" });
+/// `void wgpuShaderModuleRelease(WGPUShaderModule shaderModule)`
+const shaderModuleRelease = @extern(*const fn (*ShaderModule) callconv(.c) void, .{ .name = "wgpuShaderModuleRelease" });
+/// `void wgpuSupportedFeaturesFreeMembers(WGPUSupportedFeatures supportedFeatures)`
+const supportedFeaturesFreeMembers = @extern(*const fn (SupportedFeatures) callconv(.c) void, .{ .name = "wgpuSupportedFeaturesFreeMembers" });
+/// `void wgpuSupportedWGSLLanguageFeaturesFreeMembers(WGPUSupportedWGSLLanguageFeatures supportedWGSLLanguageFeatures)`
+const supportedWGSLLanguageFeaturesFreeMembers = @extern(*const fn (SupportedWGSLLanguageFeatures) callconv(.c) void, .{ .name = "wgpuSupportedWGSLLanguageFeaturesFreeMembers" });
+/// `void wgpuSurfaceConfigure(WGPUSurface surface, WGPUSurfaceConfiguration const * config)`
+const surfaceConfigure = @extern(*const fn (*Surface, *const SurfaceConfiguration) callconv(.c) void, .{ .name = "wgpuSurfaceConfigure" });
+/// `WGPUStatus wgpuSurfaceGetCapabilities(WGPUSurface surface, WGPUAdapter adapter, WGPUSurfaceCapabilities * capabilities)`
+const surfaceGetCapabilities = @extern(*const fn (*Surface, *Adapter, *SurfaceCapabilities) callconv(.c) Status, .{ .name = "wgpuSurfaceGetCapabilities" });
+/// `void wgpuSurfaceGetCurrentTexture(WGPUSurface surface, WGPUSurfaceTexture * surfaceTexture)`
+const surfaceGetCurrentTexture = @extern(*const fn (*Surface, *SurfaceTexture) callconv(.c) void, .{ .name = "wgpuSurfaceGetCurrentTexture" });
+/// `WGPUStatus wgpuSurfacePresent(WGPUSurface surface)`
+const surfacePresent = @extern(*const fn (*Surface) callconv(.c) Status, .{ .name = "wgpuSurfacePresent" });
+/// `void wgpuSurfaceSetLabel(WGPUSurface surface, WGPUStringView label)`
+const surfaceSetLabel = @extern(*const fn (*Surface, StringView) callconv(.c) void, .{ .name = "wgpuSurfaceSetLabel" });
+/// `void wgpuSurfaceUnconfigure(WGPUSurface surface)`
+const surfaceUnconfigure = @extern(*const fn (*Surface) callconv(.c) void, .{ .name = "wgpuSurfaceUnconfigure" });
+/// `void wgpuSurfaceAddRef(WGPUSurface surface)`
+const surfaceAddRef = @extern(*const fn (*Surface) callconv(.c) void, .{ .name = "wgpuSurfaceAddRef" });
+/// `void wgpuSurfaceRelease(WGPUSurface surface)`
+const surfaceRelease = @extern(*const fn (*Surface) callconv(.c) void, .{ .name = "wgpuSurfaceRelease" });
+/// `void wgpuSurfaceCapabilitiesFreeMembers(WGPUSurfaceCapabilities surfaceCapabilities)`
+const surfaceCapabilitiesFreeMembers = @extern(*const fn (SurfaceCapabilities) callconv(.c) void, .{ .name = "wgpuSurfaceCapabilitiesFreeMembers" });
+/// `WGPUTextureView wgpuTextureCreateView(WGPUTexture texture, WGPU_NULLABLE WGPUTextureViewDescriptor const * descriptor)`
+const textureCreateView = @extern(*const fn (*Texture, ?*const TextureViewDescriptor) callconv(.c) ?*TextureView, .{ .name = "wgpuTextureCreateView" });
+/// `void wgpuTextureDestroy(WGPUTexture texture)`
+const textureDestroy = @extern(*const fn (*Texture) callconv(.c) void, .{ .name = "wgpuTextureDestroy" });
+/// `uint32_t wgpuTextureGetDepthOrArrayLayers(WGPUTexture texture)`
+const textureGetDepthOrArrayLayers = @extern(*const fn (*Texture) callconv(.c) u32, .{ .name = "wgpuTextureGetDepthOrArrayLayers" });
+/// `WGPUTextureDimension wgpuTextureGetDimension(WGPUTexture texture)`
+const textureGetDimension = @extern(*const fn (*Texture) callconv(.c) TextureDimension, .{ .name = "wgpuTextureGetDimension" });
+/// `WGPUTextureFormat wgpuTextureGetFormat(WGPUTexture texture)`
+const textureGetFormat = @extern(*const fn (*Texture) callconv(.c) TextureFormat, .{ .name = "wgpuTextureGetFormat" });
+/// `uint32_t wgpuTextureGetHeight(WGPUTexture texture)`
+const textureGetHeight = @extern(*const fn (*Texture) callconv(.c) u32, .{ .name = "wgpuTextureGetHeight" });
+/// `uint32_t wgpuTextureGetMipLevelCount(WGPUTexture texture)`
+const textureGetMipLevelCount = @extern(*const fn (*Texture) callconv(.c) u32, .{ .name = "wgpuTextureGetMipLevelCount" });
+/// `uint32_t wgpuTextureGetSampleCount(WGPUTexture texture)`
+const textureGetSampleCount = @extern(*const fn (*Texture) callconv(.c) u32, .{ .name = "wgpuTextureGetSampleCount" });
+/// `WGPUTextureUsage wgpuTextureGetUsage(WGPUTexture texture)`
+const textureGetUsage = @extern(*const fn (*Texture) callconv(.c) TextureUsage, .{ .name = "wgpuTextureGetUsage" });
+/// `uint32_t wgpuTextureGetWidth(WGPUTexture texture)`
+const textureGetWidth = @extern(*const fn (*Texture) callconv(.c) u32, .{ .name = "wgpuTextureGetWidth" });
+/// `void wgpuTextureSetLabel(WGPUTexture texture, WGPUStringView label)`
+const textureSetLabel = @extern(*const fn (*Texture, StringView) callconv(.c) void, .{ .name = "wgpuTextureSetLabel" });
+/// `void wgpuTextureAddRef(WGPUTexture texture)`
+const textureAddRef = @extern(*const fn (*Texture) callconv(.c) void, .{ .name = "wgpuTextureAddRef" });
+/// `void wgpuTextureRelease(WGPUTexture texture)`
+const textureRelease = @extern(*const fn (*Texture) callconv(.c) void, .{ .name = "wgpuTextureRelease" });
+/// `void wgpuTextureViewSetLabel(WGPUTextureView textureView, WGPUStringView label)`
+const textureViewSetLabel = @extern(*const fn (*TextureView, StringView) callconv(.c) void, .{ .name = "wgpuTextureViewSetLabel" });
+/// `void wgpuTextureViewAddRef(WGPUTextureView textureView)`
+const textureViewAddRef = @extern(*const fn (*TextureView) callconv(.c) void, .{ .name = "wgpuTextureViewAddRef" });
+/// `void wgpuTextureViewRelease(WGPUTextureView textureView)`
+const textureViewRelease = @extern(*const fn (*TextureView) callconv(.c) void, .{ .name = "wgpuTextureViewRelease" });
+/// `void wgpuGenerateReport(WGPUInstance instance, WGPUGlobalReport * report)`
+const generateReport = @extern(*const fn (*Instance, *GlobalReport) callconv(.c) void, .{ .name = "wgpuGenerateReport" });
+/// `size_t wgpuInstanceEnumerateAdapters(WGPUInstance instance, WGPU_NULLABLE WGPUInstanceEnumerateAdapterOptions const * options, WGPUAdapter * adapters)`
+const instanceEnumerateAdapters = @extern(*const fn (*Instance, *const InstanceEnumerateAdapterOptions, [*]?*Adapter) callconv(.c) usize, .{ .name = "wgpuInstanceEnumerateAdapters" });
+/// `WGPUSubmissionIndex wgpuQueueSubmitForIndex(WGPUQueue queue, size_t commandCount, WGPUCommandBuffer const * commands)`
+const queueSubmitForIndex = @extern(*const fn (*Queue, usize, ?[*]const ?*CommandBuffer) callconv(.c) SubmissionIndex, .{ .name = "wgpuQueueSubmitForIndex" });
+/// `WGPUBool wgpuDevicePoll(WGPUDevice device, WGPUBool wait, WGPU_NULLABLE WGPUSubmissionIndex const * submissionIndex)`
+const devicePoll = @extern(*const fn (*Device, BigBool, ?*const SubmissionIndex) callconv(.c) BigBool, .{ .name = "wgpuDevicePoll" });
+/// `WGPUShaderModule wgpuDeviceCreateShaderModuleSpirV(WGPUDevice device, WGPUShaderModuleDescriptorSpirV const * descriptor)`
+const deviceCreateShaderModuleSpirV = @extern(*const fn (*Device, *const ShaderModuleDescriptorSpirV) callconv(.c) ?*ShaderModule, .{ .name = "wgpuDeviceCreateShaderModuleSpirV" });
 /// `void wgpuRenderPassEncoderSetPushConstants(WGPURenderPassEncoder encoder, WGPUShaderStage stages, uint32_t offset, uint32_t sizeBytes, void const * data)`
-pub const renderPassEncoderSetPushConstants = @extern(*const fn (RenderPassEncoder, ShaderStage, u32, u32, ?*const anyopaque) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetPushConstants" });
+const renderPassEncoderSetPushConstants = @extern(*const fn (*RenderPassEncoder, ShaderStage, u32, u32, ?*const anyopaque) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderSetPushConstants" });
 /// `void wgpuComputePassEncoderSetPushConstants(WGPUComputePassEncoder encoder, uint32_t offset, uint32_t sizeBytes, void const * data)`
-pub const computePassEncoderSetPushConstants = @extern(*const fn (ComputePassEncoder, u32, u32, ?*const anyopaque) callconv(.c) void, .{ .name = "wgpuComputePassEncoderSetPushConstants" });
+const computePassEncoderSetPushConstants = @extern(*const fn (*ComputePassEncoder, u32, u32, ?*const anyopaque) callconv(.c) void, .{ .name = "wgpuComputePassEncoderSetPushConstants" });
 /// `void wgpuRenderBundleEncoderSetPushConstants(WGPURenderBundleEncoder encoder, WGPUShaderStage stages, uint32_t offset, uint32_t sizeBytes, void const * data)`
-pub const renderBundleEncoderSetPushConstants = @extern(*const fn (RenderBundleEncoder, ShaderStage, u32, u32, ?*const anyopaque) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderSetPushConstants" });
+const renderBundleEncoderSetPushConstants = @extern(*const fn (*RenderBundleEncoder, ShaderStage, u32, u32, ?*const anyopaque) callconv(.c) void, .{ .name = "wgpuRenderBundleEncoderSetPushConstants" });
 /// `void wgpuRenderPassEncoderMultiDrawIndirect(WGPURenderPassEncoder encoder, WGPUBuffer buffer, uint64_t offset, uint32_t count)`
-pub const renderPassEncoderMultiDrawIndirect = @extern(*const fn (RenderPassEncoder, Buffer, u64, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderMultiDrawIndirect" });
+const renderPassEncoderMultiDrawIndirect = @extern(*const fn (*RenderPassEncoder, *Buffer, u64, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderMultiDrawIndirect" });
 /// `void wgpuRenderPassEncoderMultiDrawIndexedIndirect(WGPURenderPassEncoder encoder, WGPUBuffer buffer, uint64_t offset, uint32_t count)`
-pub const renderPassEncoderMultiDrawIndexedIndirect = @extern(*const fn (RenderPassEncoder, Buffer, u64, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderMultiDrawIndexedIndirect" });
+const renderPassEncoderMultiDrawIndexedIndirect = @extern(*const fn (*RenderPassEncoder, *Buffer, u64, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderMultiDrawIndexedIndirect" });
 /// `void wgpuRenderPassEncoderMultiDrawIndirectCount(WGPURenderPassEncoder encoder, WGPUBuffer buffer, uint64_t offset, WGPUBuffer count_buffer, uint64_t count_buffer_offset, uint32_t max_count)`
-pub const renderPassEncoderMultiDrawIndirectCount = @extern(*const fn (RenderPassEncoder, Buffer, u64, Buffer, u64, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderMultiDrawIndirectCount" });
+const renderPassEncoderMultiDrawIndirectCount = @extern(*const fn (*RenderPassEncoder, *Buffer, u64, *Buffer, u64, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderMultiDrawIndirectCount" });
 /// `void wgpuRenderPassEncoderMultiDrawIndexedIndirectCount(WGPURenderPassEncoder encoder, WGPUBuffer buffer, uint64_t offset, WGPUBuffer count_buffer, uint64_t count_buffer_offset, uint32_t max_count)`
-pub const renderPassEncoderMultiDrawIndexedIndirectCount = @extern(*const fn (RenderPassEncoder, Buffer, u64, Buffer, u64, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderMultiDrawIndexedIndirectCount" });
+const renderPassEncoderMultiDrawIndexedIndirectCount = @extern(*const fn (*RenderPassEncoder, *Buffer, u64, *Buffer, u64, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderMultiDrawIndexedIndirectCount" });
 /// `void wgpuComputePassEncoderBeginPipelineStatisticsQuery(WGPUComputePassEncoder computePassEncoder, WGPUQuerySet querySet, uint32_t queryIndex)`
-pub const computePassEncoderBeginPipelineStatisticsQuery = @extern(*const fn (ComputePassEncoder, QuerySet, u32) callconv(.c) void, .{ .name = "wgpuComputePassEncoderBeginPipelineStatisticsQuery" });
+const computePassEncoderBeginPipelineStatisticsQuery = @extern(*const fn (*ComputePassEncoder, *QuerySet, u32) callconv(.c) void, .{ .name = "wgpuComputePassEncoderBeginPipelineStatisticsQuery" });
 /// `void wgpuComputePassEncoderEndPipelineStatisticsQuery(WGPUComputePassEncoder computePassEncoder)`
-pub const computePassEncoderEndPipelineStatisticsQuery = @extern(*const fn (ComputePassEncoder) callconv(.c) void, .{ .name = "wgpuComputePassEncoderEndPipelineStatisticsQuery" });
+const computePassEncoderEndPipelineStatisticsQuery = @extern(*const fn (*ComputePassEncoder) callconv(.c) void, .{ .name = "wgpuComputePassEncoderEndPipelineStatisticsQuery" });
 /// `void wgpuRenderPassEncoderBeginPipelineStatisticsQuery(WGPURenderPassEncoder renderPassEncoder, WGPUQuerySet querySet, uint32_t queryIndex)`
-pub const renderPassEncoderBeginPipelineStatisticsQuery = @extern(*const fn (RenderPassEncoder, QuerySet, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderBeginPipelineStatisticsQuery" });
+const renderPassEncoderBeginPipelineStatisticsQuery = @extern(*const fn (*RenderPassEncoder, *QuerySet, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderBeginPipelineStatisticsQuery" });
 /// `void wgpuRenderPassEncoderEndPipelineStatisticsQuery(WGPURenderPassEncoder renderPassEncoder)`
-pub const renderPassEncoderEndPipelineStatisticsQuery = @extern(*const fn (RenderPassEncoder) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderEndPipelineStatisticsQuery" });
+const renderPassEncoderEndPipelineStatisticsQuery = @extern(*const fn (*RenderPassEncoder) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderEndPipelineStatisticsQuery" });
 /// `void wgpuComputePassEncoderWriteTimestamp(WGPUComputePassEncoder computePassEncoder, WGPUQuerySet querySet, uint32_t queryIndex)`
-pub const computePassEncoderWriteTimestamp = @extern(*const fn (ComputePassEncoder, QuerySet, u32) callconv(.c) void, .{ .name = "wgpuComputePassEncoderWriteTimestamp" });
+const computePassEncoderWriteTimestamp = @extern(*const fn (*ComputePassEncoder, *QuerySet, u32) callconv(.c) void, .{ .name = "wgpuComputePassEncoderWriteTimestamp" });
 /// `void wgpuRenderPassEncoderWriteTimestamp(WGPURenderPassEncoder renderPassEncoder, WGPUQuerySet querySet, uint32_t queryIndex)`
-pub const renderPassEncoderWriteTimestamp = @extern(*const fn (RenderPassEncoder, QuerySet, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderWriteTimestamp" });
+const renderPassEncoderWriteTimestamp = @extern(*const fn (*RenderPassEncoder, *QuerySet, u32) callconv(.c) void, .{ .name = "wgpuRenderPassEncoderWriteTimestamp" });
 
 // Extended API //
-
-/// Loads a WGSL shader from a file.
-pub fn loadShader(device: Device, path: []const u8) !ShaderModule {
-    const buf = std.fs.cwd().readFileAlloc(path, std.heap.page_allocator, .unlimited) catch {
-        return error.FailedToLoadShader;
-    };
-    defer std.heap.page_allocator.free(buf);
-
-    return loadShaderText(device, path, buf);
-}
-
-/// Loads a WGSL shader from a string.
-pub fn loadShaderText(device: Device, name: []const u8, source: []const u8) !ShaderModule {
-    var wgsl_descriptor = ShaderSourceWGSL{
-        .chain = .{ .s_type = .shader_source_wgsl },
-        .code = .fromSlice(source),
-    };
-
-    const shader_module = deviceCreateShaderModule(device, &ShaderModuleDescriptor{
-        .label = .fromSlice(name),
-        .next_in_chain = @ptrCast(&wgsl_descriptor),
-    });
-
-    if (shader_module == null) {
-        return error.FailedToCreateShaderModule;
-    }
-
-    return shader_module;
-}
 
 // --- Printing helper functions adapted to new types ---
 fn printRegistryReport(report: RegistryReport, comptime prefix: []const u8) void {
@@ -2208,7 +3013,7 @@ pub fn printGlobalReport(report: GlobalReport) void {
     std.debug.print("}}\n", .{});
 }
 
-pub fn printAdapterInfo(adapter: Adapter) void {
+pub fn printAdapterInfo(adapter: *Adapter) void {
     var info = std.mem.zeroes(AdapterInfo);
     _ = adapterGetInfo(adapter, &info);
     std.debug.print("description: {s}\n", .{if (info.description.data) |d| d[0..info.description.length] else "(null)"});

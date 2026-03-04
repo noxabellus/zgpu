@@ -5,6 +5,7 @@ const InputState = @This();
 
 const std = @import("std");
 const glfw = @import("glfw");
+const Application = @import("Application.zig");
 
 const log = std.log.scoped(.input_state);
 
@@ -390,8 +391,6 @@ pub const Char = packed struct(u27) {
     modifiers: Modifiers,
 };
 
-window: *glfw.Window,
-
 have_keyboard_focus: bool = false,
 keyboard_focus_last: bool = false,
 
@@ -415,10 +414,14 @@ chars: []Char = &.{}, // slice into chars_storage
 _chars_storage: [CHAR_ARRAY_SIZE]Char = undefined, // Input character accumulation buffer
 
 /// Create an InputState for a given glfw window.
-pub fn init(window: *glfw.Window) InputState {
-    return InputState{
-        .window = window,
-    };
+pub fn init(self: *InputState) void {
+    self.* = InputState{};
+
+    self.listenAllGlfw();
+}
+
+pub fn getApp(self: *InputState) *Application {
+    return @fieldParentPtr("input_state", self);
 }
 
 /// Gets the current scroll delta for the frame, and resets it to zero.
@@ -491,7 +494,7 @@ pub fn listenAllGlfw(self: *InputState) void {
 /// See also `InputState.listenAllGlfw` to collect character input as well.
 pub fn listenMouseScrollGlfw(self: *InputState) void {
     direct_scroll_delta = &self.scroll_delta;
-    _ = glfw.setScrollCallback(self.window, @ptrCast(&directScrollGlfwCallback));
+    _ = glfw.setScrollCallback(self.getApp().window, @ptrCast(&directScrollGlfwCallback));
 }
 
 /// Note that this function sets up a direct callback to collect codepoint input, so it can only be used once per glfw Window, and once per thread.
@@ -502,7 +505,7 @@ pub fn listenCharInputGlfw(self: *InputState) void {
         .storage = &self._chars_storage,
         .view = &self.chars,
     };
-    _ = glfw.setCharModsCallback(self.window, @ptrCast(&directCharGlfwCallback));
+    _ = glfw.setCharModsCallback(self.getApp().window, @ptrCast(&directCharGlfwCallback));
 }
 
 /// Manually add to the scroll offset for the frame. This can be used in addition to `InputState.listenMouseScrollGlfw` if needed.
@@ -533,13 +536,13 @@ pub fn setClipboard(self: *InputState, text: []const u8) !void {
 
     const text_z = try clipboard_temp.allocator().dupeZ(u8, text);
 
-    glfw.setClipboardString(self.window, text_z);
+    glfw.setClipboardString(self.getApp().window, text_z);
 }
 threadlocal var clipboard_temp: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
 
 /// Get the clipboard value.
 pub fn getClipboard(self: *InputState) []const u8 {
-    return if (glfw.getClipboardString(self.window)) |str| std.mem.span(str) else &.{};
+    return if (glfw.getClipboardString(self.getApp().window)) |str| std.mem.span(str) else &.{};
 }
 
 /// Manually set the state of mouse focus (whether the mouse is over the window).
@@ -610,7 +613,7 @@ pub fn collectAllGlfw(self: *InputState) void {
 /// See also `InputState.collectAllGlfw`.
 pub fn collectKeyboardFocusGlfw(self: *InputState) void {
     self.keyboard_focus_last = self.have_keyboard_focus;
-    self.have_keyboard_focus = glfw.getWindowAttrib(self.window, .focused) != 0;
+    self.have_keyboard_focus = glfw.getWindowAttrib(self.getApp().window, .focused) != 0;
 }
 
 /// Collects mouse position and whether the specified glfw window has mouse focus.
@@ -618,11 +621,11 @@ pub fn collectKeyboardFocusGlfw(self: *InputState) void {
 pub fn collectMouseStateGlfw(self: *InputState) void {
     var window_w: i32 = 0;
     var window_h: i32 = 0;
-    glfw.getFramebufferSize(self.window, &window_w, &window_h);
+    glfw.getFramebufferSize(self.getApp().window, &window_w, &window_h);
 
     var mouse_x: f64 = 0;
     var mouse_y: f64 = 0;
-    glfw.getCursorPos(self.window, &mouse_x, &mouse_y);
+    glfw.getCursorPos(self.getApp().window, &mouse_x, &mouse_y);
 
     self.mouse_focus_last = self.have_mouse_focus;
     self.have_mouse_focus = mouse_x >= 0 and mouse_y >= 0 and mouse_x <= @as(f64, @floatFromInt(window_w)) and mouse_y <= @as(f64, @floatFromInt(window_h));
@@ -637,7 +640,7 @@ pub fn collectButtonsGlfw(self: *InputState) void {
     // unlike with keys, we always want to collect mouse button states, even if the window doesn't have mouse focus
     // this allows us to continue drag interactions etc, even if the mouse has moved outside the window
     for (&self.mouse_buttons, 0..) |*button_state, code| {
-        button_state.* = glfw.getMouseButton(self.window, @enumFromInt(code)).isDown();
+        button_state.* = glfw.getMouseButton(self.getApp().window, @enumFromInt(code)).isDown();
     }
 }
 
@@ -649,7 +652,7 @@ pub fn collectKeysGlfw(self: *InputState) void {
     if (self.have_keyboard_focus) {
         for (&self.keys, 0..) |*key_state, code| {
             if (Key.validateKeyCode(code)) {
-                key_state.* = glfw.getKey(self.window, @enumFromInt(code)).isDown();
+                key_state.* = glfw.getKey(self.getApp().window, @enumFromInt(code)).isDown();
             }
         }
     } else {

@@ -4,7 +4,6 @@ const std = @import("std");
 const log = std.log.scoped(.model);
 
 const gltf = @import("gltf");
-const wgpu = @import("wgpu");
 const stbi = @import("stbi");
 
 const Gpu = @import("Gpu.zig");
@@ -27,12 +26,12 @@ animations: []Animation,
 
 pub fn deinit(self: *Model) void {
     for (self.primitives) |p| {
-        wgpu.bufferRelease(p.vertex_buffer);
-        wgpu.bufferRelease(p.index_buffer);
-        wgpu.bindGroupRelease(p.texture_bind_group);
-        wgpu.samplerRelease(p.sampler);
-        wgpu.textureViewRelease(p.texture_view);
-        wgpu.textureRelease(p.texture);
+        p.vertex_buffer.release();
+        if (p.index_buffer) |x| x.release();
+        if (p.texture_bind_group) |x| x.release();
+        if (p.sampler) |x| x.release();
+        if (p.texture_view) |x| x.release();
+        if (p.texture) |x| x.release();
     }
     self.allocator.free(self.primitives);
 
@@ -56,21 +55,21 @@ pub fn deinit(self: *Model) void {
     self.allocator.free(self.joints);
 }
 
-var TEXTURE_BIND_GROUP_LAYOUT: wgpu.BindGroupLayout = null;
+var TEXTURE_BIND_GROUP_LAYOUT: ?*Gpu.BindGroupLayout = null;
 
-pub fn getTextureBindGroupLayout(gpu: *Gpu) wgpu.BindGroupLayout {
+pub fn getTextureBindGroupLayout(gpu: *Gpu) !*Gpu.BindGroupLayout {
     if (TEXTURE_BIND_GROUP_LAYOUT) |p| return p;
 
-    TEXTURE_BIND_GROUP_LAYOUT = gpu.createBindGroupLayout(&.{
+    TEXTURE_BIND_GROUP_LAYOUT = try gpu.device.createBindGroupLayout(&.{
         .label = .fromSlice("Model:texture_bind_group_layout"),
         .entry_count = 2,
         .entries = &.{
-            .{ .binding = 0, .visibility = wgpu.ShaderStage.fragmentStage, .texture = .{ .sample_type = .float, .view_dimension = .@"2d" } },
-            .{ .binding = 1, .visibility = wgpu.ShaderStage.fragmentStage, .sampler = .{ .type = .filtering } },
+            .{ .binding = 0, .visibility = Gpu.ShaderStage.fragmentStage, .texture = .{ .sample_type = .float, .view_dimension = .@"2d" } },
+            .{ .binding = 1, .visibility = Gpu.ShaderStage.fragmentStage, .sampler = .{ .type = .filtering } },
         },
     });
 
-    return TEXTURE_BIND_GROUP_LAYOUT;
+    return TEXTURE_BIND_GROUP_LAYOUT.?;
 }
 
 /// Loads a glTF model from the given path, creating WGPU buffers and optimized runtime structures.
@@ -307,16 +306,16 @@ pub fn loadGltf(
             }
 
             const vertex_buffer_bytes = std.mem.sliceAsBytes(vertices.items);
-            const vbo = gpu.createBuffer(&.{
+            const vbo = try gpu.device.createBuffer(&.{
                 .label = .fromSlice(mesh.name orelse "anonymous_mesh"),
                 .usage = .{ .vertex = true, .copy_dst = true },
                 .size = vertex_buffer_bytes.len,
             });
-            gpu.writeBuffer(vbo, 0, vertex_buffer_bytes);
+            gpu.queue.writeBuffer(vbo, 0, vertex_buffer_bytes.ptr, vertex_buffer_bytes.len);
             const idx_acc = gltf_data.data.accessors[primitive.indices.?];
-            var ibo: wgpu.Buffer = undefined;
+            var ibo: ?*Gpu.Buffer = null;
             const index_count: u32 = @intCast(idx_acc.count);
-            var index_format: wgpu.IndexFormat = undefined;
+            var index_format: Gpu.IndexFormat = undefined;
             switch (idx_acc.component_type) {
                 .unsigned_short, .unsigned_integer => {
                     index_format = if (idx_acc.component_type == .unsigned_short) .uint16 else .uint32;
@@ -330,12 +329,12 @@ pub fn loadGltf(
                         );
                         while (idx_iter.next()) |idx_slice| for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
                         const index_buffer_bytes = std.mem.sliceAsBytes(indices.items);
-                        ibo = gpu.createBuffer(&.{
+                        ibo = try gpu.device.createBuffer(&.{
                             .label = .fromSlice("index_buffer"),
                             .usage = .{ .index = true, .copy_dst = true },
                             .size = index_buffer_bytes.len,
                         });
-                        gpu.writeBuffer(ibo, 0, index_buffer_bytes);
+                        gpu.queue.writeBuffer(ibo.?, 0, index_buffer_bytes.ptr, index_buffer_bytes.len);
                     } else {
                         var indices = try std.ArrayList(u32).initCapacity(allocator, idx_acc.count);
                         defer indices.deinit(allocator);
@@ -346,18 +345,18 @@ pub fn loadGltf(
                         );
                         while (idx_iter.next()) |idx_slice| for (idx_slice) |idx| indices.appendAssumeCapacity(idx);
                         const index_buffer_bytes = std.mem.sliceAsBytes(indices.items);
-                        ibo = gpu.createBuffer(&.{
+                        ibo = try gpu.device.createBuffer(&.{
                             .label = .fromSlice("index_buffer"),
                             .usage = .{ .index = true, .copy_dst = true },
                             .size = index_buffer_bytes.len,
                         });
-                        gpu.writeBuffer(ibo, 0, index_buffer_bytes);
+                        gpu.queue.writeBuffer(ibo.?, 0, index_buffer_bytes.ptr, index_buffer_bytes.len);
                     }
                 },
                 else => return error.UnsupportedIndexFormat,
             }
-            var prim_texture: wgpu.Texture = undefined;
-            var prim_texture_view: wgpu.TextureView = undefined;
+            var prim_texture: ?*Gpu.Texture = null;
+            var prim_texture_view: ?*Gpu.TextureView = null;
             var maybe_image: ?stbi.Image = null;
             defer if (maybe_image) |*img| img.deinit();
             if (primitive.material) |mat_idx| {
@@ -376,7 +375,7 @@ pub fn loadGltf(
                 }
             }
             if (maybe_image) |image| {
-                prim_texture = gpu.createTexture(&.{
+                prim_texture = try gpu.device.createTexture(&.{
                     .label = .fromSlice("gltf_texture"),
                     .size = .{
                         .width = image.width,
@@ -392,10 +391,23 @@ pub fn loadGltf(
                         .copy_dst = true,
                     },
                 });
-                prim_texture_view = wgpu.textureCreateView(prim_texture, null);
-                gpu.writeTextureImage(.{ .texture = prim_texture }, &image);
+                prim_texture_view = try prim_texture.?.createView(null);
+                gpu.queue.writeTexture(
+                    &.{ .texture = prim_texture },
+                    image.data.ptr,
+                    image.data.len,
+                    &.{
+                        .bytes_per_row = image.bytes_per_row,
+                        .rows_per_image = image.height,
+                    },
+                    &.{
+                        .width = image.width,
+                        .height = image.height,
+                        .depth_or_array_layers = 1,
+                    },
+                );
             } else {
-                prim_texture = gpu.createTexture(&.{
+                prim_texture = try gpu.device.createTexture(&.{
                     .label = .fromSlice("fallback_texture"),
                     .size = .{
                         .width = 1,
@@ -411,30 +423,31 @@ pub fn loadGltf(
                         .copy_dst = true,
                     },
                 });
-                prim_texture_view = wgpu.textureCreateView(prim_texture, null);
+                prim_texture_view = try prim_texture.?.createView(null);
                 const white_pixel: u32 = 0xFFFFFFFF;
-                gpu.writeTexture(
-                    .{ .texture = prim_texture },
-                    .{
+                gpu.queue.writeTexture(
+                    &.{ .texture = prim_texture },
+                    &white_pixel,
+                    @sizeOf(u32),
+                    &.{
                         .bytes_per_row = 4,
                         .rows_per_image = 1,
                     },
-                    .{
+                    &.{
                         .width = 1,
                         .height = 1,
                         .depth_or_array_layers = 1,
                     },
-                    &white_pixel,
                 );
             }
-            const prim_sampler = gpu.createSampler(&.{
+            const prim_sampler = try gpu.device.createSampler(&.{
                 .address_mode_u = .repeat,
                 .address_mode_v = .repeat,
                 .mag_filter = .linear,
                 .min_filter = .linear,
             });
-            const prim_bind_group = gpu.createBindGroup(&.{
-                .layout = getTextureBindGroupLayout(gpu),
+            const prim_bind_group = try gpu.device.createBindGroup(&.{
+                .layout = try getTextureBindGroupLayout(gpu),
                 .entry_count = 2,
                 .entries = &.{
                     .{ .binding = 0, .texture_view = prim_texture_view },
@@ -443,6 +456,7 @@ pub fn loadGltf(
             });
             try primitive_list.append(allocator, .{
                 .vertex_buffer = vbo,
+                .vertex_count = @intCast(vertices.items.len),
                 .index_buffer = ibo,
                 .index_count = index_count,
                 .index_format = index_format,
@@ -616,7 +630,7 @@ pub const Vertex = extern struct {
     joint_indices: vec4u,
     joint_weights: vec4,
 
-    pub const buffer_layout = wgpu.VertexBufferLayout{
+    pub const buffer_layout = Gpu.VertexBufferLayout{
         .array_stride = @sizeOf(Vertex),
         .step_mode = .vertex,
         .attribute_count = 6,
@@ -632,14 +646,15 @@ pub const Vertex = extern struct {
 };
 
 pub const MeshPrimitive = struct {
-    vertex_buffer: wgpu.Buffer,
-    index_buffer: wgpu.Buffer,
+    vertex_buffer: *Gpu.Buffer,
+    vertex_count: u32,
+    index_buffer: ?*Gpu.Buffer,
     index_count: u32,
-    index_format: wgpu.IndexFormat,
-    texture: wgpu.Texture,
-    texture_view: wgpu.TextureView,
-    sampler: wgpu.Sampler,
-    texture_bind_group: wgpu.BindGroup,
+    index_format: Gpu.IndexFormat,
+    texture: ?*Gpu.Texture,
+    texture_view: ?*Gpu.TextureView,
+    sampler: ?*Gpu.Sampler,
+    texture_bind_group: ?*Gpu.BindGroup,
     skin_index: ?u32,
 };
 
@@ -691,8 +706,8 @@ pub const AnimationState = struct {
     speed: f32 = 1.0,
     matrices: SkinUniforms = [1]mat4{linalg.mat4_identity} ** MAX_JOINTS,
     key_cache: [MAX_CHANNELS]u32 = [1]u32{0} ** MAX_CHANNELS, // Cache for current keyframe indices per channel to optimize lookups
-    buffer: wgpu.Buffer = null,
-    bind_group: wgpu.BindGroup = null,
+    buffer: ?*Gpu.Buffer = null,
+    bind_group: ?*Gpu.BindGroup = null,
 
     pub fn setIndex(self: *AnimationState, index: u32) void {
         self.index = index;
@@ -708,18 +723,18 @@ pub const AnimationState = struct {
         self.matrices = [1]mat4{linalg.mat4_identity} ** MAX_JOINTS;
     }
 
-    pub fn sync(self: *AnimationState, gpu: *Gpu) void {
+    pub fn sync(self: *AnimationState, gpu: *Gpu) !void {
         if (self.buffer == null) {
-            self.buffer = gpu.createBuffer(&.{
+            self.buffer = try gpu.device.createBuffer(&.{
                 .label = .fromSlice("Model:AnimationState:skin_uniform_buffer"),
-                .usage = wgpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
+                .usage = Gpu.BufferUsage.uniformUsage.merge(.copyDstUsage),
                 .size = @sizeOf(SkinUniforms),
             });
         }
         if (self.bind_group == null) {
-            self.bind_group = gpu.createBindGroup(&.{
+            self.bind_group = try gpu.device.createBindGroup(&.{
                 .label = .fromSlice("Model:AnimationState:skin_bind_group"),
-                .layout = getBindGroupLayout(gpu),
+                .layout = try getBindGroupLayout(gpu),
                 .entry_count = 1,
                 .entries = &.{
                     .{
@@ -730,31 +745,31 @@ pub const AnimationState = struct {
                 },
             });
         }
-        gpu.writeBuffer(self.buffer, 0, &self.matrices);
+        gpu.queue.writeBuffer(self.buffer.?, 0, &self.matrices, @sizeOf(SkinUniforms));
     }
 
     pub fn deinit(self: *AnimationState) void {
-        if (self.buffer) |p| wgpu.bufferRelease(p);
-        if (self.bind_group) |p| wgpu.bindGroupRelease(p);
+        if (self.buffer) |p| p.release();
+        if (self.bind_group) |p| p.release();
     }
 
-    var BIND_GROUP_LAYOUT: wgpu.BindGroupLayout = null;
-    pub fn getBindGroupLayout(gpu: *Gpu) wgpu.BindGroupLayout {
+    var BIND_GROUP_LAYOUT: ?*Gpu.BindGroupLayout = null;
+    pub fn getBindGroupLayout(gpu: *Gpu) !*Gpu.BindGroupLayout {
         if (BIND_GROUP_LAYOUT) |p| return p;
 
-        BIND_GROUP_LAYOUT = gpu.createBindGroupLayout(&.{
+        BIND_GROUP_LAYOUT = try gpu.device.createBindGroupLayout(&.{
             .label = .fromSlice("Model:AnimationState:skin_bind_group_layout"),
             .entry_count = 1,
             .entries = &.{
                 .{
                     .binding = 0,
-                    .visibility = wgpu.ShaderStage.vertexStage,
+                    .visibility = Gpu.ShaderStage.vertexStage,
                     .buffer = .{ .type = .uniform },
                 },
             },
         });
 
-        return BIND_GROUP_LAYOUT;
+        return BIND_GROUP_LAYOUT.?;
     }
 };
 

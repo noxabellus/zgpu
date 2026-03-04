@@ -34,11 +34,46 @@ struct VertexOutput {
     @location(7) @interpolate(flat) edge_softness: f32,
 };
 
-const colors = array<vec3<f32>, 4>(
+const colors = array<vec3<f32>, 32>(
     vec3<f32>(0.0, 0.0, 0.0),
     vec3<f32>(1.0, 0.0, 0.0),
     vec3<f32>(0.0, 1.0, 0.0),
-    vec3<f32>(0.0, 0.0, 1.0)
+    vec3<f32>(0.0, 0.0, 1.0),
+
+    vec3<f32>(1.0, 1.0, 0.0),
+    vec3<f32>(1.0, 0.0, 1.0),
+    vec3<f32>(0.0, 1.0, 1.0),
+    vec3<f32>(1.0, 1.0, 1.0),
+
+    vec3<f32>(0.5, 0.0, 0.0),
+    vec3<f32>(0.0, 0.5, 0.0),
+    vec3<f32>(0.0, 0.0, 0.5),
+    vec3<f32>(0.5, 0.5, 0.0),
+
+    vec3<f32>(0.5, 0.0, 0.5),
+    vec3<f32>(0.0, 0.5, 0.5),
+    vec3<f32>(0.5, 0.5, 0.5),
+    vec3<f32>(0.75, 0.0, 0.0),
+
+    vec3<f32>(0.0, 0.75, 0.0),
+    vec3<f32>(0.0, 0.0, 0.75),
+    vec3<f32>(0.75, 0.75, 0.0),
+    vec3<f32>(0.75, 0.0, 0.75),
+
+    vec3<f32>(0.0, 0.75, 0.75),
+    vec3<f32>(0.75, 0.75, 0.75),
+    vec3<f32>(0.25, 0.0, 0.0),
+    vec3<f32>(0.0, 0.25, 0.0),
+
+    vec3<f32>(0.0, 0.0, 0.25),
+    vec3<f32>(0.25, 0.25, 0.0),
+    vec3<f32>(0.25, 0.0, 0.25),
+    vec3<f32>(0.0, 0.25, 0.25),
+
+    vec3<f32>(0.25, 0.25, 0.25),
+    vec3<f32>(1.0, 0.5, 0.0),
+    vec3<f32>(1.0, 0.0, 0.5),
+    vec3<f32>(0.5, 1.0, 0.0)
 );
 
 fn sdRoundRect(p: vec2<f32>, size: vec2<f32>, radii: vec4<f32>) -> f32 {
@@ -81,7 +116,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     let sampled_data = textureSample(picking_texture, non_filtering_sampler, in.tex_coords);
     let id = u32(sampled_data.a);
-    var final_color = colors[id % 4u];
+    var final_color = colors[id % 32u];
     
     // --- TEXTURE SPACE MOUSE LOGIC ---
     // Get the actual pixel dimensions of the underlying render target

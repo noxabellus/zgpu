@@ -3,7 +3,6 @@
 const Batch2D = @This();
 
 const std = @import("std");
-const wgpu = @import("wgpu");
 const stbtt = @import("stbtt");
 const Atlas = @import("Atlas.zig");
 const Gpu = @import("Gpu.zig");
@@ -167,7 +166,7 @@ const RenderBatch = struct {
     scissor: ScissorRect,
     uniform_data_offset: usize,
     uniform_data_size: usize,
-    textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView,
+    textures: [MAX_CUSTOM_TEXTURES]?*Gpu.TextureView,
 };
 
 const Vertex = extern struct {
@@ -207,15 +206,15 @@ pub const PipelineKind = enum {
 
 pub const Pipeline = struct {
     kind: PipelineKind,
-    gpu: wgpu.RenderPipeline,
+    gpu: *Gpu.RenderPipeline,
     texture_count: usize,
     uniform_size: usize,
-    bind_group_layout: wgpu.BindGroupLayout,
-    cached_textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView,
-    cached_custom_uniform_buffer: ?wgpu.Buffer,
-    cached_bind_group: ?wgpu.BindGroup,
+    bind_group_layout: ?*Gpu.BindGroupLayout,
+    cached_textures: [MAX_CUSTOM_TEXTURES]?*Gpu.TextureView,
+    cached_custom_uniform_buffer: ?*Gpu.Buffer,
+    cached_bind_group: ?*Gpu.BindGroup,
 
-    pub fn getBindGroup(self: *Pipeline, device: wgpu.Device, textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView, custom_uniform_buffer: ?wgpu.Buffer) ?wgpu.BindGroup {
+    pub fn getBindGroup(self: *Pipeline, device: *Gpu.Device, textures: [MAX_CUSTOM_TEXTURES]?*Gpu.TextureView, custom_uniform_buffer: ?*Gpu.Buffer) !?*Gpu.BindGroup {
         if (self.bind_group_layout == null) return null;
 
         if (self.cached_bind_group) |cbg| {
@@ -232,13 +231,13 @@ pub const Pipeline = struct {
             if (cache_valid) {
                 return cbg;
             } else {
-                wgpu.bindGroupRelease(cbg);
+                cbg.release();
             }
         }
 
-        var entries: [1 + MAX_CUSTOM_TEXTURES]wgpu.BindGroupEntry = undefined;
+        var entries: [1 + MAX_CUSTOM_TEXTURES]Gpu.BindGroupEntry = undefined;
         var offset: u32 = 0;
-        self.cached_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+        self.cached_textures = [1]?*Gpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
         self.cached_custom_uniform_buffer = custom_uniform_buffer;
 
         if (self.uniform_size > 0) {
@@ -253,7 +252,7 @@ pub const Pipeline = struct {
             offset += 1;
         }
 
-        self.cached_bind_group = wgpu.deviceCreateBindGroup(device, &.{
+        self.cached_bind_group = try device.createBindGroup(&.{
             .label = .fromSlice("Batch2D:custom_pipeline:custom_bind_group"),
             .layout = self.bind_group_layout,
             .entry_count = offset,
@@ -270,26 +269,26 @@ pub const ProviderContext = Atlas.ProviderContext;
 // --- WGPU Resources and State ---
 allocator: std.mem.Allocator,
 gpu: *Gpu,
-uniform_buffer: wgpu.Buffer,
+uniform_buffer: *Gpu.Buffer,
 sample_count: u32,
-surface_format: wgpu.TextureFormat,
+surface_format: Gpu.TextureFormat,
 
 // Viewport State
 viewport_width: u32,
 viewport_height: u32,
 
 // Vertex Buffers
-vertex_buffer: wgpu.Buffer,
+vertex_buffer: ?*Gpu.Buffer,
 vertex_buffer_capacity: usize,
 vertices: std.ArrayListUnmanaged(Vertex),
 
 // Quad buffers
-quad_buffer: wgpu.Buffer,
+quad_buffer: ?*Gpu.Buffer,
 quad_buffer_capacity: usize,
 quads: std.ArrayListUnmanaged(Quad),
 
 // Custom Uniform Buffers (Shared via dynamic offset)
-custom_uniform_buffer: ?wgpu.Buffer,
+custom_uniform_buffer: ?*Gpu.Buffer,
 custom_uniform_buffer_capacity: usize,
 uniform_data_storage: std.ArrayListUnmanaged(u8),
 
@@ -298,31 +297,31 @@ asset_cache: *AssetCache,
 atlas: *Atlas,
 frame_arena: std.heap.ArenaAllocator,
 provider_context: Atlas.ProviderContext,
-bind_group: ?wgpu.BindGroup,
-linear_sampler: wgpu.Sampler,
-nearest_sampler: wgpu.Sampler,
+bind_group: ?*Gpu.BindGroup,
+linear_sampler: *Gpu.Sampler,
+nearest_sampler: *Gpu.Sampler,
 patch_list: std.ArrayListUnmanaged(Patch),
 batch_list: std.ArrayListUnmanaged(RenderBatch),
 scissor_stack: std.ArrayListUnmanaged(ScissorRect),
 
 current_pipeline: ?u32,
 current_batch_start: usize,
-current_batch_textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView,
+current_batch_textures: [MAX_CUSTOM_TEXTURES]?*Gpu.TextureView,
 current_batch_uniform_start: usize,
 current_batch_uniform_size: usize,
 pipelines: std.ArrayListUnmanaged(Pipeline),
 
 // Indirection Table Buffers
-indirection_buffer: wgpu.Buffer,
+indirection_buffer: *Gpu.Buffer,
 indirection_buffer_capacity: usize,
 
-var BINDGROUP_LAYOUT: wgpu.BindGroupLayout = null;
-pub fn getBindGroupLayout(device: wgpu.Device) wgpu.BindGroupLayout {
+var BINDGROUP_LAYOUT: ?*Gpu.BindGroupLayout = null;
+pub fn getBindGroupLayout(device: *Gpu.Device) !*Gpu.BindGroupLayout {
     if (BINDGROUP_LAYOUT == null) {
-        BINDGROUP_LAYOUT = wgpu.deviceCreateBindGroupLayout(device, &.{
+        BINDGROUP_LAYOUT = try device.createBindGroupLayout(&.{
             .label = .fromSlice("Batch2D:bind_group_layout"),
             .entry_count = 6,
-            .entries = &[_]wgpu.BindGroupLayoutEntry{
+            .entries = &[_]Gpu.BindGroupLayoutEntry{
                 .{ .binding = 0, .visibility = .vertexStage, .buffer = .{ .type = .uniform } },
                 .{ .binding = 1, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } },
                 .{ .binding = 2, .visibility = .fragmentStage, .sampler = .{ .type = .filtering } },
@@ -333,29 +332,29 @@ pub fn getBindGroupLayout(device: wgpu.Device) wgpu.BindGroupLayout {
         });
         std.debug.assert(BINDGROUP_LAYOUT != null);
     }
-    return BINDGROUP_LAYOUT;
+    return BINDGROUP_LAYOUT.?;
 }
 
-var TRI_SHADER: wgpu.ShaderModule = null;
-pub fn getTriShader(device: wgpu.Device) !wgpu.ShaderModule {
+var TRI_SHADER: ?*Gpu.ShaderModule = null;
+pub fn getTriShader(device: *Gpu.Device) !*Gpu.ShaderModule {
     if (TRI_SHADER == null) {
-        TRI_SHADER = try wgpu.loadShaderText(device, "static/shaders/2d/Triangles.wgsl", @embedFile("shaders/2d/Triangles.wgsl"));
+        TRI_SHADER = try device.loadShaderText("static/shaders/2d/Triangles.wgsl", @embedFile("shaders/2d/Triangles.wgsl"));
     }
-    return TRI_SHADER;
+    return TRI_SHADER.?;
 }
 
-var QUAD_SHADER: wgpu.ShaderModule = null;
-pub fn getQuadShader(device: wgpu.Device) !wgpu.ShaderModule {
+var QUAD_SHADER: ?*Gpu.ShaderModule = null;
+pub fn getQuadShader(device: *Gpu.Device) !*Gpu.ShaderModule {
     if (QUAD_SHADER == null) {
-        QUAD_SHADER = try wgpu.loadShaderText(device, "static/shaders/2d/Quads.wgsl", @embedFile("shaders/2d/Quads.wgsl"));
+        QUAD_SHADER = try device.loadShaderText("static/shaders/2d/Quads.wgsl", @embedFile("shaders/2d/Quads.wgsl"));
     }
-    return QUAD_SHADER;
+    return QUAD_SHADER.?;
 }
 
 pub fn init(
     allocator: std.mem.Allocator,
     gpu: *Gpu,
-    surface_format: wgpu.TextureFormat,
+    surface_format: Gpu.TextureFormat,
     asset_cache: *AssetCache,
     sample_count: u32,
 ) !*Batch2D {
@@ -365,42 +364,38 @@ pub fn init(
     const atlas = try Atlas.init(allocator, gpu, 2048, 2048, Atlas.MAX_MIP_LEVELS);
     errdefer atlas.deinit();
 
-    const uniform_buffer = wgpu.deviceCreateBuffer(gpu.device, &.{
+    const uniform_buffer = try gpu.device.createBuffer(&.{
         .label = .fromSlice("Batch2D:uniform_buffer"),
-        .usage = wgpu.BufferUsage{ .uniform = true, .copy_dst = true },
+        .usage = Gpu.BufferUsage{ .uniform = true, .copy_dst = true },
         .size = @sizeOf(Uniforms),
     });
-    std.debug.assert(uniform_buffer != null);
-    errdefer wgpu.bufferRelease(uniform_buffer);
+    errdefer uniform_buffer.release();
 
     const initial_indirection_capacity = 2048;
-    const indirection_buffer = wgpu.deviceCreateBuffer(gpu.device, &.{
+    const indirection_buffer = try gpu.device.createBuffer(&.{
         .label = .fromSlice("Batch2D:indirection_buffer"),
         .usage = .{ .storage = true, .copy_dst = true },
         .size = initial_indirection_capacity * @sizeOf(Atlas.ImageMipData),
     });
-    std.debug.assert(indirection_buffer != null);
-    errdefer wgpu.bufferRelease(indirection_buffer);
+    errdefer indirection_buffer.release();
 
-    const linear_sampler = wgpu.deviceCreateSampler(gpu.device, &.{
+    const linear_sampler = try gpu.device.createSampler(&.{
         .label = .fromSlice("Batch2D:linear_sampler"),
         .address_mode_u = .clamp_to_edge,
         .address_mode_v = .clamp_to_edge,
         .mag_filter = .linear,
         .min_filter = .linear,
     });
-    std.debug.assert(linear_sampler != null);
-    errdefer wgpu.samplerRelease(linear_sampler);
+    errdefer linear_sampler.release();
 
-    const nearest_sampler = wgpu.deviceCreateSampler(gpu.device, &.{
+    const nearest_sampler = try gpu.device.createSampler(&.{
         .label = .fromSlice("Batch2D:nearest_sampler"),
         .address_mode_u = .clamp_to_edge,
         .address_mode_v = .clamp_to_edge,
         .mag_filter = .nearest,
         .min_filter = .nearest,
     });
-    std.debug.assert(nearest_sampler != null);
-    errdefer wgpu.samplerRelease(nearest_sampler);
+    errdefer nearest_sampler.release();
 
     self.* = .{
         .allocator = allocator,
@@ -436,7 +431,7 @@ pub fn init(
         .current_pipeline = null,
         .pipelines = .empty,
         .current_batch_start = 0,
-        .current_batch_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES,
+        .current_batch_textures = [1]?*Gpu.TextureView{null} ** MAX_CUSTOM_TEXTURES,
         .current_batch_uniform_start = 0,
         .current_batch_uniform_size = 0,
         .indirection_buffer = indirection_buffer,
@@ -459,18 +454,18 @@ pub fn init(
 
 pub fn deinit(self: *Batch2D) void {
     self.atlas.deinit();
-    if (self.bind_group) |bg| wgpu.bindGroupRelease(bg);
-    if (self.vertex_buffer_capacity > 0) wgpu.bufferRelease(self.vertex_buffer);
-    if (self.quad_buffer_capacity > 0) wgpu.bufferRelease(self.quad_buffer);
-    if (self.custom_uniform_buffer) |cub| wgpu.bufferRelease(cub);
-    wgpu.bufferRelease(self.indirection_buffer);
-    wgpu.bufferRelease(self.uniform_buffer);
-    wgpu.samplerRelease(self.linear_sampler);
-    wgpu.samplerRelease(self.nearest_sampler);
+    if (self.bind_group) |bg| bg.release();
+    if (self.vertex_buffer) |vb| vb.release();
+    if (self.quad_buffer) |qb| qb.release();
+    if (self.custom_uniform_buffer) |cub| cub.release();
+    self.indirection_buffer.release();
+    self.uniform_buffer.release();
+    self.linear_sampler.release();
+    self.nearest_sampler.release();
 
     for (self.pipelines.items) |pipeline| {
-        wgpu.renderPipelineRelease(pipeline.gpu);
-        if (pipeline.cached_bind_group) |cbg| wgpu.bindGroupRelease(cbg);
+        pipeline.gpu.release();
+        if (pipeline.cached_bind_group) |cbg| cbg.release();
     }
 
     self.pipelines.deinit(self.allocator);
@@ -491,7 +486,7 @@ pub fn beginFrame(self: *Batch2D, projection: mat4, viewport_width: u32, viewpor
     _ = self.frame_arena.reset(.retain_capacity);
     self.provider_context.frame_allocator = self.frame_arena.allocator();
 
-    wgpu.queueWriteBuffer(self.gpu.queue, self.uniform_buffer, 0, &Uniforms{ .projection = projection }, @sizeOf(Uniforms));
+    self.gpu.queue.writeBuffer(self.uniform_buffer, 0, &Uniforms{ .projection = projection }, @sizeOf(Uniforms));
 
     self.vertices.clearRetainingCapacity();
     self.quads.clearRetainingCapacity();
@@ -509,7 +504,7 @@ pub fn beginFrame(self: *Batch2D, projection: mat4, viewport_width: u32, viewpor
 
     self.current_pipeline = null;
     self.current_batch_start = 0;
-    self.current_batch_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+    self.current_batch_textures = [1]?*Gpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
     self.current_batch_uniform_start = 0;
     self.current_batch_uniform_size = 0;
 }
@@ -543,7 +538,7 @@ fn endCurrentBatch(self: *Batch2D) !void {
     self.current_pipeline = null;
 }
 
-pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind, module: wgpu.ShaderModule, texture_bindings: []const wgpu.TextureBindingLayout, uniform_size: usize) !u32 {
+pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind, module: *Gpu.ShaderModule, texture_bindings: []const Gpu.TextureBindingLayout, uniform_size: usize) !u32 {
     const texture_count = texture_bindings.len;
 
     if (texture_count > 4) {
@@ -551,7 +546,7 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
         return error.TooManyCustomTextures;
     }
 
-    const blend_state = wgpu.BlendState{
+    const blend_state = Gpu.BlendState{
         .color = .{ .operation = .add, .src_factor = .one, .dst_factor = .one_minus_src_alpha },
         .alpha = .{ .operation = .add, .src_factor = .one, .dst_factor = .one_minus_src_alpha },
     };
@@ -559,7 +554,7 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
     const hasCustomUniforms = uniform_size > 0;
 
     const bindgroup_layout = if (texture_count > 0 or hasCustomUniforms) make_bgl: {
-        var entries: [5]wgpu.BindGroupLayoutEntry = undefined;
+        var entries: [5]Gpu.BindGroupLayoutEntry = undefined;
         var offset: u32 = 0;
         if (hasCustomUniforms) {
             // Flag this binding to accept dynamic offsets
@@ -570,23 +565,22 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
             entries[offset] = .{ .binding = offset, .visibility = .fragmentStage, .texture = layout };
             offset += 1;
         }
-        break :make_bgl wgpu.deviceCreateBindGroupLayout(self.gpu.device, &.{
+        break :make_bgl try self.gpu.device.createBindGroupLayout(&.{
             .label = .fromSlice("Batch2D:custom_pipeline_bindgroup_layout"),
             .entry_count = offset,
             .entries = &entries,
         });
     } else null;
 
-    const pipeline_layout = wgpu.deviceCreatePipelineLayout(self.gpu.device, &.{
+    const pipeline_layout = try self.gpu.device.createPipelineLayout(&.{
         .label = .fromSlice("Batch2D:pipeline_layout"),
         .bind_group_layout_count = 1 + @as(usize, @intFromBool(bindgroup_layout != null)),
-        .bind_group_layouts = &.{ getBindGroupLayout(self.gpu.device), bindgroup_layout },
+        .bind_group_layouts = &.{ try getBindGroupLayout(self.gpu.device), bindgroup_layout },
     });
-    std.debug.assert(pipeline_layout != null);
-    defer wgpu.pipelineLayoutRelease(pipeline_layout);
+    defer pipeline_layout.release();
 
     const pipeline = switch (kind) {
-        .tri => wgpu.deviceCreateRenderPipeline(self.gpu.device, &wgpu.RenderPipelineDescriptor{
+        .tri => try self.gpu.device.createRenderPipeline(&Gpu.RenderPipelineDescriptor{
             .label = .fromSlice(name),
             .layout = pipeline_layout,
             .vertex = .{
@@ -597,7 +591,7 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
                     .array_stride = @sizeOf(Vertex),
                     .step_mode = .vertex,
                     .attribute_count = 4,
-                    .attributes = &[_]wgpu.VertexAttribute{
+                    .attributes = &[_]Gpu.VertexAttribute{
                         .{ .shaderLocation = 0, .offset = @offsetOf(Vertex, "position"), .format = .float32x2 },
                         .{ .shaderLocation = 1, .offset = @offsetOf(Vertex, "tex_coords"), .format = .float32x2 },
                         .{ .shaderLocation = 2, .offset = @offsetOf(Vertex, "color"), .format = .float32x4 },
@@ -605,7 +599,7 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
                     },
                 }},
             },
-            .fragment = &wgpu.FragmentState{
+            .fragment = &Gpu.FragmentState{
                 .module = module,
                 .entry_point = .fromSlice("fs_main"),
                 .target_count = 1,
@@ -614,7 +608,7 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
             .primitive = .{ .topology = .triangle_list },
             .multisample = .{ .count = self.sample_count, .mask = 0xFFFFFFFF },
         }),
-        .quad => wgpu.deviceCreateRenderPipeline(self.gpu.device, &wgpu.RenderPipelineDescriptor{
+        .quad => try self.gpu.device.createRenderPipeline(&Gpu.RenderPipelineDescriptor{
             .label = .fromSlice(name),
             .layout = pipeline_layout,
             .vertex = .{
@@ -625,7 +619,7 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
                     .array_stride = @sizeOf(Quad),
                     .step_mode = .instance,
                     .attribute_count = 9,
-                    .attributes = &[_]wgpu.VertexAttribute{
+                    .attributes = &[_]Gpu.VertexAttribute{
                         .{ .shaderLocation = 0, .offset = @offsetOf(Quad, "position"), .format = .float32x2 },
                         .{ .shaderLocation = 1, .offset = @offsetOf(Quad, "size"), .format = .float32x2 },
                         .{ .shaderLocation = 2, .offset = @offsetOf(Quad, "uv_min"), .format = .float32x2 },
@@ -638,7 +632,7 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
                     },
                 }},
             },
-            .fragment = &wgpu.FragmentState{
+            .fragment = &Gpu.FragmentState{
                 .module = module,
                 .entry_point = .fromSlice("fs_main"),
                 .target_count = 1,
@@ -648,8 +642,7 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
             .multisample = .{ .count = self.sample_count, .mask = 0xFFFFFFFF },
         }),
     };
-    std.debug.assert(pipeline != null);
-    errdefer wgpu.renderPipelineRelease(pipeline);
+    errdefer pipeline.release();
 
     const index: u32 = @intCast(self.pipelines.items.len);
     try self.pipelines.append(self.allocator, .{
@@ -657,7 +650,7 @@ pub fn createCustomPipeline(self: *Batch2D, name: []const u8, kind: PipelineKind
         .gpu = pipeline,
         .texture_count = texture_count,
         .bind_group_layout = bindgroup_layout,
-        .cached_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES,
+        .cached_textures = [1]?*Gpu.TextureView{null} ** MAX_CUSTOM_TEXTURES,
         .cached_custom_uniform_buffer = null,
         .cached_bind_group = null,
         .uniform_size = uniform_size,
@@ -685,12 +678,12 @@ fn ensurePipeline(self: *Batch2D, pipeline: PipelineKind) !void {
         },
     }
 
-    self.current_batch_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+    self.current_batch_textures = [1]?*Gpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
     self.current_batch_uniform_start = 0;
     self.current_batch_uniform_size = 0;
 }
 
-pub fn customPipelineStart(self: *Batch2D, index: u32, textures: []const wgpu.TextureView, uniform_buffer: anytype) !void {
+pub fn customPipelineStart(self: *Batch2D, index: u32, textures: []const *Gpu.TextureView, uniform_buffer: anytype) !void {
     if (self.current_pipeline == index) return;
 
     try self.endCurrentBatch();
@@ -702,7 +695,7 @@ pub fn customPipelineStart(self: *Batch2D, index: u32, textures: []const wgpu.Te
         return error.InvalidTextureCount;
     }
 
-    self.current_batch_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+    self.current_batch_textures = [1]?*Gpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
     for (textures, 0..) |tex, i| {
         self.current_batch_textures[i] = tex;
     }
@@ -834,12 +827,12 @@ pub fn endFrame(self: *Batch2D) !void {
 
         if (self.indirection_buffer_capacity < required_capacity) {
             if (self.bind_group) |bg| {
-                wgpu.bindGroupRelease(bg);
+                bg.release();
                 self.bind_group = null;
             }
-            wgpu.bufferRelease(self.indirection_buffer);
+            self.indirection_buffer.release();
             const new_capacity = @max(self.indirection_buffer_capacity * 2, required_capacity);
-            self.indirection_buffer = wgpu.deviceCreateBuffer(self.gpu.device, &.{
+            self.indirection_buffer = try self.gpu.device.createBuffer(&.{
                 .label = .fromSlice("Batch2D:indirection_buffer"),
                 .usage = .{ .storage = true, .copy_dst = true },
                 .size = new_capacity * @sizeOf(Atlas.ImageMipData),
@@ -847,63 +840,63 @@ pub fn endFrame(self: *Batch2D) !void {
             self.indirection_buffer_capacity = new_capacity;
         }
 
-        wgpu.queueWriteBuffer(self.gpu.queue, self.indirection_buffer, 0, self.atlas.indirection_table.items.ptr, required_size);
+        self.gpu.queue.writeBuffer(self.indirection_buffer, 0, self.atlas.indirection_table.items.ptr, required_size);
     }
 
     if (self.vertices.items.len > 0) {
         const required_size = self.vertices.items.len * @sizeOf(Vertex);
 
         if (self.vertex_buffer_capacity < required_size) {
-            if (self.vertex_buffer_capacity > 0) wgpu.bufferRelease(self.vertex_buffer);
+            if (self.vertex_buffer) |vb| vb.release();
             const new_capacity = @max(self.vertex_buffer_capacity * 2, required_size);
-            self.vertex_buffer = wgpu.deviceCreateBuffer(self.gpu.device, &.{
+            self.vertex_buffer = try self.gpu.device.createBuffer(&.{
                 .label = .fromSlice("Batch2D:vertex_buffer"),
-                .usage = wgpu.BufferUsage{ .vertex = true, .copy_dst = true },
+                .usage = Gpu.BufferUsage{ .vertex = true, .copy_dst = true },
                 .size = new_capacity,
             });
             self.vertex_buffer_capacity = new_capacity;
         }
 
-        wgpu.queueWriteBuffer(self.gpu.queue, self.vertex_buffer, 0, self.vertices.items.ptr, required_size);
+        self.gpu.queue.writeBuffer(self.vertex_buffer.?, 0, self.vertices.items.ptr, required_size);
     }
 
     if (self.quads.items.len > 0) {
         const required_size = self.quads.items.len * @sizeOf(Quad);
 
         if (self.quad_buffer_capacity < required_size) {
-            if (self.quad_buffer_capacity > 0) wgpu.bufferRelease(self.quad_buffer);
+            if (self.quad_buffer) |qb| qb.release();
             const new_capacity = @max(self.quad_buffer_capacity * 2, required_size);
-            self.quad_buffer = wgpu.deviceCreateBuffer(self.gpu.device, &.{
+            self.quad_buffer = try self.gpu.device.createBuffer(&.{
                 .label = .fromSlice("Batch2D:quad_buffer"),
-                .usage = wgpu.BufferUsage{ .vertex = true, .copy_dst = true },
+                .usage = Gpu.BufferUsage{ .vertex = true, .copy_dst = true },
                 .size = new_capacity,
             });
             self.quad_buffer_capacity = new_capacity;
         }
 
-        wgpu.queueWriteBuffer(self.gpu.queue, self.quad_buffer, 0, self.quads.items.ptr, required_size);
+        self.gpu.queue.writeBuffer(self.quad_buffer.?, 0, self.quads.items.ptr, required_size);
     }
 
     if (self.uniform_data_storage.items.len > 0) {
         const required_size = self.uniform_data_storage.items.len;
 
         if (self.custom_uniform_buffer_capacity < required_size) {
-            if (self.custom_uniform_buffer) |cub| wgpu.bufferRelease(cub);
+            if (self.custom_uniform_buffer) |cub| cub.release();
             // Defaulting dynamic buffer minimum to a reasonable size
             const new_capacity = @max(self.custom_uniform_buffer_capacity * 2, @max(required_size, 4096));
-            self.custom_uniform_buffer = wgpu.deviceCreateBuffer(self.gpu.device, &.{
+            self.custom_uniform_buffer = try self.gpu.device.createBuffer(&.{
                 .label = .fromSlice("Batch2D:custom_uniform_buffer"),
-                .usage = wgpu.BufferUsage{ .uniform = true, .copy_dst = true },
+                .usage = Gpu.BufferUsage{ .uniform = true, .copy_dst = true },
                 .size = new_capacity,
             });
             self.custom_uniform_buffer_capacity = new_capacity;
         }
 
-        wgpu.queueWriteBuffer(self.gpu.queue, self.custom_uniform_buffer.?, 0, self.uniform_data_storage.items.ptr, required_size);
+        self.gpu.queue.writeBuffer(self.custom_uniform_buffer.?, 0, self.uniform_data_storage.items.ptr, required_size);
     }
 
     if (atlas_recreated and self.bind_group != null) {
-        wgpu.bindGroupRelease(self.bind_group.?);
+        self.bind_group.?.release();
         self.bind_group = null;
     }
 
@@ -912,16 +905,16 @@ pub fn endFrame(self: *Batch2D) !void {
     }
 }
 
-pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
+pub fn render(self: *Batch2D, render_pass: *Gpu.RenderPassEncoder) !void {
     if (self.bind_group == null) {
         log.debug("Bind group is null, skipping render.", .{});
         return;
     }
 
-    wgpu.renderPassEncoderSetBindGroup(render_pass, 0, self.bind_group.?, 0, null);
+    render_pass.setBindGroup(0, self.bind_group.?, &.{});
 
     var bound_pipeline: ?u32 = null;
-    var bound_textures: [MAX_CUSTOM_TEXTURES]wgpu.TextureView = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+    var bound_textures: [MAX_CUSTOM_TEXTURES]?*Gpu.TextureView = [1]?*Gpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
     var bound_uniform_offset: ?usize = null;
 
     for (self.batch_list.items) |batch| {
@@ -930,15 +923,15 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
         const bp = &self.pipelines.items[batch.pipeline];
 
         if (bound_pipeline != batch.pipeline) {
-            wgpu.renderPassEncoderSetPipeline(render_pass, bp.gpu);
+            render_pass.setPipeline(bp.gpu);
             switch (bp.kind) {
-                .tri => wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.vertex_buffer, 0, self.vertices.items.len * @sizeOf(Vertex)),
-                .quad => wgpu.renderPassEncoderSetVertexBuffer(render_pass, 0, self.quad_buffer, 0, self.quads.items.len * @sizeOf(Quad)),
+                .tri => render_pass.setVertexBuffer(0, self.vertex_buffer, 0, self.vertices.items.len * @sizeOf(Vertex)),
+                .quad => render_pass.setVertexBuffer(0, self.quad_buffer, 0, self.quads.items.len * @sizeOf(Quad)),
             }
             bound_pipeline = batch.pipeline;
 
             // Forcing a bind group check by invalidating our local texture cache tracking
-            bound_textures = [1]wgpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
+            bound_textures = [1]?*Gpu.TextureView{null} ** MAX_CUSTOM_TEXTURES;
         }
 
         // Check if textures or uniforms shifted from the last batch
@@ -956,22 +949,22 @@ pub fn render(self: *Batch2D, render_pass: wgpu.RenderPassEncoder) !void {
         }
 
         if (requires_bind_update) {
-            if (bp.getBindGroup(self.gpu.device, batch.textures, self.custom_uniform_buffer)) |cbg| {
+            if (try bp.getBindGroup(self.gpu.device, batch.textures, self.custom_uniform_buffer)) |cbg| {
                 if (bp.uniform_size > 0) {
                     const offset = [1]u32{@intCast(batch.uniform_data_offset)};
-                    wgpu.renderPassEncoderSetBindGroup(render_pass, 1, cbg, 1, &offset);
+                    render_pass.setBindGroup(1, cbg, &offset);
                 } else {
-                    wgpu.renderPassEncoderSetBindGroup(render_pass, 1, cbg, 0, null);
+                    render_pass.setBindGroup(1, cbg, &.{});
                 }
             }
             bound_textures = batch.textures;
             bound_uniform_offset = batch.uniform_data_offset;
         }
 
-        wgpu.renderPassEncoderSetScissorRect(render_pass, batch.scissor.x, batch.scissor.y, batch.scissor.width, batch.scissor.height);
+        render_pass.setScissorRect(batch.scissor.x, batch.scissor.y, batch.scissor.width, batch.scissor.height);
         switch (bp.kind) {
-            .tri => wgpu.renderPassEncoderDraw(render_pass, @intCast(batch.count), 1, @intCast(batch.start_index), 0),
-            .quad => wgpu.renderPassEncoderDraw(render_pass, 6, @intCast(batch.count), 0, @intCast(batch.start_index)),
+            .tri => render_pass.draw(@intCast(batch.count), 1, @intCast(batch.start_index), 0),
+            .quad => render_pass.draw(6, @intCast(batch.count), 0, @intCast(batch.start_index)),
         }
     }
 }
@@ -980,13 +973,13 @@ pub fn createDynamicTexture(self: *Batch2D, width: u32, height: u32) !ImageId {
     const id = self.asset_cache.createDynamicId();
     try self.atlas.reserveDynamicLayer(id, width, height);
     if (self.bind_group) |bg| {
-        wgpu.bindGroupRelease(bg);
+        bg.release();
         self.bind_group = null;
     }
     return id;
 }
 
-pub fn updateDynamicTexture(self: *Batch2D, encoder: wgpu.CommandEncoder, id: ImageId, source_texture: wgpu.Texture, width: u32, height: u32) !void {
+pub fn updateDynamicTexture(self: *Batch2D, encoder: *Gpu.CommandEncoder, id: ImageId, source_texture: *Gpu.Texture, width: u32, height: u32) !void {
     const cache_info = self.atlas.cache.get(id) orelse {
         log.err("Attempted to update a dynamic texture that wasn't reserved in the atlas.", .{});
         return error.DynamicTextureNotRegistered;
@@ -1474,7 +1467,7 @@ pub fn preAtlasAllImages(renderer: *Batch2D) !void {
     if (try renderer.atlas.flush()) {
         log.warn("Atlas was recreated during pre-loading, recreating bind group.", .{});
         if (renderer.bind_group != null) {
-            wgpu.bindGroupRelease(renderer.bind_group.?);
+            renderer.bind_group.?.release();
             renderer.bind_group = null;
         }
         try renderer.recreateBindGroup();
@@ -1513,11 +1506,11 @@ fn pushTriangle(self: *Batch2D, encoded_params: u32, v1: vec2, uv1: vec2, v2: ve
 }
 
 fn recreateBindGroup(self: *Batch2D) !void {
-    const bg = wgpu.deviceCreateBindGroup(self.gpu.device, &.{
+    const bg = try self.gpu.device.createBindGroup(&.{
         .label = .fromSlice("Batch2D:atlas_array_bind_group"),
-        .layout = getBindGroupLayout(self.gpu.device),
+        .layout = try getBindGroupLayout(self.gpu.device),
         .entry_count = 6,
-        .entries = &[_]wgpu.BindGroupEntry{
+        .entries = &[_]Gpu.BindGroupEntry{
             .{ .binding = 0, .buffer = self.uniform_buffer, .size = @sizeOf(Uniforms) },
             .{ .binding = 1, .sampler = self.linear_sampler },
             .{ .binding = 2, .sampler = self.nearest_sampler },
@@ -1526,6 +1519,5 @@ fn recreateBindGroup(self: *Batch2D) !void {
             .{ .binding = 5, .buffer = self.indirection_buffer, .size = self.indirection_buffer_capacity * @sizeOf(Atlas.ImageMipData) },
         },
     });
-    std.debug.assert(bg != null);
     self.bind_group = bg;
 }

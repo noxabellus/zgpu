@@ -258,9 +258,16 @@ pub fn deinit(self: *Ui) void {
     self.gpa.destroy(self);
 }
 
+pub fn wantsMouse(self: *Ui, root_element_style: enum(u1) { containerized = 0, fullscreen = 1 }) bool {
+    clay.setCurrentContext(self.clay_context);
+    defer clay.setCurrentContext(null);
+
+    return clay.getPointerOverIds().len > @intFromEnum(root_element_style);
+}
+
 /// Call this at any time in the update stage to begin declaring the ui layout. Caller must ensure `Ui.endLayout` is called before the next `Ui.beginLayout` and/or `Ui.render`.
 /// Note: it is acceptable to run the layout code multiple times per frame, but all state will be discarded when calling this function.
-pub fn beginLayout(self: *Ui, dimensions: vec2, delta_ms: f32) !void {
+pub fn beginLayout(self: *Ui, allow_mouse: bool, dimensions: vec2, delta_ms: f32) !void {
     self.render_commands = null;
 
     self.events.clearRetainingCapacity();
@@ -282,7 +289,12 @@ pub fn beginLayout(self: *Ui, dimensions: vec2, delta_ms: f32) !void {
     self.state.active_id = self.last_state.active_id;
     self.state.focused_id = self.last_state.focused_id;
 
-    self.wheel_delta = self.bindings.consumeScrollDelta();
+    if (allow_mouse) {
+        self.wheel_delta = self.bindings.consumeScrollDelta();
+    } else {
+        self.wheel_delta = .{ 0, 0 };
+    }
+
     self.char_input = self.bindings.consumeCharInput();
 
     const last_scrolls = self.last_scroll_states;
@@ -300,7 +312,7 @@ pub fn beginLayout(self: *Ui, dimensions: vec2, delta_ms: f32) !void {
     clay.setLayoutDimensions(vec2ToDims(dimensions));
 
     // Although we inform Clay of current mouse button state, it is only used in debug mode or for drag scrolling.
-    clay.setPointerState(vec2ToClay(self.bindings.getMousePosition()), self.bindings.getAction(.primary_mouse).isDown());
+    clay.setPointerState(vec2ToClay(self.bindings.getMousePosition()), allow_mouse and self.bindings.getAction(.primary_mouse).isDown());
 
     clay.updateScrollContainers(
         false, // never use drag scrolling

@@ -1188,7 +1188,7 @@ pub fn getElementId(string: []const u8) ElementId {
 pub const getScrollOffset = cdefs.Clay_GetScrollOffset;
 
 // Returns the array of element IDs that the pointer is currently over.
-fn getPointerOverIds() []ElementId {
+pub fn getPointerOverIds() []ElementId {
     const ids = cdefs.Clay_GetPointerOverIds();
     return ids.internal_array[0..@intCast(ids.length)];
 }
