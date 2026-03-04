@@ -423,7 +423,7 @@ pub fn openElement(self: *Ui, declaration: ElementDeclaration) !void {
 /// Close the current element opened with `Ui.beginElement` or `Ui.openElement`.
 /// * Note that if you opened with `Ui.openElement`, you should also call `Ui.configureElement` before this function.
 /// * See also `Ui.elem`.
-pub fn closeElement(self: *Ui) void {
+pub fn endElement(self: *Ui) void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     _ = self.open_ids.pop().?;
@@ -437,7 +437,7 @@ pub fn elem(self: *Ui, declaration: ElementDeclaration) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     try self.openElement(declaration);
-    self.closeElement();
+    self.endElement();
 }
 
 /// Create a new text element with the given string and configuration.
@@ -647,7 +647,7 @@ pub fn beginMenu(self: *Ui, id: ElementId, config: MenuConfig) !bool {
 
 pub fn endMenu(self: *Ui) void {
     const menu_id = self.open_ids.items[self.open_ids.items.len - 1];
-    self.closeElement();
+    self.endElement();
 
     // If this menu was just opened, automatically highlight its first item for better keyboard UX.
     if (self.menu_state.just_opened_menu_id == menu_id.id) {
@@ -688,7 +688,7 @@ pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemCon
         .corner_radius = config.corner_radius,
         .state = .flags(.{ .activate = true, .hover = true, .click = true }),
     });
-    defer self.closeElement();
+    defer self.endElement();
 
     if (self.hovered()) {
         self.menu_state.setHighlighted(self.gpa, level, id);
@@ -760,7 +760,7 @@ pub fn subMenu(self: *Ui, self_id: ElementId, label: []const u8, child_menu_id: 
         .corner_radius = config.corner_radius,
         .state = .flags(.{ .activate = true, .hover = true }),
     });
-    defer self.closeElement();
+    defer self.endElement();
 
     if (self.hovered()) {
         self.menu_state.setHighlighted(self.gpa, level, self_id);

@@ -488,11 +488,11 @@ pub fn main() !void {
                         .padding = .all(10),
                     },
                 });
-                defer ui.closeElement();
+                defer ui.endElement();
 
                 {
                     try ui.beginElement(.fromSlice("MenuContainer"));
-                    defer ui.closeElement();
+                    defer ui.endElement();
 
                     try ui.configureElement(.{
                         .layout = .{
@@ -546,11 +546,11 @@ pub fn main() !void {
                                 .child_gap = 10,
                             },
                         });
-                        defer ui.closeElement();
+                        defer ui.endElement();
 
                         {
                             try ui.beginElement(.fromSlice("LoadButton"));
-                            defer ui.closeElement();
+                            defer ui.endElement();
 
                             try ui.configureElement(.{
                                 .layout = .{
@@ -587,7 +587,7 @@ pub fn main() !void {
 
                         {
                             try ui.beginElement(.fromSlice("UnloadButton"));
-                            defer ui.closeElement();
+                            defer ui.endElement();
 
                             try ui.configureElement(.{
                                 .layout = .{
@@ -632,7 +632,7 @@ pub fn main() !void {
                         if (model.animations.len > 0) {
                             {
                                 try ui.beginElement(.fromSlice("TitleText"));
-                                defer ui.closeElement();
+                                defer ui.endElement();
 
                                 try ui.configureElement(.{
                                     .layout = .{
@@ -649,7 +649,7 @@ pub fn main() !void {
 
                             {
                                 try ui.beginElement(.fromSlice("NameText"));
-                                defer ui.closeElement();
+                                defer ui.endElement();
 
                                 try ui.configureElement(.{
                                     .layout = .{
@@ -666,7 +666,7 @@ pub fn main() !void {
 
                             {
                                 try ui.beginElement(.fromSlice("animIndexSlider"));
-                                defer ui.closeElement();
+                                defer ui.endElement();
 
                                 var index = demo.anim_state.index;
                                 try ui.configureElement(.{
@@ -698,7 +698,7 @@ pub fn main() !void {
                     {
                         { // Title
                             try ui.beginElement(.fromSlice("DebugTitleText"));
-                            defer ui.closeElement();
+                            defer ui.endElement();
 
                             try ui.configureElement(.{
                                 .layout = .{
@@ -715,7 +715,7 @@ pub fn main() !void {
 
                         { // Random text input
                             try ui.beginElement(.fromSlice("TextInputTest"));
-                            defer ui.closeElement();
+                            defer ui.endElement();
 
                             try ui.configureElement(.{
                                 .layout = .{
@@ -766,7 +766,7 @@ pub fn main() !void {
                                     .child_gap = 5,
                                 },
                             });
-                            defer ui.closeElement();
+                            defer ui.endElement();
 
                             {
                                 try ui.openElement(.{
@@ -775,7 +775,7 @@ pub fn main() !void {
                                         .sizing = .fit,
                                     },
                                 });
-                                defer ui.closeElement();
+                                defer ui.endElement();
 
                                 try ui.text("Show FPS Overlay", .{
                                     .font_id = FONT_ID_BODY,
@@ -786,7 +786,7 @@ pub fn main() !void {
 
                             {
                                 try ui.beginElement(.fromSlice("fpsOverlayToggle"));
-                                defer ui.closeElement();
+                                defer ui.endElement();
 
                                 try ui.configureElement(.{
                                     .layout = .{
@@ -824,11 +824,11 @@ pub fn main() !void {
                                     .child_gap = 10,
                                 },
                             });
-                            defer ui.closeElement();
+                            defer ui.endElement();
 
                             {
                                 try ui.beginElement(.fromSlice("BrightnessText"));
-                                defer ui.closeElement();
+                                defer ui.endElement();
 
                                 try ui.configureElement(.{
                                     .layout = .{
@@ -846,7 +846,7 @@ pub fn main() !void {
 
                             {
                                 try ui.beginElement(.fromSlice("lightBrightnessSlider"));
-                                defer ui.closeElement();
+                                defer ui.endElement();
 
                                 try ui.configureElement(.{
                                     .layout = .{
@@ -889,11 +889,11 @@ pub fn main() !void {
                                         .child_gap = 10,
                                     },
                                 });
-                                defer ui.closeElement();
+                                defer ui.endElement();
 
                                 {
                                     try ui.beginElement(.fromSlice("BufferDebugModeDropdownLabel"));
-                                    defer ui.closeElement();
+                                    defer ui.endElement();
 
                                     try ui.configureElement(.{
                                         .layout = .{
@@ -910,7 +910,7 @@ pub fn main() !void {
 
                                 {
                                     try ui.beginElement(.fromSlice("BufferDebugModeDropdown"));
-                                    defer ui.closeElement();
+                                    defer ui.endElement();
 
                                     _ = try widgets.dropdown(ui, BufferDebugMode, .{
                                         .value = &buffer_debug_mode,
@@ -952,7 +952,7 @@ pub fn main() !void {
                                         .child_gap = 10,
                                     },
                                 });
-                                defer ui.closeElement();
+                                defer ui.endElement();
 
                                 inline for (comptime std.meta.fieldNames(BufferDebugMode)) |mode_name| {
                                     try ui.openElement(.{
@@ -974,7 +974,7 @@ pub fn main() !void {
                                             .focus = true,
                                         }),
                                     });
-                                    defer ui.closeElement();
+                                    defer ui.endElement();
 
                                     _ = try widgets.radioButton(ui, BufferDebugMode, .{
                                         .group_id = .fromSlice("BufferDebugModeRadioGroup"),
@@ -992,7 +992,7 @@ pub fn main() !void {
 
                                 .Framebuffer => {
                                     try ui.beginElement(.fromSlice("PictureInPictureTest"));
-                                    defer ui.closeElement();
+                                    defer ui.endElement();
 
                                     try ui.configureElement(.{
                                         .layout = .{
@@ -1008,7 +1008,7 @@ pub fn main() !void {
 
                                 .@"Picking Position" => {
                                     try ui.beginElement(.fromSlice("ShaderTest1"));
-                                    defer ui.closeElement();
+                                    defer ui.endElement();
 
                                     try ui.configureElement(.{
                                         .layout = .{
@@ -1033,7 +1033,7 @@ pub fn main() !void {
 
                                 .@"Picking Id" => {
                                     try ui.beginElement(.fromSlice("ShaderTest2"));
-                                    defer ui.closeElement();
+                                    defer ui.endElement();
 
                                     try ui.configureElement(.{
                                         .layout = .{
@@ -1090,12 +1090,12 @@ pub fn main() !void {
                 // Embedded Widget Test
                 {
                     try ui.openElement(.{ .id = .fromSlice("MenuSliderContainer"), .layout = .{ .padding = .all(4), .direction = .top_to_bottom } });
-                    defer ui.closeElement();
+                    defer ui.endElement();
 
                     try ui.text("Opacity", .{ .font_id = FONT_ID_MONO, .font_size = 12 });
                     {
                         try ui.beginElement(.fromSlice("MenuSlider"));
-                        defer ui.closeElement();
+                        defer ui.endElement();
 
                         const bb = ui.getElementBounds(.fromSlice("ContextMenuRoot")).?; // Note: This is kind of dangerous; if you were to set the fixed width to be exactly the menu width, it would actually grow each frame
                         try ui.configureElement(.{

@@ -143,14 +143,14 @@ pub fn For(comptime T: type) type {
                     .border = .{ .width = self.border_width, .color = if (ui.focused() or ui.hovered()) self.border_color_hover else self.border_color },
                     .corner_radius = self.corner_radius,
                 });
-                defer ui.closeElement();
+                defer ui.endElement();
 
                 inline for (comptime std.meta.fields(T), 0..) |_, i| {
                     const field_name = comptime std.meta.fields(T)[i].name;
                     const option_id = try optionId(self, ui, field_name);
 
                     try ui.beginElement(option_id);
-                    defer ui.closeElement();
+                    defer ui.endElement();
 
                     if (ui.hovered()) {
                         self.highlighted_index = i;
