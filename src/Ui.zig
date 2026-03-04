@@ -30,6 +30,7 @@ pub const widgets = struct {
     pub const radioButton = Widget.RadioButton.radioButton;
     pub const shaderRect = Widget.ShaderRect.shaderRect;
     pub const slider = Widget.Slider.slider;
+    pub const textInput = Widget.TextInput.textInput;
 };
 
 pub const Widget = struct {
@@ -40,7 +41,7 @@ pub const Widget = struct {
 
     pub const Checkbox = @import("widgets/Checkbox.zig");
     pub const Slider = @import("widgets/Slider.zig");
-    // pub const TextInput = @import("widgets/TextInput.zig");
+    pub const TextInput = @import("widgets/TextInput.zig");
     pub const RadioButton = @import("widgets/RadioButton.zig");
     pub const Dropdown = @import("widgets/Dropdown.zig");
     pub const ShaderRect = @import("widgets/ShaderRect.zig");
@@ -2339,6 +2340,37 @@ fn generateEvents(self: *Ui) !void {
             }
 
             // Now, proceed with click/double-click event generation.
+            try self.events.append(self.gpa, .{
+                .info = .{
+                    .element_id = last_active.id,
+                    .bounding_box = last_active.bounding_box,
+                    .user_data = last_active.state.getUserData(),
+                },
+                .data = .{ .clicked = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
+            });
+
+            const double_click_threshold_ns = self.click_state.double_click_threshold_ms * std.time.ns_per_ms;
+
+            if (self.click_state.last_click_element_id == last_active.id.id and
+                (now - self.click_state.last_click_time) <= double_click_threshold_ns)
+            {
+                // Double click registered
+                try self.events.append(self.gpa, .{
+                    .info = .{
+                        .element_id = last_active.id,
+                        .bounding_box = last_active.bounding_box,
+                        .user_data = last_active.state.getUserData(),
+                    },
+                    .data = .{ .double_clicked = .{ .mouse_position = mouse_pos, .modifiers = modifiers } },
+                });
+
+                // Reset to prevent a third rapid click from triggering another double-click
+                self.click_state.last_click_element_id = null;
+            } else {
+                // First click, record the state
+                self.click_state.last_click_element_id = last_active.id.id;
+                self.click_state.last_click_time = now;
+            }
         } else {
             // Mouse was released on a different element or a non-clickable one; reset double-click tracking.
             self.click_state.last_click_element_id = null;

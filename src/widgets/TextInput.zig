@@ -1,10 +1,11 @@
 //! Text input widget state management and event handling.
 
-const TextInputWidget = @This();
+const TextInput = @This();
 
 const std = @import("std");
 const Ui = @import("../Ui.zig");
 const Batch2D = @import("../Batch2D.zig");
+const BindingState = @import("../BindingState.zig");
 
 const linalg = @import("../linalg.zig");
 const vec2 = linalg.vec2;
@@ -17,22 +18,34 @@ test {
 }
 
 id: Ui.ElementId,
+text: *std.ArrayList(u8),
+allocator: std.mem.Allocator,
 selection_render_data: SelectionRenderData,
 
-text_buffers: [2]std.ArrayList(u8) = .{ .empty, .empty },
 carets: std.ArrayList(Caret) = .empty,
+spatial_actions: std.ArrayList(SpatialAction) = .empty,
 
-current_buffer_idx: u2 = 0,
-text_was_modified_last_frame: bool = false,
 column_select_start_pos: ?u32 = null,
 drag_additive: u32 = 0,
 
 selection_color: Ui.Color,
 caret_color: Ui.Color,
 
+const SpatialAction = union(enum) {
+    mouse_down: struct { location: vec2, modifiers: BindingState.Modifiers },
+    mouse_up: void,
+    drag: struct { location: vec2, modifiers: BindingState.Modifiers },
+    move_up: BindingState.Modifiers,
+    move_down: BindingState.Modifiers,
+    home: BindingState.Modifiers,
+    end: BindingState.Modifiers,
+};
+
 pub const Config = struct {
-    /// The default value the text input will be initialized to.
-    default_text: []const u8 = "[Type here]",
+    /// The mutable text buffer for this input.
+    text: *std.ArrayList(u8),
+    /// The allocator backing the text buffer.
+    allocator: std.mem.Allocator,
     /// The RGBA color of the font to render, conventionally specified as 0-255.
     color: Ui.Color = .{ .r = 0, .g = 0, .b = 0, .a = 255 },
     /// Identifies the font to use.
@@ -66,75 +79,35 @@ pub const Config = struct {
     }
 };
 
-pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*TextInputWidget {
-    const self = try ui.gpa.create(TextInputWidget);
+pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*TextInput {
+    const self = try ui.gpa.create(TextInput);
     errdefer ui.gpa.destroy(self);
 
-    self.* = TextInputWidget{
+    self.* = TextInput{
         .id = id,
-        .selection_render_data = .{ .carets = &self.carets },
+        .text = config.text,
+        .allocator = config.allocator,
+        .selection_render_data = undefined,
         .selection_color = config.selection_color,
         .caret_color = config.caret_color,
     };
+    self.selection_render_data = .{ .carets = &self.carets };
 
-    self.text_buffers[0] = try std.ArrayList(u8).initCapacity(ui.gpa, config.default_text.len);
-    self.text_buffers[0].appendSliceAssumeCapacity(config.default_text);
-    errdefer self.text_buffers[0].deinit(ui.gpa);
-
-    self.text_buffers[1] = try self.text_buffers[0].clone(ui.gpa);
-    errdefer self.text_buffers[1].deinit(ui.gpa);
-
-    try self.carets.append(ui.gpa, .{ .start = 0, .end = 0 });
+    // Start the cursor at the end of whatever text initially exists
+    const text_len: u32 = @intCast(config.text.items.len);
+    try self.carets.append(ui.gpa, .{ .start = text_len, .end = text_len });
 
     return self;
 }
 
-pub fn deinit(self: *TextInputWidget, ui: *Ui) void {
-    self.text_buffers[0].deinit(ui.gpa);
-    self.text_buffers[1].deinit(ui.gpa);
+pub fn deinit(self: *TextInput, ui: *Ui) void {
     self.carets.deinit(ui.gpa);
+    self.spatial_actions.deinit(ui.gpa);
     ui.gpa.destroy(self);
 }
 
-pub fn bindEvents(self: *TextInputWidget, ui: *Ui) !void {
-    try ui.addListener(self.id, .mouse_down, TextInputWidget, TextInputWidget.onMouseDown, self);
-    try ui.addListener(self.id, .mouse_up, TextInputWidget, TextInputWidget.onMouseUp, self);
-    try ui.addListener(self.id, .double_clicked, TextInputWidget, TextInputWidget.onDoubleClicked, self);
-    try ui.addListener(self.id, .drag, TextInputWidget, TextInputWidget.onDrag, self);
-    try ui.addListener(self.id, .text, TextInputWidget, TextInputWidget.onText, self);
-}
-
-pub fn unbindEvents(self: *TextInputWidget, ui: *Ui) void {
-    ui.removeListener(self.id, .mouse_down, TextInputWidget, TextInputWidget.onMouseDown);
-    ui.removeListener(self.id, .mouse_up, TextInputWidget, TextInputWidget.onMouseUp);
-    ui.removeListener(self.id, .double_clicked, TextInputWidget, TextInputWidget.onDoubleClicked);
-    ui.removeListener(self.id, .drag, TextInputWidget, TextInputWidget.onDrag);
-    ui.removeListener(self.id, .text, TextInputWidget, TextInputWidget.onText);
-}
-
-pub fn swapBuffers(self: *TextInputWidget, ui: *Ui) !void {
-    if (self.text_was_modified_last_frame) {
-        // Swap to the buffer that was modified last frame, making it current.
-        self.current_buffer_idx = 1 - self.current_buffer_idx;
-        self.text_was_modified_last_frame = false;
-
-        // Sync the 'next' buffer to be a fresh copy of the 'current' one,
-        // so subsequent edits in this frame start from the correct state.
-        var target_buffer = self.nextTextArray();
-        target_buffer.deinit(ui.gpa);
-        target_buffer.* = try self.currentTextArray().clone(ui.gpa);
-    }
-}
-
-pub fn currentText(self: *TextInputWidget) []const u8 {
-    return self.currentTextArray().items;
-}
-
-fn currentTextArray(self: *TextInputWidget) *std.ArrayList(u8) {
-    return &self.text_buffers[self.current_buffer_idx];
-}
-fn nextTextArray(self: *TextInputWidget) *std.ArrayList(u8) {
-    return &self.text_buffers[1 - self.current_buffer_idx];
+pub fn currentText(self: *TextInput) []const u8 {
+    return self.text.items;
 }
 
 const Caret = struct {
@@ -188,9 +161,9 @@ fn sortAndMergeCarets(caret_list: *std.ArrayList(Caret)) !void {
 }
 
 /// Rebuilds the text string by applying a given modification at each caret.
-/// This reads from the 'current' buffer and writes the result to the 'next' buffer.
+/// Mutates the caller's text buffer directly.
 fn applyTextModification(
-    self: *TextInputWidget,
+    self: *TextInput,
     ui: *Ui,
     action: enum { insert, delete, backspace },
     payload: []const u8,
@@ -256,17 +229,13 @@ fn applyTextModification(
     // Append any remaining text after the last caret
     try new_text.appendSlice(ui.gpa, source_text[last_idx..]);
 
-    // Apply changes to the 'next' buffer and set the modified flag
-    var target_buffer = self.nextTextArray();
-    target_buffer.deinit(ui.gpa);
-    target_buffer.* = new_text;
+    // Write directly back to the user's string buffer
+    self.text.clearRetainingCapacity();
+    try self.text.appendSlice(self.allocator, new_text.items);
+    new_text.deinit(ui.gpa);
 
     self.carets.deinit(ui.gpa);
     self.carets = new_carets;
-
-    self.text_was_modified_last_frame = true;
-
-    try ui.pushEvent(self.id, .{ .text_change = new_text.items }, self);
 }
 
 /// Finds the index of the start of the next word.
@@ -300,11 +269,7 @@ fn findPrevWordBreak(text: []const u8, start_index: u32) u32 {
     return idx;
 }
 
-pub fn render(self: *TextInputWidget, ui: *Ui, command: Ui.RenderCommand) !void {
-    const caret_list = self.selection_render_data.carets;
-
-    const caret_width: f32 = 1.5;
-
+pub fn render(self: *TextInput, ui: *Ui, command: Ui.RenderCommand) !void {
     const data = command.render_data.custom;
     const color = Ui.clayColorToBatchColor(data.background_color);
     const radius = Batch2D.CornerRadius{
@@ -313,6 +278,8 @@ pub fn render(self: *TextInputWidget, ui: *Ui, command: Ui.RenderCommand) !void 
         .bottom_right = data.corner_radius.bottom_right,
         .bottom_left = data.corner_radius.bottom_left,
     };
+
+    // Draw the background
     try ui.renderer.drawRoundedRect(
         .{ command.bounding_box.x, command.bounding_box.y },
         .{ command.bounding_box.width, command.bounding_box.height },
@@ -320,12 +287,172 @@ pub fn render(self: *TextInputWidget, ui: *Ui, command: Ui.RenderCommand) !void 
         color,
     );
 
-    if (ui.state.focusedIdValue() != command.id) {
-        log.debug("skipping rendering carets for unfocused TextInput", .{});
-        return;
-    } else {
-        log.debug("rendering carets for focused TextInput", .{});
+    // =========================================================================
+    // SPATIAL ACTION RESOLUTION
+    // This executes *after* Ui.endLayout(), so the Clay tree is valid
+    // and querying it will no longer crash.
+    // =========================================================================
+    for (self.spatial_actions.items) |action| {
+        switch (action) {
+            .mouse_down => |d| {
+                if (ui.getCharacterIndexAtOffset(self.id, d.location)) |index| {
+                    if (d.modifiers.alt) {
+                        self.column_select_start_pos = index;
+                        if (d.modifiers.shift) {
+                            self.drag_additive = @intCast(self.carets.items.len + 1);
+                        } else {
+                            self.carets.clearRetainingCapacity();
+                            self.drag_additive = 1;
+                        }
+                        try self.carets.append(ui.gpa, .{ .start = index, .end = index });
+                    } else if (d.modifiers.shift and self.carets.items.len > 0) {
+                        self.carets.items[self.carets.items.len - 1].end = index;
+                    } else {
+                        self.carets.clearRetainingCapacity();
+                        try self.carets.append(ui.gpa, .{ .start = index, .end = index });
+                    }
+                }
+            },
+            .mouse_up => {
+                try sortAndMergeCarets(&self.carets);
+                self.column_select_start_pos = null;
+                self.drag_additive = 0;
+            },
+            .drag => |d| {
+                if (self.column_select_start_pos) |start_index| {
+                    // --- COLUMN SELECTION mode ---
+                    const start_offset = ui.getCharacterOffset(self.id, start_index) orelse continue;
+                    const current_offset = ui.getCharacterOffsetAtPoint(self.id, d.location) orelse continue;
+
+                    const rect_x1 = @min(start_offset.offset.x, current_offset.offset.x);
+                    const rect_x2 = @max(start_offset.offset.x, current_offset.offset.x);
+                    const rect_y1 = @min(start_offset.offset.y, current_offset.offset.y);
+                    const rect_y2 = @max(start_offset.offset.y, current_offset.offset.y) + current_offset.line_height;
+
+                    const base = @min(self.drag_additive, self.carets.items.len);
+                    self.carets.shrinkRetainingCapacity(base);
+
+                    var scan_index: u32 = 0;
+                    while (scan_index < self.currentText().len) {
+                        const char_offset = ui.getCharacterOffset(self.id, scan_index) orelse {
+                            scan_index += 1;
+                            continue;
+                        };
+
+                        const line_y = char_offset.offset.y;
+                        const line_h = char_offset.line_height;
+
+                        if (line_y + line_h > rect_y1 and line_y < rect_y2) {
+                            const start_char_opt = ui.getCharacterIndexAtOffset(self.id, .{ rect_x1, line_y });
+                            const end_char_opt = ui.getCharacterIndexAtOffset(self.id, .{ rect_x2, line_y });
+
+                            if (start_char_opt != null and end_char_opt != null) {
+                                const sel_start = @min(start_char_opt.?, end_char_opt.?);
+                                const sel_end = @max(start_char_opt.?, end_char_opt.?);
+                                try self.carets.append(ui.gpa, .{ .start = sel_start, .end = sel_end });
+                            }
+                        }
+
+                        var next_scan_index = scan_index;
+                        while (next_scan_index < self.currentText().len) {
+                            const next_char_offset = ui.getCharacterOffset(self.id, next_scan_index) orelse break;
+                            if (next_char_offset.offset.y > line_y) break;
+                            next_scan_index += 1;
+                        }
+
+                        if (next_scan_index == scan_index) break;
+                        scan_index = next_scan_index;
+                    }
+                } else {
+                    // --- NORMAL selection mode ---
+                    if (ui.getCharacterIndexAtOffset(self.id, d.location)) |offset| {
+                        if (self.carets.items.len > 0) {
+                            self.carets.items[self.carets.items.len - 1].end = offset;
+                        }
+                    }
+                }
+            },
+            .move_up, .move_down => |action_mod| {
+                const is_up = action == .move_up;
+                var new_carets_to_add = std.ArrayList(Caret).empty;
+                defer new_carets_to_add.deinit(ui.gpa);
+
+                for (self.carets.items) |*caret| {
+                    const start_offset_res = ui.getCharacterOffset(self.id, caret.start) orelse continue;
+                    const end_offset_res = ui.getCharacterOffset(self.id, caret.end) orelse continue;
+
+                    const target_y_offset = if (is_up) -start_offset_res.line_height else start_offset_res.line_height;
+
+                    if (action_mod.alt) {
+                        const target_start_loc = vec2{ start_offset_res.offset.x, start_offset_res.offset.y + target_y_offset };
+                        const new_start_res = ui.getCharacterIndexAtOffset(self.id, target_start_loc) orelse continue;
+
+                        const target_end_loc = vec2{ end_offset_res.offset.x, end_offset_res.offset.y + target_y_offset };
+                        const new_end_res = ui.getCharacterIndexAtOffset(self.id, target_end_loc) orelse continue;
+
+                        try new_carets_to_add.append(ui.gpa, .{ .start = new_start_res, .end = new_end_res });
+                    } else if (action_mod.shift) {
+                        const target_end_loc = vec2{ end_offset_res.offset.x, end_offset_res.offset.y + target_y_offset };
+                        const new_end_res = ui.getCharacterIndexAtOffset(self.id, target_end_loc) orelse continue;
+                        caret.end = new_end_res;
+                    } else {
+                        const target_end_loc = vec2{ end_offset_res.offset.x, end_offset_res.offset.y + target_y_offset };
+                        const new_end_res = ui.getCharacterIndexAtOffset(self.id, target_end_loc) orelse continue;
+                        caret.start = new_end_res;
+                        caret.end = new_end_res;
+                    }
+                }
+                try self.carets.appendSlice(ui.gpa, new_carets_to_add.items);
+                try sortAndMergeCarets(&self.carets);
+            },
+            .home => |action_mod| {
+                for (self.carets.items) |*caret| {
+                    if (action_mod.ctrl) {
+                        caret.end = 0;
+                    } else if (ui.getCharacterOffset(self.id, caret.end)) |offset| {
+                        const target_loc = vec2{ 0, offset.offset.y };
+                        if (ui.getCharacterIndexAtOffset(self.id, target_loc)) |target_index| caret.end = target_index;
+                    }
+                    if (!action_mod.shift) caret.start = caret.end;
+                }
+            },
+            .end => |action_mod| {
+                for (self.carets.items) |*caret| {
+                    if (action_mod.ctrl) {
+                        caret.end = @intCast(self.currentText().len);
+                    } else {
+                        if (ui.getCharacterOffset(self.id, caret.end)) |current_offset_res| {
+                            const end_of_line_target_loc = vec2{ 999999.0, current_offset_res.offset.y };
+                            if (ui.getCharacterIndexAtOffset(self.id, end_of_line_target_loc)) |end_of_line_res| {
+                                var last_char_idx = end_of_line_res;
+                                const check_offset_res = ui.getCharacterOffset(self.id, last_char_idx);
+                                if (check_offset_res != null and check_offset_res.?.offset.y != current_offset_res.offset.y and last_char_idx > 0) {
+                                    var prev_char_start = last_char_idx - 1;
+                                    while (prev_char_start > 0 and (self.currentText()[prev_char_start] & 0b1100_0000) == 0b1000_0000) {
+                                        prev_char_start -= 1;
+                                    }
+                                    last_char_idx = prev_char_start;
+                                }
+                                caret.end = last_char_idx;
+                            }
+                        }
+                    }
+                    if (!action_mod.shift) caret.start = caret.end;
+                }
+            },
+        }
     }
+    self.spatial_actions.clearRetainingCapacity();
+
+    // =========================================================================
+    // DRAWING
+    // =========================================================================
+    if (ui.state.focusedIdValue() != command.id) {
+        return;
+    }
+
+    const caret_list = self.selection_render_data.carets;
+    const caret_width: f32 = 1.5;
 
     for (caret_list.items) |caret| {
         // Draw selection highlight
@@ -384,363 +511,189 @@ pub fn render(self: *TextInputWidget, ui: *Ui, command: Ui.RenderCommand) !void 
     }
 }
 
-pub fn onGet(self: *TextInputWidget, _: *Ui, _: Ui.Event.Info) *const []const u8 {
-    return &self.currentTextArray().items;
-}
+/// Configure an open element as a text input widget, applying mutative state to the passed-in config text buffer.
+pub fn textInput(ui: *Ui, config: TextInput.Config) !bool {
+    const id = ui.open_ids.items[ui.open_ids.items.len - 1];
+    const gop = try ui.widget_states.getOrPut(ui.gpa, id.id);
+    const self = if (!gop.found_existing) create_new: {
+        const ptr = try TextInput.init(ui, id, config);
+        gop.value_ptr.* = Ui.Widget{
+            .user_data = ptr,
+            .render = @ptrCast(&TextInput.render),
+            .deinit = @ptrCast(&TextInput.deinit),
+            .seen_this_frame = true,
+        };
 
-pub fn onSet(self: *TextInputWidget, ui: *Ui, new_text: *const []const u8) !void {
-    var target_buffer = self.nextTextArray();
-    target_buffer.deinit(ui.gpa);
-    target_buffer.* = try std.ArrayList(u8).initCapacity(ui.gpa, new_text.len);
-    try target_buffer.appendSlice(ui.gpa, new_text.*);
+        break :create_new ptr;
+    } else reuse_existing: {
+        gop.value_ptr.seen_this_frame = true;
+        const ptr: *TextInput = @ptrCast(@alignCast(gop.value_ptr.user_data));
 
-    self.text_was_modified_last_frame = true;
+        // Update transient per-frame config & state pointers
+        ptr.text = config.text;
+        ptr.selection_color = config.selection_color;
+        ptr.caret_color = config.caret_color;
 
-    self.carets.clearRetainingCapacity();
-    try self.carets.append(ui.gpa, .{ .start = 0, .end = @intCast(new_text.len) });
-}
+        // Ensure carets remain in bounds if the buffer was externally manipulated
+        const text_len: u32 = @intCast(ptr.text.items.len);
+        for (ptr.carets.items) |*c| {
+            c.start = @min(c.start, text_len);
+            c.end = @min(c.end, text_len);
+        }
 
-pub fn onDoubleClicked(self: *TextInputWidget, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.double_clicked)) !void {
-    log.info("TextInput received double click event", .{});
-
-    if (self.carets.items.len == 0) return;
-
-    const caret = &self.carets.items[self.carets.items.len - 1];
-    caret.start = findPrevWordBreak(self.currentText(), caret.end);
-    caret.end = findNextWordBreak(self.currentText(), caret.end);
-
-    try sortAndMergeCarets(&self.carets);
-}
-
-pub fn onMouseDown(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
-    log.info("TextInput received mouse down event: {any}", .{mouse_down_data});
-
-    const location = vec2{
-        mouse_down_data.mouse_position[0] - info.bounding_box.x,
-        mouse_down_data.mouse_position[1] - info.bounding_box.y,
+        break :reuse_existing ptr;
     };
 
-    if (ui.getCharacterIndexAtOffset(self.id, location)) |index| {
-        if (mouse_down_data.modifiers.alt) {
-            // START a column select drag.
-            self.column_select_start_pos = index;
-            if (mouse_down_data.modifiers.shift) {
-                log.info("Alt+Shift drag additive", .{});
+    try ui.text(self.currentText(), config.toFull());
 
-                self.drag_additive = @intCast(self.carets.items.len + 1);
-            } else {
-                log.info("Alt drag new", .{});
-                self.carets.clearRetainingCapacity();
-                self.drag_additive = 1;
-            }
-            try self.carets.append(ui.gpa, .{ .start = index, .end = index });
-        } else if (mouse_down_data.modifiers.shift and self.carets.items.len > 0) {
-            log.info("Shift click extend", .{});
-            self.carets.items[self.carets.items.len - 1].end = index;
-        } else {
-            log.info("Normal click", .{});
-            self.carets.clearRetainingCapacity();
-            try self.carets.append(ui.gpa, .{ .start = index, .end = index });
+    var changed = false;
+
+    if (ui.getEvent(self.id, .mouse_down)) |event| {
+        const mouse_down_data = event.data.mouse_down;
+        const location = vec2{
+            mouse_down_data.mouse_position[0] - event.info.bounding_box.x,
+            mouse_down_data.mouse_position[1] - event.info.bounding_box.y,
+        };
+        try self.spatial_actions.append(ui.gpa, .{ .mouse_down = .{ .location = location, .modifiers = mouse_down_data.modifiers } });
+    }
+
+    if (ui.getEvent(self.id, .mouse_up)) |_| {
+        try self.spatial_actions.append(ui.gpa, .mouse_up);
+    }
+
+    if (ui.getEvent(self.id, .drag)) |event| {
+        const drag_data = event.data.drag;
+        const location = vec2{
+            drag_data.mouse_position[0] - event.info.bounding_box.x,
+            drag_data.mouse_position[1] - event.info.bounding_box.y,
+        };
+        try self.spatial_actions.append(ui.gpa, .{ .drag = .{ .location = location, .modifiers = drag_data.modifiers } });
+    }
+
+    // Double clicking operates on pure string content mapping (not spatial layouts), so we handle it immediately.
+    if (ui.getEvent(self.id, .double_clicked)) |_| {
+        if (self.carets.items.len > 0) {
+            const caret = &self.carets.items[self.carets.items.len - 1];
+            caret.start = findPrevWordBreak(self.currentText(), caret.end);
+            caret.end = findNextWordBreak(self.currentText(), caret.end);
+            try sortAndMergeCarets(&self.carets);
         }
     }
-}
 
-pub fn onMouseUp(self: *TextInputWidget, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.mouse_up)) !void {
-    log.info("TextInput received mouse up event", .{});
+    if (ui.getEvent(self.id, .text)) |event| {
+        const text_data = event.data.text;
 
-    try sortAndMergeCarets(&self.carets);
-    self.column_select_start_pos = null;
-    self.drag_additive = 0;
-}
+        switch (text_data) {
+            .command => |cmd| switch (cmd.action) {
+                // Layout-dependent actions are queued up to process inside render()
+                .move_up => try self.spatial_actions.append(ui.gpa, .{ .move_up = cmd.modifiers }),
+                .move_down => try self.spatial_actions.append(ui.gpa, .{ .move_down = cmd.modifiers }),
+                .home => try self.spatial_actions.append(ui.gpa, .{ .home = cmd.modifiers }),
+                .end => try self.spatial_actions.append(ui.gpa, .{ .end = cmd.modifiers }),
 
-pub fn onDrag(self: *TextInputWidget, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
-    log.info("drag event: {any}", .{drag_data});
-
-    const location = vec2{
-        drag_data.mouse_position[0] - info.bounding_box.x,
-        drag_data.mouse_position[1] - info.bounding_box.y,
-    };
-
-    // Branch on the interaction mode
-    if (self.column_select_start_pos) |start_index| {
-        log.info("Column drag event", .{});
-        // --- We are in COLUMN SELECTION mode ---
-        const start_offset = ui.getCharacterOffset(self.id, start_index) orelse return;
-        const current_offset = ui.getCharacterOffsetAtPoint(self.id, location) orelse return;
-
-        // Define the selection rectangle in text-space coordinates
-        const rect_x1 = @min(start_offset.offset.x, current_offset.offset.x);
-        const rect_x2 = @max(start_offset.offset.x, current_offset.offset.x);
-        const rect_y1 = @min(start_offset.offset.y, current_offset.offset.y);
-        const rect_y2 = @max(start_offset.offset.y, current_offset.offset.y) + current_offset.line_height;
-
-        // Clear previous carets, we're recalculating them from scratch each drag frame
-        const base = @min(self.drag_additive, self.carets.items.len);
-        self.carets.shrinkRetainingCapacity(base);
-
-        // This is tricky: we need to iterate over *visual lines* in the text box.
-        // We can approximate this by stepping through the text and checking character offsets.
-        var scan_index: u32 = 0;
-        while (scan_index < self.currentText().len) {
-            const char_offset = ui.getCharacterOffset(self.id, scan_index) orelse {
-                scan_index += 1;
-                continue;
-            };
-
-            const line_y = char_offset.offset.y;
-            const line_h = char_offset.line_height;
-
-            // Is this line within our vertical selection rectangle?
-            if (line_y + line_h > rect_y1 and line_y < rect_y2) {
-                // Yes. Now find the start and end character indices for this line's selection.
-                const start_char_opt = ui.getCharacterIndexAtOffset(self.id, .{ rect_x1, line_y });
-                const end_char_opt = ui.getCharacterIndexAtOffset(self.id, .{ rect_x2, line_y });
-
-                if (start_char_opt != null and end_char_opt != null) {
-                    // We found a valid selection range for this line. Add a new caret.
-                    // Ensure start <= end
-                    const sel_start = @min(start_char_opt.?, end_char_opt.?);
-                    const sel_end = @max(start_char_opt.?, end_char_opt.?);
-                    self.carets.append(ui.gpa, .{ .start = sel_start, .end = sel_end }) catch |err| {
-                        log.err("Failed to append caret during column select: {any}", .{err});
-                        return;
-                    };
-                }
-            }
-
-            // Find the start of the next line to continue scanning
-            var next_scan_index = scan_index;
-            while (next_scan_index < self.currentText().len) {
-                const next_char_offset = ui.getCharacterOffset(self.id, next_scan_index) orelse break;
-                if (next_char_offset.offset.y > line_y) {
-                    break; // Found start of next line
-                }
-                next_scan_index += 1; // This is slow, but necessary without a better line API
-            }
-
-            if (next_scan_index == scan_index) {
-                // We are at the end of the text
-                break;
-            }
-            scan_index = next_scan_index;
-        }
-    } else {
-        // --- We are in NORMAL selection mode ---
-        log.info("TextInput received drag event: {any}", .{drag_data});
-        const offset = ui.getCharacterIndexAtOffset(self.id, location);
-        if (offset != null and self.carets.items.len > 0) {
-            self.carets.items[self.carets.items.len - 1].end = offset.?;
-        }
-    }
-}
-
-pub fn onText(self: *TextInputWidget, ui: *Ui, _: Ui.Event.Info, text_data: Ui.Event.Payload(.text)) !void {
-    log.debug("TextInput received text event: {any}", .{text_data});
-
-    switch (text_data) {
-        .command => |cmd| switch (cmd.action) {
-            .copy => copy_action: {
-                try sortAndMergeCarets(&self.carets);
-                var has_selection = false;
-                for (self.carets.items) |c| {
-                    if (c.hasSelection()) {
-                        has_selection = true;
-                    }
-                }
-                if (!has_selection) break :copy_action;
-
-                var clipboard_list = std.ArrayList(u8).empty;
-
-                var first = true;
-                for (self.carets.items) |caret| {
-                    if (!caret.hasSelection()) continue;
-                    if (!first) try clipboard_list.append(ui.frame_arena, '\n');
-                    first = false;
-
-                    const selection = self.currentText()[caret.min()..caret.max()];
-                    try clipboard_list.appendSlice(ui.frame_arena, selection);
-                }
-
-                try ui.bindings.setClipboard(clipboard_list.items);
-                log.debug(" -> copied '{s}' to clipboard", .{clipboard_list.items});
-            },
-            .paste => {
-                const clipboard = ui.bindings.getClipboard();
-                log.debug("  -> paste: '{s}'", .{clipboard});
-                try self.applyTextModification(ui, .insert, clipboard);
-            },
-            .delete => {
-                if (cmd.modifiers.ctrl) {
-                    for (self.carets.items) |*caret| {
-                        if (!caret.hasSelection()) {
-                            caret.end = findNextWordBreak(self.currentText(), caret.end);
+                // Text/string manipulation actions are evaluated immediately
+                .copy => copy_action: {
+                    try sortAndMergeCarets(&self.carets);
+                    var has_selection = false;
+                    for (self.carets.items) |c| {
+                        if (c.hasSelection()) {
+                            has_selection = true;
                         }
                     }
-                }
-                try self.applyTextModification(ui, .delete, "");
-            },
-            .backspace => {
-                if (cmd.modifiers.ctrl) {
-                    for (self.carets.items) |*caret| {
-                        if (!caret.hasSelection()) {
-                            caret.end = findPrevWordBreak(self.currentText(), caret.end);
-                        }
-                    }
-                }
-                try self.applyTextModification(ui, .backspace, "");
-            },
-            .newline => {
-                try self.applyTextModification(ui, .insert, "\n");
-            },
-            .select_all => {
-                self.carets.clearRetainingCapacity();
-                try self.carets.append(ui.gpa, .{ .start = 0, .end = @intCast(self.currentText().len) });
-            },
-            .move_left, .move_right, .move_up, .move_down, .home, .end => {
-                var new_carets_to_add = std.ArrayList(Caret).empty;
+                    if (!has_selection) break :copy_action;
 
-                for (self.carets.items) |*caret| {
-                    switch (cmd.action) {
-                        .move_left => {
-                            if (caret.hasSelection() and !cmd.modifiers.shift) {
-                                caret.end = caret.min();
-                            } else if (cmd.modifiers.ctrl) {
-                                caret.end = findPrevWordBreak(self.currentText(), caret.end);
-                            } else if (caret.end > 0) {
-                                var new_pos = caret.end - 1;
-                                while (new_pos > 0 and (self.currentText()[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos -= 1) {}
-                                caret.end = new_pos;
-                            }
-                            if (!cmd.modifiers.shift) caret.start = caret.end;
-                        },
-                        .move_right => {
-                            if (caret.hasSelection() and !cmd.modifiers.shift) {
-                                caret.end = caret.max();
-                            } else if (cmd.modifiers.ctrl) {
+                    var clipboard_list = std.ArrayList(u8).empty;
+                    var first = true;
+                    for (self.carets.items) |caret| {
+                        if (!caret.hasSelection()) continue;
+                        if (!first) try clipboard_list.append(ui.frame_arena, '\n');
+                        first = false;
+
+                        const selection = self.currentText()[caret.min()..caret.max()];
+                        try clipboard_list.appendSlice(ui.frame_arena, selection);
+                    }
+
+                    try ui.bindings.setClipboard(clipboard_list.items);
+                },
+                .paste => {
+                    const clipboard = ui.bindings.getClipboard();
+                    try self.applyTextModification(ui, .insert, clipboard);
+                    changed = true;
+                },
+                .delete => {
+                    if (cmd.modifiers.ctrl) {
+                        for (self.carets.items) |*caret| {
+                            if (!caret.hasSelection()) {
                                 caret.end = findNextWordBreak(self.currentText(), caret.end);
-                            } else if (caret.end < self.currentText().len) {
-                                var new_pos = caret.end + 1;
-                                while (new_pos < self.currentText().len and (self.currentText()[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos += 1) {}
-                                caret.end = new_pos;
                             }
-                            if (!cmd.modifiers.shift) caret.start = caret.end;
-                        },
-                        .move_up, .move_down => {
-                            const start_offset_res = ui.getCharacterOffset(self.id, caret.start) orelse continue;
-                            const end_offset_res = ui.getCharacterOffset(self.id, caret.end) orelse continue;
-
-                            const target_y_offset = if (cmd.action == .move_up)
-                                -start_offset_res.line_height
-                            else
-                                start_offset_res.line_height;
-
-                            if (cmd.modifiers.alt) {
-                                // Alt: Duplicate selection to the next line
-                                const target_start_loc = vec2{ start_offset_res.offset.x, start_offset_res.offset.y + target_y_offset };
-                                const new_start_res = ui.getCharacterIndexAtOffset(self.id, target_start_loc) orelse continue;
-
-                                const target_end_loc = vec2{ end_offset_res.offset.x, end_offset_res.offset.y + target_y_offset };
-                                const new_end_res = ui.getCharacterIndexAtOffset(self.id, target_end_loc) orelse continue;
-
-                                try new_carets_to_add.append(ui.frame_arena, .{ .start = new_start_res, .end = new_end_res });
-                            } else if (cmd.modifiers.shift) {
-                                // Shift: Extend selection to the next line
-                                const target_end_loc = vec2{ end_offset_res.offset.x, end_offset_res.offset.y + target_y_offset };
-                                const new_end_res = ui.getCharacterIndexAtOffset(self.id, target_end_loc) orelse continue;
-
-                                caret.end = new_end_res;
-                            } else {
-                                // No modifiers: Move caret, collapsing selection
-                                const target_end_loc = vec2{ end_offset_res.offset.x, end_offset_res.offset.y + target_y_offset };
-                                const new_end_res = ui.getCharacterIndexAtOffset(self.id, target_end_loc) orelse continue;
-                                caret.start = new_end_res;
-                                caret.end = new_end_res;
-                            }
-                        },
-                        .home => {
-                            if (cmd.modifiers.ctrl) {
-                                caret.end = 0;
-                            } else if (ui.getCharacterOffset(self.id, caret.end)) |offset| {
-                                const target_loc = vec2{ 0, offset.offset.y };
-                                if (ui.getCharacterIndexAtOffset(self.id, target_loc)) |target_index| caret.end = target_index;
-                            }
-                            if (!cmd.modifiers.shift) caret.start = caret.end;
-                        },
-                        .end => {
-                            if (cmd.modifiers.ctrl) {
-                                caret.end = @intCast(self.currentText().len);
-                            } else {
-                                if (ui.getCharacterOffset(self.id, caret.end)) |current_offset_res| {
-                                    const end_of_line_target_loc = vec2{ 999999.0, current_offset_res.offset.y };
-                                    if (ui.getCharacterIndexAtOffset(self.id, end_of_line_target_loc)) |end_of_line_res| {
-                                        var last_char_idx = end_of_line_res;
-                                        const check_offset_res = ui.getCharacterOffset(self.id, last_char_idx);
-                                        if (check_offset_res != null and check_offset_res.?.offset.y != current_offset_res.offset.y and last_char_idx > 0) {
-                                            var prev_char_start = last_char_idx - 1;
-                                            while (prev_char_start > 0 and (self.currentText()[prev_char_start] & 0b1100_0000) == 0b1000_0000) {
-                                                prev_char_start -= 1;
-                                            }
-                                            last_char_idx = prev_char_start;
-                                        }
-                                        caret.end = last_char_idx;
-                                    }
-                                }
-                            }
-                            if (!cmd.modifiers.shift) caret.start = caret.end;
-                        },
-                        else => {},
+                        }
                     }
-                }
-
-                try self.carets.appendSlice(ui.gpa, new_carets_to_add.items);
-                try sortAndMergeCarets(&self.carets);
+                    try self.applyTextModification(ui, .delete, "");
+                    changed = true;
+                },
+                .backspace => {
+                    if (cmd.modifiers.ctrl) {
+                        for (self.carets.items) |*caret| {
+                            if (!caret.hasSelection()) {
+                                caret.end = findPrevWordBreak(self.currentText(), caret.end);
+                            }
+                        }
+                    }
+                    try self.applyTextModification(ui, .backspace, "");
+                    changed = true;
+                },
+                .newline => {
+                    try self.applyTextModification(ui, .insert, "\n");
+                    changed = true;
+                },
+                .select_all => {
+                    self.carets.clearRetainingCapacity();
+                    try self.carets.append(ui.gpa, .{ .start = 0, .end = @intCast(self.currentText().len) });
+                },
+                .move_left => {
+                    for (self.carets.items) |*caret| {
+                        if (caret.hasSelection() and !cmd.modifiers.shift) {
+                            caret.end = caret.min();
+                        } else if (cmd.modifiers.ctrl) {
+                            caret.end = findPrevWordBreak(self.currentText(), caret.end);
+                        } else if (caret.end > 0) {
+                            var new_pos = caret.end - 1;
+                            while (new_pos > 0 and (self.currentText()[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos -= 1) {}
+                            caret.end = new_pos;
+                        }
+                        if (!cmd.modifiers.shift) caret.start = caret.end;
+                    }
+                    try sortAndMergeCarets(&self.carets);
+                },
+                .move_right => {
+                    for (self.carets.items) |*caret| {
+                        if (caret.hasSelection() and !cmd.modifiers.shift) {
+                            caret.end = caret.max();
+                        } else if (cmd.modifiers.ctrl) {
+                            caret.end = findNextWordBreak(self.currentText(), caret.end);
+                        } else if (caret.end < self.currentText().len) {
+                            var new_pos = caret.end + 1;
+                            while (new_pos < self.currentText().len and (self.currentText()[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos += 1) {}
+                            caret.end = new_pos;
+                        }
+                        if (!cmd.modifiers.shift) caret.start = caret.end;
+                    }
+                    try sortAndMergeCarets(&self.carets);
+                },
             },
-        },
-        .chars => |chars| {
-            var buffer = std.ArrayList(u8).empty;
-            for (chars) |char_cmd| {
-                const width = try std.unicode.utf8CodepointSequenceLength(char_cmd.codepoint);
-                const buf = try ui.frame_arena.alloc(u8, width);
-                _ = try std.unicode.utf8Encode(char_cmd.codepoint, buf);
-                try buffer.appendSlice(ui.frame_arena, buf);
-            }
-            try self.applyTextModification(ui, .insert, buffer.items);
-        },
+            .chars => |chars| {
+                var buffer = std.ArrayList(u8).empty;
+                for (chars) |char_cmd| {
+                    const width = try std.unicode.utf8CodepointSequenceLength(char_cmd.codepoint);
+                    const buf = try ui.frame_arena.alloc(u8, width);
+                    _ = try std.unicode.utf8Encode(char_cmd.codepoint, buf);
+                    try buffer.appendSlice(ui.frame_arena, buf);
+                }
+                try self.applyTextModification(ui, .insert, buffer.items);
+                changed = true;
+            },
+        }
     }
+
+    return changed;
 }
-
-// /// Configure an open element as a text input widget
-// pub fn bindTextInput(self: *Ui, config: Widget.TextInput.Config) !void {
-//     std.debug.assert(clay.getCurrentContext() == self.clay_context);
-//     std.debug.assert(self.open_ids.items.len > 0);
-
-//     const id = self.open_ids.items[self.open_ids.items.len - 1];
-//     const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-//     const widget = if (!gop.found_existing) create_new: {
-//         const ptr = try Widget.TextInput.init(self, id, config);
-//         gop.value_ptr.* = Widget{
-//             .user_data = ptr,
-//             .render = @ptrCast(&Widget.TextInput.render),
-//             .get = @ptrCast(&Widget.TextInput.onGet),
-//             .set = @ptrCast(&Widget.TextInput.onSet),
-//             .state_type = @typeName([]const u8),
-//             .deinit = @ptrCast(&Widget.TextInput.deinit),
-//             .seen_this_frame = true,
-//         };
-
-//         try ptr.bindEvents(self);
-
-//         break :create_new ptr;
-//     } else reuse_existing: {
-//         gop.value_ptr.seen_this_frame = true;
-//         const ptr: *Widget.TextInput = @ptrCast(@alignCast(gop.value_ptr.user_data));
-//         try ptr.swapBuffers(self);
-//         break :reuse_existing ptr;
-//     };
-
-//     if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
-//         try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
-//     }
-
-//     try self.text(widget.currentText(), config.toFull());
-// }

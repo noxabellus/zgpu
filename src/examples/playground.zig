@@ -393,6 +393,7 @@ pub fn main() !void {
 
     const BufferDebugMode = enum { None, Framebuffer, @"Picking Position", @"Picking Id" };
     var buffer_debug_mode: BufferDebugMode = .None;
+    var text_buffer: std.ArrayList(u8) = .empty;
 
     var last_frame_time = std.time.milliTimestamp();
     main_loop: while (app.beginFrame()) {
@@ -700,6 +701,49 @@ pub fn main() !void {
                                 .font_size = 32,
                                 .color = COLOR_PHOSPHOR,
                             });
+                        }
+
+                        { // Random text input
+                            try ui.beginElement(.fromSlice("TextInputTest"));
+                            defer ui.closeElement();
+
+                            try ui.configureElement(.{
+                                .layout = .{
+                                    .sizing = .{ .w = .fixed(300 + 5 * 2 + 2 * 2), .h = .fixed(16 * 6 + 5 * 2 + 2 * 2) },
+                                    .padding = .all(5),
+                                },
+                                .background_color = COLOR_BROWN,
+                                .border = .{
+                                    .width = .all(2),
+                                    .color = COLOR_PHOSPHOR,
+                                },
+                                .corner_radius = .all(5),
+                                .clip = .{
+                                    .vertical = true,
+                                    .child_offset = ui.scrollOffset(),
+                                },
+                                .widget = true,
+                                .state = .flags(.{
+                                    .click = true,
+                                    .focus = true,
+                                    .text = true,
+                                    .drag = true,
+                                }),
+                            });
+
+                            if (try widgets.textInput(ui, .{
+                                .text = &text_buffer,
+                                .allocator = app.generalAllocator(),
+                                .alignment = .left,
+                                .font_id = FONT_ID_TITLE,
+                                .font_size = 16,
+                                .color = COLOR_PHOSPHOR,
+                                .caret_color = COLOR_PHOSPHOR,
+                                .selection_color = COLOR_PHOSPHOR.withAlpha(0.25),
+                                .line_height = 20,
+                            })) {
+                                std.debug.print("Text input changed:\n{s}\n", .{text_buffer.items});
+                            }
                         }
 
                         { // Fps Overlay
