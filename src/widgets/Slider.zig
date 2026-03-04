@@ -1,6 +1,6 @@
 //! Slider widget for f32 values.
 
-const SliderWidget = @This();
+const Slider = @This();
 
 const std = @import("std");
 const Ui = @import("../Ui.zig");
@@ -45,7 +45,7 @@ pub fn For(comptime T: type) type {
             id: Ui.ElementId,
             min: T,
             max: T,
-            current_value: T,
+            value: *T,
 
             key_repeat: KeyRepeatState = .{},
 
@@ -55,9 +55,9 @@ pub fn For(comptime T: type) type {
             handle_size: f32,
 
             pub const Config = struct {
+                value: *T,
                 min: T = 0.0,
                 max: T = 1.0,
-                default: T = 0.5,
                 track_color: Ui.Color = Ui.Color.init(200, 200, 200, 255),
                 handle_color: Ui.Color = Ui.Color.init(100, 100, 100, 255),
                 handle_size: f32 = 16.0,
@@ -67,11 +67,13 @@ pub fn For(comptime T: type) type {
                 const self = try ui.gpa.create(Self);
                 errdefer ui.gpa.destroy(self);
 
+                config.value.* = std.math.clamp(config.value.*, config.min, config.max);
+
                 self.* = Self{
                     .id = id,
                     .min = config.min,
                     .max = config.max,
-                    .current_value = std.math.clamp(config.default, config.min, config.max),
+                    .value = config.value,
                     .track_color = config.track_color,
                     .handle_color = config.handle_color,
                     .handle_size = config.handle_size,
@@ -85,103 +87,30 @@ pub fn For(comptime T: type) type {
                 ui.gpa.destroy(self);
             }
 
-            pub fn bindEvents(self: *Self, ui: *Ui) !void {
-                try ui.addListener(self.id, .mouse_down, Self, onMouseDown, self);
-                try ui.addListener(self.id, .drag, Self, onDrag, self);
-                try ui.addListener(self.id, .key_down, Self, onKeyDown, self);
-                try ui.addListener(self.id, .key, Self, onKey, self);
-                try ui.addListener(self.id, .key_up, Self, onKeyUp, self);
-            }
-
-            pub fn unbindEvents(self: *Self, ui: *Ui) void {
-                ui.removeListener(self.id, .mouse_down, Self, onMouseDown);
-                ui.removeListener(self.id, .drag, Self, onDrag);
-                ui.removeListener(self.id, .key_down, Self, onKeyDown);
-                ui.removeListener(self.id, .key, Self, onKey);
-                ui.removeListener(self.id, .key_up, Self, onKeyUp);
-            }
-
-            pub fn onGet(self: *Self, _: *Ui) *const T {
-                return &self.current_value;
-            }
-
-            pub fn onSet(self: *Self, _: *Ui, new_value: *const T) !void {
-                self.current_value = std.math.clamp(new_value.*, self.min, self.max);
-            }
-
-            pub fn onMouseDown(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
-                try self.updateValueFromMouse(ui, info, mouse_down_data.mouse_position);
-            }
-
-            pub fn onDrag(self: *Self, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
-                try self.updateValueFromMouse(ui, info, drag_data.mouse_position);
-            }
-
-            pub fn onKeyDown(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
-                const key = key_data.key;
-                if (key != .left and key != .down and key != .right and key != .up) return;
-
-                self.key_repeat.state = .none;
-                self.key_repeat.active_key = key;
-
-                try self.performKeyAction(ui, key);
-
-                self.key_repeat.advance();
-                self.key_repeat.timer.?.reset();
-            }
-
-            pub fn onKey(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key)) !void {
-                const key = key_data.key;
-                if (self.key_repeat.active_key != key) return;
-
-                const delay = switch (self.key_repeat.state) {
-                    .none => return,
-                    .first => self.key_repeat.initial_delay,
-                    .nth => self.key_repeat.nth_delay,
-                };
-
-                if (self.key_repeat.timer.?.read() < delay) return;
-
-                try self.performKeyAction(ui, key);
-                self.key_repeat.advance();
-                self.key_repeat.timer.?.reset();
-            }
-
-            pub fn onKeyUp(self: *Self, _: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_up)) !void {
-                if (self.key_repeat.active_key == key_data.key) {
-                    self.key_repeat.state = .none;
-                    self.key_repeat.active_key = null;
-                }
-            }
-
-            fn performKeyAction(self: *Self, ui: *Ui, key: BindingState.Key) !void {
+            fn performKeyAction(self: *Self, key: BindingState.Key) !bool {
                 const step = (self.max - self.min) * 0.01;
-                var new_value = self.current_value;
+                var new_value = self.value.*;
 
                 switch (key) {
                     .left, .down => new_value -= step,
                     .right, .up => new_value += step,
-                    else => return,
+                    else => return false,
                 }
 
                 new_value = std.math.clamp(new_value, self.min, self.max);
 
-                if (new_value != self.current_value) {
-                    self.current_value = new_value;
-                    try ui.pushEvent(self.id, .{ .float_change = self.current_value }, self);
-                }
+                defer self.value.* = new_value;
+                return self.value.* != new_value;
             }
 
-            fn updateValueFromMouse(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_pos: vec2) !void {
+            fn updateValueFromMouse(self: *Self, info: Ui.Event.Info, mouse_pos: vec2) !bool {
                 const bb = info.bounding_box;
                 const relative_x = mouse_pos[0] - bb.x;
                 const proportion = std.math.clamp(relative_x / bb.width, 0.0, 1.0);
                 const new_value = self.min + proportion * (self.max - self.min);
 
-                if (new_value != self.current_value) {
-                    self.current_value = new_value;
-                    try ui.pushEvent(self.id, .{ .float_change = self.current_value }, self);
-                }
+                defer self.value.* = new_value;
+                return self.value.* != new_value;
             }
 
             pub fn render(self: *Self, ui: *Ui, command: Ui.RenderCommand) !void {
@@ -191,7 +120,7 @@ pub fn For(comptime T: type) type {
                 const track_y = bb.y + (bb.height - track_height) / 2.0;
                 try ui.renderer.drawRoundedRect(.{ bb.x, track_y }, .{ bb.width, track_height }, .all(track_height / 2.0), self.track_color);
 
-                const value_proportion: f32 = @floatCast((self.current_value - self.min) / (self.max - self.min));
+                const value_proportion: f32 = @floatCast((self.value.* - self.min) / (self.max - self.min));
                 const handle_x = bb.x + (value_proportion * (bb.width - self.handle_size));
                 const handle_y = bb.y + (bb.height - self.handle_size) / 2.0;
 
@@ -206,7 +135,7 @@ pub fn For(comptime T: type) type {
                 id: Ui.ElementId,
                 min: T,
                 max: T,
-                current_value: T,
+                value: *T,
 
                 key_repeat: KeyRepeatState = .{},
 
@@ -216,9 +145,9 @@ pub fn For(comptime T: type) type {
                 handle_size: f32,
 
                 pub const Config = struct {
+                    value: *T,
                     min: T = -50,
                     max: T = 50,
-                    default: T = 0,
                     track_color: Ui.Color = Ui.Color.init(200, 200, 200, 255),
                     handle_color: Ui.Color = Ui.Color.init(100, 100, 100, 255),
                     handle_size: f32 = 16.0,
@@ -228,11 +157,13 @@ pub fn For(comptime T: type) type {
                     const self = try ui.gpa.create(Self);
                     errdefer ui.gpa.destroy(self);
 
+                    config.value.* = std.math.clamp(config.value.*, config.min, config.max);
+
                     self.* = Self{
                         .id = id,
                         .min = config.min,
                         .max = config.max,
-                        .current_value = std.math.clamp(config.default, config.min, config.max),
+                        .value = config.value,
                         .track_color = config.track_color,
                         .handle_color = config.handle_color,
                         .handle_size = config.handle_size,
@@ -246,94 +177,23 @@ pub fn For(comptime T: type) type {
                     ui.gpa.destroy(self);
                 }
 
-                pub fn bindEvents(self: *Self, ui: *Ui) !void {
-                    try ui.addListener(self.id, .mouse_down, Self, onMouseDown, self);
-                    try ui.addListener(self.id, .drag, Self, onDrag, self);
-                    try ui.addListener(self.id, .key_down, Self, onKeyDown, self);
-                    try ui.addListener(self.id, .key, Self, onKey, self);
-                    try ui.addListener(self.id, .key_up, Self, onKeyUp, self);
-                }
-
-                pub fn unbindEvents(self: *Self, ui: *Ui) void {
-                    ui.removeListener(self.id, .mouse_down, Self, onMouseDown);
-                    ui.removeListener(self.id, .drag, Self, onDrag);
-                    ui.removeListener(self.id, .key_down, Self, onKeyDown);
-                    ui.removeListener(self.id, .key, Self, onKey);
-                    ui.removeListener(self.id, .key_up, Self, onKeyUp);
-                }
-
-                pub fn onGet(self: *Self, _: *Ui) *const T {
-                    return &self.current_value;
-                }
-
-                pub fn onSet(self: *Self, _: *Ui, new_value: *const T) !void {
-                    self.current_value = std.math.clamp(new_value.*, self.min, self.max);
-                }
-
-                pub fn onMouseDown(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
-                    try self.updateValueFromMouse(ui, info, mouse_down_data.mouse_position);
-                }
-
-                pub fn onDrag(self: *Self, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
-                    try self.updateValueFromMouse(ui, info, drag_data.mouse_position);
-                }
-
-                pub fn onKeyDown(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
-                    const key = key_data.key;
-                    if (key != .left and key != .down and key != .right and key != .up) return;
-
-                    self.key_repeat.state = .none;
-                    self.key_repeat.active_key = key;
-
-                    try self.performKeyAction(ui, key);
-
-                    self.key_repeat.advance();
-                    self.key_repeat.timer.?.reset();
-                }
-
-                pub fn onKey(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key)) !void {
-                    const key = key_data.key;
-                    if (self.key_repeat.active_key != key) return;
-
-                    const delay = switch (self.key_repeat.state) {
-                        .none => return,
-                        .first => self.key_repeat.initial_delay,
-                        .nth => self.key_repeat.nth_delay,
-                    };
-
-                    if (self.key_repeat.timer.?.read() < delay) return;
-
-                    try self.performKeyAction(ui, key);
-                    self.key_repeat.advance();
-                    self.key_repeat.timer.?.reset();
-                }
-
-                pub fn onKeyUp(self: *Self, _: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_up)) !void {
-                    if (self.key_repeat.active_key == key_data.key) {
-                        self.key_repeat.state = .none;
-                        self.key_repeat.active_key = null;
-                    }
-                }
-
-                fn performKeyAction(self: *Self, ui: *Ui, key: BindingState.Key) !void {
+                fn performKeyAction(self: *Self, key: BindingState.Key) !bool {
                     const step: T = 1;
-                    var new_value = self.current_value;
+                    var new_value = self.value.*;
 
                     switch (key) {
                         .left, .down => new_value -= step,
                         .right, .up => new_value += step,
-                        else => return,
+                        else => return false,
                     }
 
                     new_value = std.math.clamp(new_value, self.min, self.max);
 
-                    if (new_value != self.current_value) {
-                        self.current_value = new_value;
-                        try ui.pushEvent(self.id, .{ .int_change = self.current_value }, self);
-                    }
+                    defer self.value.* = new_value;
+                    return self.value.* != new_value;
                 }
 
-                fn updateValueFromMouse(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_pos: vec2) !void {
+                fn updateValueFromMouse(self: *Self, info: Ui.Event.Info, mouse_pos: vec2) !bool {
                     const bb = info.bounding_box;
                     const relative_x = mouse_pos[0] - bb.x;
                     const proportion = std.math.clamp(relative_x / bb.width, 0.0, 1.0);
@@ -342,10 +202,8 @@ pub fn For(comptime T: type) type {
                     const float_offset = std.math.round(proportion * range);
                     const new_value = self.min + @as(T, @intFromFloat(float_offset));
 
-                    if (new_value != self.current_value) {
-                        self.current_value = new_value;
-                        try ui.pushEvent(self.id, .{ .int_change = self.current_value }, self);
-                    }
+                    defer self.value.* = new_value;
+                    return self.value.* != new_value;
                 }
 
                 pub fn render(self: *Self, ui: *Ui, command: Ui.RenderCommand) !void {
@@ -358,7 +216,7 @@ pub fn For(comptime T: type) type {
                     const value_proportion = if (self.max - self.min == 0)
                         0.0
                     else
-                        @as(f32, @floatFromInt(self.current_value - self.min)) / @as(f32, @floatFromInt(self.max - self.min));
+                        @as(f32, @floatFromInt(self.value.* - self.min)) / @as(f32, @floatFromInt(self.max - self.min));
 
                     const handle_x = bb.x + (value_proportion * (bb.width - self.handle_size));
                     const handle_y = bb.y + (bb.height - self.handle_size) / 2.0;
@@ -372,7 +230,7 @@ pub fn For(comptime T: type) type {
                 id: Ui.ElementId,
                 min: T,
                 max: T,
-                current_value: T,
+                value: *T,
 
                 key_repeat: KeyRepeatState = .{},
 
@@ -382,9 +240,9 @@ pub fn For(comptime T: type) type {
                 handle_size: f32,
 
                 pub const Config = struct {
+                    value: *T,
                     min: T = 0,
                     max: T = 100,
-                    default: T = 50,
                     track_color: Ui.Color = Ui.Color.init(200, 200, 200, 255),
                     handle_color: Ui.Color = Ui.Color.init(100, 100, 100, 255),
                     handle_size: f32 = 16.0,
@@ -394,11 +252,13 @@ pub fn For(comptime T: type) type {
                     const self = try ui.gpa.create(Self);
                     errdefer ui.gpa.destroy(self);
 
+                    config.value.* = std.math.clamp(config.value.*, config.min, config.max);
+
                     self.* = Self{
                         .id = id,
                         .min = config.min,
                         .max = config.max,
-                        .current_value = std.math.clamp(config.default, config.min, config.max),
+                        .value = config.value,
                         .track_color = config.track_color,
                         .handle_color = config.handle_color,
                         .handle_size = config.handle_size,
@@ -412,78 +272,9 @@ pub fn For(comptime T: type) type {
                     ui.gpa.destroy(self);
                 }
 
-                pub fn bindEvents(self: *Self, ui: *Ui) !void {
-                    try ui.addListener(self.id, .mouse_down, Self, onMouseDown, self);
-                    try ui.addListener(self.id, .drag, Self, onDrag, self);
-                    try ui.addListener(self.id, .key_down, Self, onKeyDown, self);
-                    try ui.addListener(self.id, .key, Self, onKey, self);
-                    try ui.addListener(self.id, .key_up, Self, onKeyUp, self);
-                }
-
-                pub fn unbindEvents(self: *Self, ui: *Ui) void {
-                    ui.removeListener(self.id, .mouse_down, Self, onMouseDown);
-                    ui.removeListener(self.id, .drag, Self, onDrag);
-                    ui.removeListener(self.id, .key_down, Self, onKeyDown);
-                    ui.removeListener(self.id, .key, Self, onKey);
-                    ui.removeListener(self.id, .key_up, Self, onKeyUp);
-                }
-
-                pub fn onGet(self: *Self, _: *Ui) *const T {
-                    return &self.current_value;
-                }
-
-                pub fn onSet(self: *Self, _: *Ui, new_value: *const T) !void {
-                    self.current_value = std.math.clamp(new_value.*, self.min, self.max);
-                }
-
-                pub fn onMouseDown(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_down_data: Ui.Event.Payload(.mouse_down)) !void {
-                    try self.updateValueFromMouse(ui, info, mouse_down_data.mouse_position);
-                }
-
-                pub fn onDrag(self: *Self, ui: *Ui, info: Ui.Event.Info, drag_data: Ui.Event.Payload(.drag)) !void {
-                    try self.updateValueFromMouse(ui, info, drag_data.mouse_position);
-                }
-
-                pub fn onKeyDown(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
-                    const key = key_data.key;
-                    if (key != .left and key != .down and key != .right and key != .up) return;
-
-                    self.key_repeat.state = .none;
-                    self.key_repeat.active_key = key;
-
-                    try self.performKeyAction(ui, key);
-
-                    self.key_repeat.advance();
-                    self.key_repeat.timer.?.reset();
-                }
-
-                pub fn onKey(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key)) !void {
-                    const key = key_data.key;
-                    if (self.key_repeat.active_key != key) return;
-
-                    const delay = switch (self.key_repeat.state) {
-                        .none => return,
-                        .first => self.key_repeat.initial_delay,
-                        .nth => self.key_repeat.nth_delay,
-                    };
-
-                    if (self.key_repeat.timer.?.read() < delay) return;
-
-                    try self.performKeyAction(ui, key);
-                    self.key_repeat.advance();
-                    self.key_repeat.timer.?.reset();
-                }
-
-                pub fn onKeyUp(self: *Self, _: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_up)) !void {
-                    if (self.key_repeat.active_key == key_data.key) {
-                        self.key_repeat.state = .none;
-                        self.key_repeat.active_key = null;
-                    }
-                }
-
-                fn performKeyAction(self: *Self, ui: *Ui, key: BindingState.Key) !void {
+                fn performKeyAction(self: *Self, key: BindingState.Key) !bool {
                     const step: T = 1;
-                    var new_value = self.current_value;
+                    var new_value = self.value.*;
 
                     switch (key) {
                         .left, .down => {
@@ -500,18 +291,16 @@ pub fn For(comptime T: type) type {
                                 new_value = self.max;
                             }
                         },
-                        else => return,
+                        else => return false,
                     }
 
                     new_value = std.math.clamp(new_value, self.min, self.max);
 
-                    if (new_value != self.current_value) {
-                        self.current_value = new_value;
-                        try ui.pushEvent(self.id, .{ .uint_change = self.current_value }, self);
-                    }
+                    defer self.value.* = new_value;
+                    return self.value.* != new_value;
                 }
 
-                fn updateValueFromMouse(self: *Self, ui: *Ui, info: Ui.Event.Info, mouse_pos: vec2) !void {
+                fn updateValueFromMouse(self: *Self, info: Ui.Event.Info, mouse_pos: vec2) !bool {
                     const bb = info.bounding_box;
                     const relative_x = mouse_pos[0] - bb.x;
                     const proportion = std.math.clamp(relative_x / bb.width, 0.0, 1.0);
@@ -520,10 +309,8 @@ pub fn For(comptime T: type) type {
                     const float_offset = std.math.round(proportion * range);
                     const new_value = self.min + @as(T, @intFromFloat(float_offset));
 
-                    if (new_value != self.current_value) {
-                        self.current_value = new_value;
-                        try ui.pushEvent(self.id, .{ .uint_change = self.current_value }, self);
-                    }
+                    defer self.value.* = new_value;
+                    return self.value.* != new_value;
                 }
 
                 pub fn render(self: *Self, ui: *Ui, command: Ui.RenderCommand) !void {
@@ -536,7 +323,7 @@ pub fn For(comptime T: type) type {
                     const value_proportion = if (self.max - self.min == 0)
                         0.0
                     else
-                        @as(f32, @floatFromInt(self.current_value - self.min)) / @as(f32, @floatFromInt(self.max - self.min));
+                        @as(f32, @floatFromInt(self.value.* - self.min)) / @as(f32, @floatFromInt(self.max - self.min));
 
                     const handle_x = bb.x + (value_proportion * (bb.width - self.handle_size));
                     const handle_y = bb.y + (bb.height - self.handle_size) / 2.0;
@@ -545,6 +332,87 @@ pub fn For(comptime T: type) type {
                 }
             },
         },
-        else => @compileError("Type " ++ @typeName(T) ++ " not supported in SliderWidget"),
+        else => @compileError("Type " ++ @typeName(T) ++ " not supported in Slider Widget"),
     };
+}
+
+/// Configure an open element as a slider widget; works with floats and integers of all signs and sizes up to 64 bits.
+pub fn slider(ui: *Ui, comptime T: type, config: Slider.For(T).Config) !bool {
+    const S = Slider.For(T);
+
+    const id = ui.open_ids.items[ui.open_ids.items.len - 1];
+    const gop = try ui.widget_states.getOrPut(ui.gpa, id.id);
+    const self = if (!gop.found_existing) create_new: {
+        const ptr = try S.init(ui, id, config);
+        gop.value_ptr.* = Ui.Widget{
+            .user_data = ptr,
+            .render = @ptrCast(&S.render),
+            .deinit = @ptrCast(&S.deinit),
+            .seen_this_frame = true,
+        };
+
+        break :create_new ptr;
+    } else reuse_existing: {
+        gop.value_ptr.seen_this_frame = true;
+
+        const ptr: *S = @ptrCast(@alignCast(gop.value_ptr.user_data));
+
+        // Update config properties in case they change frame-to-frame.
+        ptr.value.* = std.math.clamp(ptr.value.*, config.min, config.max);
+        ptr.min = config.min;
+        ptr.max = config.max;
+        ptr.track_color = config.track_color;
+        ptr.handle_color = config.handle_color;
+        ptr.handle_size = config.handle_size;
+
+        break :reuse_existing ptr;
+    };
+
+    var changed = false;
+    if (ui.getEvent(id, .mouse_down)) |event| {
+        changed = changed or try self.updateValueFromMouse(event.info, event.data.mouse_down.mouse_position);
+    }
+
+    if (ui.getEvent(id, .drag)) |event| {
+        changed = changed or try self.updateValueFromMouse(event.info, event.data.drag.mouse_position);
+    }
+
+    if (ui.getEvent(id, .key_down)) |event| key_down: {
+        const key = event.data.key_down.key;
+        if (key != .left and key != .down and key != .right and key != .up) break :key_down;
+
+        self.key_repeat.state = .none;
+        self.key_repeat.active_key = key;
+
+        changed = changed or try self.performKeyAction(key);
+
+        self.key_repeat.advance();
+        self.key_repeat.timer.?.reset();
+    }
+
+    if (ui.getEvent(id, .key)) |event| key: {
+        const key = event.data.key;
+        if (self.key_repeat.active_key != key.key) break :key;
+
+        const delay = switch (self.key_repeat.state) {
+            .none => break :key,
+            .first => self.key_repeat.initial_delay,
+            .nth => self.key_repeat.nth_delay,
+        };
+
+        if (self.key_repeat.timer.?.read() < delay) break :key;
+
+        changed = changed or try self.performKeyAction(key.key);
+        self.key_repeat.advance();
+        self.key_repeat.timer.?.reset();
+    }
+
+    if (ui.getEvent(id, .key_up)) |event| {
+        if (self.key_repeat.active_key == event.data.key.key) {
+            self.key_repeat.state = .none;
+            self.key_repeat.active_key = null;
+        }
+    }
+
+    return changed;
 }

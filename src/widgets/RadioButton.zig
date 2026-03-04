@@ -153,3 +153,44 @@ pub fn For(comptime T: type) type {
         }
     };
 }
+
+// /// Configure an open element as a radio button widget for enum values.
+// /// All radio buttons sharing the same `group_id` in the config will be linked.
+// pub fn bindRadioButton(self: *Ui, comptime T: type, config: Widget.RadioButton.For(T).Config) !void {
+//     const RadioButton = Widget.RadioButton.For(T);
+
+//     std.debug.assert(clay.getCurrentContext() == self.clay_context);
+//     std.debug.assert(self.open_ids.items.len > 0);
+
+//     const id = self.open_ids.items[self.open_ids.items.len - 1];
+//     const gop = try self.widget_states.getOrPut(self.gpa, id.id);
+//     if (!gop.found_existing) {
+//         const ptr = try RadioButton.init(self, id, config);
+//         gop.value_ptr.* = Widget{
+//             .user_data = ptr,
+//             .get = @ptrCast(&RadioButton.onGet),
+//             .set = @ptrCast(&RadioButton.onSet),
+//             .state_type = @typeName(T),
+//             .render = @ptrCast(&RadioButton.render),
+//             .deinit = @ptrCast(&RadioButton.deinit),
+//             .seen_this_frame = true,
+//         };
+
+//         try ptr.bindEvents(self);
+//     } else {
+//         gop.value_ptr.seen_this_frame = true;
+
+//         const ptr: *RadioButton = @ptrCast(@alignCast(gop.value_ptr.user_data));
+
+//         // Update config properties in case they change frame-to-frame.
+//         ptr.circle_color = config.circle_color;
+//         ptr.dot_color = config.dot_color;
+//         ptr.size = config.size;
+//     }
+
+//     // We must "see" the shared state during the layout phase to prevent it
+//     // from being garbage collected by endLayout(). We don't need to do anything
+//     // with the returned pointer here; just calling the function is enough.
+//     const default_value = comptime @field(T, std.meta.fieldNames(T)[0]);
+//     _ = try self.getOrPutSharedWidgetState(T, config.group_id, default_value);
+// }

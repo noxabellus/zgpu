@@ -24,21 +24,23 @@ const FrameElementInfo = struct {
     parent_id: ?ElementId,
 };
 
+pub const widgets = struct {
+    pub const checkbox = Widget.Checkbox.checkbox;
+    pub const slider = Widget.Slider.slider;
+    pub const shaderRect = Widget.ShaderRect.shaderRect;
+};
+
 pub const Widget = struct {
     user_data: *anyopaque,
     render: *const fn (*anyopaque, *Ui, RenderCommand) anyerror!void,
-    unbind: *const fn (*anyopaque, *Ui) void,
     deinit: *const fn (*anyopaque, *Ui) void,
-    get: *const fn (*anyopaque, *Ui) *const anyopaque,
-    set: *const fn (*anyopaque, *Ui, *const anyopaque) void,
-    state_type: *const anyopaque,
     seen_this_frame: bool,
 
     pub const Checkbox = @import("widgets/Checkbox.zig");
     pub const Slider = @import("widgets/Slider.zig");
-    pub const TextInput = @import("widgets/TextInput.zig");
-    pub const RadioButton = @import("widgets/RadioButton.zig");
-    pub const Dropdown = @import("widgets/Dropdown.zig");
+    // pub const TextInput = @import("widgets/TextInput.zig");
+    // pub const RadioButton = @import("widgets/RadioButton.zig");
+    // pub const Dropdown = @import("widgets/Dropdown.zig");
     pub const ShaderRect = @import("widgets/ShaderRect.zig");
 
     test {
@@ -82,8 +84,6 @@ clay_memory: []const u8,
 render_commands: ?[]clay.RenderCommand = null,
 events: std.ArrayList(Event) = .empty,
 
-event_dispatch: EventDispatch = .empty,
-
 user_data: ?*anyopaque = null,
 
 open_layout: bool = false,
@@ -104,13 +104,6 @@ last_scroll_states: std.AutoHashMapUnmanaged(u32, ScrollState) = .empty,
 
 // States for rich-interaction widgets
 widget_states: std.AutoHashMapUnmanaged(u32, Widget) = .empty,
-
-// Deferred state changes for widgets
-deferred_widget_states_current: std.AutoHashMapUnmanaged(u32, *anyopaque) = .empty,
-deferred_widget_arena_current: std.heap.ArenaAllocator,
-
-deferred_widget_states_last: std.AutoHashMapUnmanaged(u32, *anyopaque) = .empty,
-deferred_widget_arena_last: std.heap.ArenaAllocator,
 
 // events from widgets triggered this frame, to be dispatched on the next frame
 widget_events: std.ArrayList(Event) = .empty,
@@ -205,8 +198,6 @@ pub fn init(gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *B
         .bindings = bindings,
         .clay_context = clay_context,
         .clay_memory = clay_memory,
-        .deferred_widget_arena_current = std.heap.ArenaAllocator.init(gpa),
-        .deferred_widget_arena_last = std.heap.ArenaAllocator.init(gpa),
     };
 
     self.click_state.timer = try .start();
@@ -239,7 +230,6 @@ pub fn deinit(self: *Ui) void {
     self.navigable_elements.deinit(self.gpa);
     self.reverse_navigable_elements.deinit(self.gpa);
     self.open_ids.deinit(self.gpa);
-    self.event_dispatch.deinit(self.gpa);
     self.current_scroll_states.deinit(self.gpa);
     self.last_scroll_states.deinit(self.gpa);
     self.focus_scope_stack.deinit(self.gpa);
@@ -248,10 +238,6 @@ pub fn deinit(self: *Ui) void {
     self.menu_item_to_submenu_map.deinit(self.gpa);
 
     self.widget_states.deinit(self.gpa);
-    self.deferred_widget_states_current.deinit(self.gpa);
-    self.deferred_widget_arena_current.deinit();
-    self.deferred_widget_states_last.deinit(self.gpa);
-    self.deferred_widget_arena_last.deinit();
     self.widget_events.deinit(self.gpa);
 
     self.gpa.free(self.clay_memory);
@@ -269,10 +255,6 @@ pub fn wantsMouse(self: *Ui, root_element_style: enum(u1) { containerized = 0, f
 /// Note: it is acceptable to run the layout code multiple times per frame, but all state will be discarded when calling this function.
 pub fn beginLayout(self: *Ui, allow_mouse: bool, dimensions: vec2, delta_ms: f32) !void {
     self.render_commands = null;
-
-    self.events.clearRetainingCapacity();
-    try self.events.appendSlice(self.gpa, self.widget_events.items);
-    self.widget_events.clearRetainingCapacity();
 
     self.hovered_element_stack.clearRetainingCapacity();
     self.navigable_elements.clearRetainingCapacity();
@@ -343,22 +325,9 @@ pub fn endLayout(self: *Ui) !void {
 
     for (state_to_remove.items) |key| {
         if (self.widget_states.fetchRemove(key)) |removed_entry| {
-            removed_entry.value.unbind(removed_entry.value.user_data, self);
             removed_entry.value.deinit(removed_entry.value.user_data, self);
         }
     }
-
-    const old_states = self.deferred_widget_states_last;
-    const old_arena = self.deferred_widget_arena_last;
-
-    self.deferred_widget_states_last = self.deferred_widget_states_current;
-    self.deferred_widget_arena_last = self.deferred_widget_arena_current;
-
-    self.deferred_widget_states_current = old_states;
-    self.deferred_widget_arena_current = old_arena;
-
-    self.deferred_widget_states_current.clearRetainingCapacity();
-    _ = self.deferred_widget_arena_current.reset(.retain_capacity);
 
     var shared_to_remove = std.ArrayList(u32).empty;
 
@@ -381,46 +350,13 @@ pub fn endLayout(self: *Ui) !void {
     try self.generateEvents();
 }
 
-/// Iterates through the generated events and calls any registered listeners.
-pub fn dispatchEvents(self: *Ui) !void {
-    std.debug.assert(!self.open_layout);
-
-    clay.setCurrentContext(self.clay_context);
-    defer clay.setCurrentContext(null);
-
-    for (self.events.items) |event| {
-        const event_tag: Event.Tag = event.data;
-        const key = EventDispatch.Key{ .element_id = event.info.element_id.id, .event_tag = event_tag };
-        log.debug("Attempting to dispatch event {s} for element {any}", .{ @tagName(event_tag), event.info.element_id });
-
-        if (self.event_dispatch.listeners.get(key)) |listener_list| {
-            log.debug("Got {d} listeners", .{listener_list.items.len});
-            // This inline for loop will generate a compile-time branch for each possible event type,
-            // ensuring that the payload is correctly typed when calling the listener function.
-            inline for (comptime std.meta.fieldNames(Event.Tag)) |field_name| inline_loop: {
-                const comptime_tag = comptime @field(Event.Tag, field_name);
-                if (event_tag == comptime_tag) {
-                    const payload = @field(event.data, field_name);
-
-                    for (listener_list.items) |*listener| {
-                        const typed_fn = @as(*const EventDispatch.Handler(anyopaque, comptime_tag), @ptrCast(@alignCast(listener.func)));
-                        log.debug("dispatching event {s} to element {any}", .{ @tagName(comptime_tag), event.info.element_id });
-                        try typed_fn(
-                            listener.user_data,
-                            self,
-                            event.info,
-                            payload,
-                        );
-                        log.debug("dispatched successfully", .{});
-                    }
-
-                    break :inline_loop;
-                }
-            }
-        } else {
-            log.debug("No listeners for this event on this element", .{});
+pub fn getEvent(self: *Ui, element_id: ElementId, event_tag: Event.Tag) ?Event {
+    for (self.events.items) |event| { // TODO: change to hashmap
+        if (event.data == event_tag and event.info.element_id.id == element_id.id) {
+            return event;
         }
     }
+    return null;
 }
 
 /// After calling `Ui.beginLayout` and `Ui.endLayout`, this function issues the generated draw calls to Batch2D to render the UI.
@@ -439,55 +375,6 @@ pub fn setDebugMode(self: *Ui, enabled: bool) void {
     defer clay.setCurrentContext(null);
 
     clay.setDebugModeEnabled(enabled);
-}
-
-/// Registers a function to be called when a specific event occurs on a given element.
-pub fn addListener(
-    self: *Ui,
-    element_id: ElementId,
-    comptime event_tag: Event.Tag,
-    comptime T: type,
-    listener_fn: *const EventDispatch.Handler(T, event_tag),
-    user_data: *T,
-) !void {
-    const key = EventDispatch.Key{ .element_id = element_id.id, .event_tag = event_tag };
-
-    var gop = try self.event_dispatch.listeners.getOrPut(self.gpa, key);
-    if (!gop.found_existing) {
-        // Initialize the ArrayList if this is a new key.
-        gop.value_ptr.* = .empty;
-    }
-
-    try gop.value_ptr.append(self.gpa, .{
-        .func = listener_fn,
-        .user_data = user_data,
-    });
-}
-
-/// Removes the registered listener that uses the given function pointer for a specific event on a given element.
-pub fn removeListener(
-    self: *Ui,
-    element_id: ElementId,
-    comptime event_tag: Event.Tag,
-    comptime T: type,
-    listener_fn: *const EventDispatch.Handler(T, event_tag),
-) void {
-    const key = EventDispatch.Key{ .element_id = element_id.id, .event_tag = event_tag };
-    if (self.event_dispatch.listeners.getPtr(key)) |listener_list| {
-        var i = listener_list.items.len;
-        while (i > 0) {
-            i -= 1;
-            if (listener_list.items[i].func == @as(*const anyopaque, @ptrCast(listener_fn))) {
-                _ = listener_list.orderedRemove(i);
-            }
-        }
-        // If the list is now empty, we can remove the key from the hash map to save memory.
-        if (listener_list.items.len == 0) {
-            listener_list.deinit(self.gpa);
-            const success = self.event_dispatch.listeners.remove(key);
-            std.debug.assert(success);
-        }
-    }
 }
 
 // --- Element Interface ---
@@ -639,264 +526,6 @@ pub fn pushFocusScope(self: *Ui, id: ElementId) !void {
 /// Pops the top element ID from the focus scope stack.
 pub fn popFocusScope(self: *Ui) void {
     _ = self.focus_scope_stack.pop();
-}
-
-// Widget api //
-
-/// Configure an open element as a checkbox widget for boolean values.
-pub fn bindCheckbox(self: *Ui, config: Widget.Checkbox.Config) !void {
-    std.debug.assert(clay.getCurrentContext() == self.clay_context);
-    std.debug.assert(self.open_ids.items.len > 0);
-
-    const id = self.open_ids.items[self.open_ids.items.len - 1];
-    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-    const widget = if (!gop.found_existing) create_new: {
-        const ptr = try Widget.Checkbox.init(self, id, config);
-        gop.value_ptr.* = Widget{
-            .user_data = ptr,
-            .get = @ptrCast(&Widget.Checkbox.onGet),
-            .set = @ptrCast(&Widget.Checkbox.onSet),
-            .state_type = @typeName(bool),
-            .render = @ptrCast(&Widget.Checkbox.render),
-            .unbind = @ptrCast(&Widget.Checkbox.unbindEvents),
-            .deinit = @ptrCast(&Widget.Checkbox.deinit),
-            .seen_this_frame = true,
-        };
-
-        try ptr.bindEvents(self);
-
-        break :create_new ptr;
-    } else reuse_existing: {
-        gop.value_ptr.seen_this_frame = true;
-
-        const ptr: *Widget.Checkbox = @ptrCast(@alignCast(gop.value_ptr.user_data));
-        // Update config properties in case they change frame-to-frame.
-        ptr.box_color = config.box_color;
-        ptr.check_color = config.check_color;
-        ptr.size = config.size;
-
-        break :reuse_existing ptr;
-    };
-
-    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
-        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
-    }
-}
-
-/// Configure an open element as a dropdown selection widget for enum values.
-pub fn bindDropdown(self: *Ui, comptime T: type, config: Widget.Dropdown.For(T).Config) !void {
-    const Dropdown = Widget.Dropdown.For(T);
-
-    std.debug.assert(clay.getCurrentContext() == self.clay_context);
-    std.debug.assert(self.open_ids.items.len > 0);
-
-    const id = self.open_ids.items[self.open_ids.items.len - 1];
-    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-    const widget = if (!gop.found_existing) create_new: {
-        const ptr = try Dropdown.init(self, id, config);
-        gop.value_ptr.* = Widget{
-            .user_data = ptr,
-            .get = @ptrCast(&Dropdown.onGet),
-            .set = @ptrCast(&Dropdown.onSet),
-            .state_type = @typeName(T),
-            .render = @ptrCast(&Dropdown.render),
-            .unbind = @ptrCast(&Dropdown.unbindEvents),
-            .deinit = @ptrCast(&Dropdown.deinit),
-            .seen_this_frame = true,
-        };
-
-        try ptr.bindEvents(self);
-
-        break :create_new ptr;
-    } else reuse_existing: {
-        gop.value_ptr.seen_this_frame = true;
-
-        const ptr: *Dropdown = @ptrCast(@alignCast(gop.value_ptr.user_data));
-
-        // Update config properties in case they change frame-to-frame.
-        ptr.box_color = config.box_color;
-        ptr.box_color_hover = config.box_color_hover;
-        ptr.text_color = config.text_color;
-        ptr.font_id = config.font_id;
-        ptr.font_size = config.font_size;
-        ptr.panel_color = config.panel_color;
-        ptr.option_color_hover = config.option_color_hover;
-
-        break :reuse_existing ptr;
-    };
-
-    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
-        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
-    }
-
-    // Crucially, the widget declares its own elements, including the floating panel if open.
-    try widget.declare(self);
-}
-
-/// Configure an open element as a radio button widget for enum values.
-/// All radio buttons sharing the same `group_id` in the config will be linked.
-pub fn bindRadioButton(self: *Ui, comptime T: type, config: Widget.RadioButton.For(T).Config) !void {
-    const RadioButton = Widget.RadioButton.For(T);
-
-    std.debug.assert(clay.getCurrentContext() == self.clay_context);
-    std.debug.assert(self.open_ids.items.len > 0);
-
-    const id = self.open_ids.items[self.open_ids.items.len - 1];
-    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-    if (!gop.found_existing) {
-        const ptr = try RadioButton.init(self, id, config);
-        gop.value_ptr.* = Widget{
-            .user_data = ptr,
-            .get = @ptrCast(&RadioButton.onGet),
-            .set = @ptrCast(&RadioButton.onSet),
-            .state_type = @typeName(T),
-            .render = @ptrCast(&RadioButton.render),
-            .unbind = @ptrCast(&RadioButton.unbindEvents),
-            .deinit = @ptrCast(&RadioButton.deinit),
-            .seen_this_frame = true,
-        };
-
-        try ptr.bindEvents(self);
-    } else {
-        gop.value_ptr.seen_this_frame = true;
-
-        const ptr: *RadioButton = @ptrCast(@alignCast(gop.value_ptr.user_data));
-
-        // Update config properties in case they change frame-to-frame.
-        ptr.circle_color = config.circle_color;
-        ptr.dot_color = config.dot_color;
-        ptr.size = config.size;
-    }
-
-    // We must "see" the shared state during the layout phase to prevent it
-    // from being garbage collected by endLayout(). We don't need to do anything
-    // with the returned pointer here; just calling the function is enough.
-    const default_value = comptime @field(T, std.meta.fieldNames(T)[0]);
-    _ = try self.getOrPutSharedWidgetState(T, config.group_id, default_value);
-}
-
-/// Configure an open element as a slider widget; works with floats and integers of all signs and sizes up to 64 bits.
-pub fn bindSlider(self: *Ui, comptime T: type, config: Widget.Slider.For(T).Config) !void {
-    const Slider = Widget.Slider.For(T);
-
-    std.debug.assert(clay.getCurrentContext() == self.clay_context);
-    std.debug.assert(self.open_ids.items.len > 0);
-
-    const id = self.open_ids.items[self.open_ids.items.len - 1];
-    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-    const widget = if (!gop.found_existing) create_new: {
-        const ptr = try Slider.init(self, id, config);
-        gop.value_ptr.* = Widget{
-            .user_data = ptr,
-            .get = @ptrCast(&Slider.onGet),
-            .set = @ptrCast(&Slider.onSet),
-            .state_type = @typeName(T),
-            .render = @ptrCast(&Slider.render),
-            .unbind = @ptrCast(&Slider.unbindEvents),
-            .deinit = @ptrCast(&Slider.deinit),
-            .seen_this_frame = true,
-        };
-
-        try ptr.bindEvents(self);
-
-        break :create_new ptr;
-    } else reuse_existing: {
-        gop.value_ptr.seen_this_frame = true;
-
-        const ptr: *Slider = @ptrCast(@alignCast(gop.value_ptr.user_data));
-
-        // Update config properties in case they change frame-to-frame.
-        ptr.min = config.min;
-        ptr.max = config.max;
-        ptr.track_color = config.track_color;
-        ptr.handle_color = config.handle_color;
-        ptr.handle_size = config.handle_size;
-
-        break :reuse_existing ptr;
-    };
-
-    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
-        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
-    }
-}
-
-/// Configure an open element as a text input widget
-pub fn bindTextInput(self: *Ui, config: Widget.TextInput.Config) !void {
-    std.debug.assert(clay.getCurrentContext() == self.clay_context);
-    std.debug.assert(self.open_ids.items.len > 0);
-
-    const id = self.open_ids.items[self.open_ids.items.len - 1];
-    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-    const widget = if (!gop.found_existing) create_new: {
-        const ptr = try Widget.TextInput.init(self, id, config);
-        gop.value_ptr.* = Widget{
-            .user_data = ptr,
-            .render = @ptrCast(&Widget.TextInput.render),
-            .get = @ptrCast(&Widget.TextInput.onGet),
-            .set = @ptrCast(&Widget.TextInput.onSet),
-            .state_type = @typeName([]const u8),
-            .unbind = @ptrCast(&Widget.TextInput.unbindEvents),
-            .deinit = @ptrCast(&Widget.TextInput.deinit),
-            .seen_this_frame = true,
-        };
-
-        try ptr.bindEvents(self);
-
-        break :create_new ptr;
-    } else reuse_existing: {
-        gop.value_ptr.seen_this_frame = true;
-        const ptr: *Widget.TextInput = @ptrCast(@alignCast(gop.value_ptr.user_data));
-        try ptr.swapBuffers(self);
-        break :reuse_existing ptr;
-    };
-
-    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
-        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
-    }
-
-    try self.text(widget.currentText(), config.toFull());
-}
-
-pub fn bindShaderRect(self: *Ui, config: Widget.ShaderRect.Config) !void {
-    std.debug.assert(clay.getCurrentContext() == self.clay_context);
-    std.debug.assert(self.open_ids.items.len > 0);
-
-    const id = self.open_ids.items[self.open_ids.items.len - 1];
-    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-    const widget = if (!gop.found_existing) create_new: {
-        const ptr = try Widget.ShaderRect.init(self, id, config);
-        gop.value_ptr.* = Widget{
-            .user_data = ptr,
-            .render = @ptrCast(&Widget.ShaderRect.render),
-            .get = @ptrCast(&Widget.ShaderRect.onGet),
-            .set = @ptrCast(&Widget.ShaderRect.onSet),
-            .state_type = @typeName(Widget.ShaderRect.State),
-            .unbind = @ptrCast(&Widget.ShaderRect.unbindEvents),
-            .deinit = @ptrCast(&Widget.ShaderRect.deinit),
-            .seen_this_frame = true,
-        };
-
-        break :create_new ptr;
-    } else reuse_existing: {
-        gop.value_ptr.seen_this_frame = true;
-
-        var ptr: *Widget.ShaderRect = @ptrCast(@alignCast(gop.value_ptr.user_data));
-        if (!ptr.identity.eql(&.init(config.shader, config.texture_bindings, config.uniforms))) {
-            // if the identity has changed we need to destroy and recreate the widget
-            ptr.deinit(self);
-            ptr = try Widget.ShaderRect.init(self, id, config);
-            gop.value_ptr.user_data = ptr;
-        } else {
-            // otherwise, just copy the config textures in case they change from frame to frame
-            try ptr.onSet(self, &Widget.ShaderRect.State.fromSlices(config.textures, config.uniforms));
-        }
-
-        break :reuse_existing ptr;
-    };
-
-    if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
-        try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
-    }
 }
 
 // --- Menu Structures ---
@@ -1253,35 +882,6 @@ pub fn pushEvent(self: *Ui, id: ElementId, data: Event.Data, user_data: ?*anyopa
     });
 }
 
-pub fn getWidgetState(self: *Ui, id: ElementId, comptime T: type) !?T {
-    const widget_vtable = self.widget_states.get(id.id) orelse return null;
-
-    if (widget_vtable.state_type != @as(*const anyopaque, @typeName(T))) {
-        return null;
-    }
-
-    const ptr: *const T = @ptrCast(@alignCast(widget_vtable.get(widget_vtable.user_data, self)));
-    return ptr.*;
-}
-
-pub fn setWidgetState(self: *Ui, id: ElementId, comptime T: type, state: T) !void {
-    if (self.widget_states.get(id.id)) |widget_vtable| {
-        if (widget_vtable.state_type != @as(*const anyopaque, @typeName(T))) {
-            return error.InvalidWidgetStateType;
-        }
-
-        widget_vtable.set(widget_vtable.user_data, self, @ptrCast(&state));
-    } else if (self.open_layout) {
-        const ptr = try self.deferred_widget_arena_current.allocator().create(T);
-        ptr.* = state;
-        try self.deferred_widget_states_current.put(self.gpa, id.id, @ptrCast(ptr));
-    } else {
-        const ptr = try self.deferred_widget_arena_last.allocator().create(T);
-        ptr.* = state;
-        try self.deferred_widget_states_last.put(self.gpa, id.id, @ptrCast(ptr));
-    }
-}
-
 /// Programmatically sets the value of a shared widget state, such as a radio button group.
 /// If the state does not yet exist for the given group_id, it will be created.
 pub fn setSharedWidgetState(self: *Ui, group_id: ElementId, comptime T: type, state: T) !void {
@@ -1355,51 +955,6 @@ pub fn getOrPutSharedWidgetState(self: *Ui, comptime T: type, group_id: ElementI
 
 // --- Structures ---
 
-/// Manages registration and dispatching of UI events to listeners.
-pub const EventDispatch = struct {
-    /// Key combines element ID and event type for efficient lookup.
-    pub const Key = struct {
-        element_id: u32,
-        event_tag: Event.Tag,
-    };
-
-    pub const Listener = struct {
-        /// Store the function pointer as a generic pointer.
-        func: *const anyopaque,
-        user_data: *anyopaque,
-    };
-
-    /// The value is a list of listeners for a given key.
-    pub const ListenerList = std.ArrayList(Listener);
-
-    pub fn Handler(comptime T: type, comptime event_tag: Event.Tag) type {
-        return fn (user_data: *T, ui: *Ui, info: Event.Info, payload: Event.Payload(event_tag)) anyerror!void;
-    }
-
-    /// The main storage for all listeners.
-    listeners: std.HashMapUnmanaged(Key, ListenerList, struct {
-        pub fn hash(_: @This(), self: Key) u64 {
-            var hasher = std.hash.Wyhash.init(0);
-            std.hash.autoHash(&hasher, self);
-            return hasher.final();
-        }
-
-        pub fn eql(_: @This(), self: Key, other: Key) bool {
-            return self.element_id == other.element_id and self.event_tag == other.event_tag;
-        }
-    }, 80) = .empty,
-
-    pub const empty = EventDispatch{};
-
-    pub fn deinit(self: *EventDispatch, allocator: std.mem.Allocator) void {
-        var it = self.listeners.iterator();
-        while (it.next()) |entry| {
-            entry.value_ptr.deinit(allocator);
-        }
-        self.listeners.deinit(allocator);
-    }
-};
-
 pub const Event = struct {
     info: Info,
     data: Data,
@@ -1470,12 +1025,6 @@ pub const Event = struct {
 
         scoped_focus_change: enum { next, prev },
         scoped_focus_close: void,
-
-        text_change: []const u8,
-        bool_change: bool,
-        float_change: f64,
-        int_change: i64,
-        uint_change: u64,
 
         menu_opened: void,
         menu_closed: struct { level: u32 },
@@ -2186,66 +1735,75 @@ fn navigateMenu(self: *Ui, menu_id: ElementId, direction: enum { next, prev, up,
     }
 }
 
-fn onMenuCloseScope(_: *anyopaque, self: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.scoped_focus_close)) !void {
-    // This event is sent when 'Escape' is pressed and a focus scope is active.
-    // For a menu, this should close the current sub-menu level.
-    self.closeTopMenu();
-}
+fn processInternalMenuEvents(self: *Ui) !void {
+    if (self.menu_state.stack.items.len == 0) return;
 
-fn onMenuActivate(_: *anyopaque, self: *Ui, info: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
-    // This handler fires when the menu panel itself is "activated" (e.g., by pressing Enter).
-    // It finds the currently highlighted item and performs the appropriate action.
-    const level = self.menu_state.stack.items.len - 1;
-    if (self.menu_state.highlighted_path.items.len > level) {
-        const highlighted_id = self.menu_state.highlighted_path.items[level];
-        // Check if the highlighted item is a submenu trigger.
-        if (self.menu_item_to_submenu_map.get(highlighted_id.id)) |child_menu_id| {
-            // It's a submenu. Open it directly.
-            const parent_menu_id = info.element_id; // The event came from the parent menu.
-            self.openMenu(child_menu_id, .{ .parent_menu_id = parent_menu_id, .parent_item_id = highlighted_id });
-        } else {
-            // It's a regular menu item. Push an event for the application to handle...
-            try self.pushEvent(highlighted_id, .activate_begin, null);
-            try self.pushEvent(highlighted_id, .{ .activate_end = .{ .end_element = highlighted_id, .modifiers = .{} } }, null);
-            // ...and close all menus.
-            self.closeAllMenus();
+    for (self.events.items) |event| {
+        // 1. Check if this event happened on an open menu panel
+        var is_menu_panel = false;
+        for (self.menu_state.stack.items) |menu_info| {
+            if (menu_info.id.id == event.info.element_id.id) {
+                is_menu_panel = true;
+                break;
+            }
         }
-    }
-}
 
-fn onMenuFocusChange(_: *anyopaque, self: *Ui, info: Ui.Event.Info, payload: Ui.Event.Payload(.scoped_focus_change)) !void {
-    // This handler manages Tab and Shift+Tab navigation within a menu.
-    try navigateMenu(self, info.element_id, switch (payload) {
-        .next => .next,
-        .prev => .prev,
-    });
-}
+        if (!is_menu_panel) continue;
 
-fn onMenuKeyDown(_: *anyopaque, self: *Ui, info: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
-    switch (key_data.key) {
-        .down => try navigateMenu(self, info.element_id, .down),
-        .up => try navigateMenu(self, info.element_id, .up),
-        .right => {
-            // Right arrow should open a submenu if a submenu item is highlighted.
-            const level = self.menu_state.stack.items.len - 1;
-            if (self.menu_state.highlighted_path.items.len > level) {
-                const highlighted_id = self.menu_state.highlighted_path.items[level];
-                if (self.menu_item_to_submenu_map.get(highlighted_id.id)) |child_menu_id| {
-                    const parent_menu_id = info.element_id;
-                    self.openMenu(child_menu_id, .{
-                        .parent_menu_id = parent_menu_id,
-                        .parent_item_id = highlighted_id,
-                    });
+        // 2. Route the event to the hardcoded internal handlers
+        switch (event.data) {
+            .key_down => |payload| switch (payload.key) {
+                .down => try navigateMenu(self, event.info.element_id, .down),
+                .up => try navigateMenu(self, event.info.element_id, .up),
+                .right => {
+                    // Right arrow should open a submenu if a submenu item is highlighted.
+                    const level = self.menu_state.stack.items.len - 1;
+                    if (self.menu_state.highlighted_path.items.len > level) {
+                        const highlighted_id = self.menu_state.highlighted_path.items[level];
+                        if (self.menu_item_to_submenu_map.get(highlighted_id.id)) |child_menu_id| {
+                            const parent_menu_id = event.info.element_id;
+                            self.openMenu(child_menu_id, .{
+                                .parent_menu_id = parent_menu_id,
+                                .parent_item_id = highlighted_id,
+                            });
+                        }
+                    }
+                },
+                .left => {
+                    // If we are in a submenu (level > 0), close this menu and go back to the parent.
+                    if (self.menu_state.stack.items.len - 1 > 0) {
+                        self.closeTopMenu();
+                    }
+                },
+                else => {},
+            },
+            .scoped_focus_change => |direction| try navigateMenu(self, event.info.element_id, switch (direction) {
+                .next => .next,
+                .prev => .prev,
+            }),
+            .scoped_focus_close => self.closeTopMenu(),
+            .activate_end => {
+                // This handler fires when the menu panel itself is "activated" (e.g., by pressing Enter).
+                // It finds the currently highlighted item and performs the appropriate action.
+                const level = self.menu_state.stack.items.len - 1;
+                if (self.menu_state.highlighted_path.items.len > level) {
+                    const highlighted_id = self.menu_state.highlighted_path.items[level];
+                    // Check if the highlighted item is a submenu trigger.
+                    if (self.menu_item_to_submenu_map.get(highlighted_id.id)) |child_menu_id| {
+                        // It's a submenu. Open it directly.
+                        const parent_menu_id = event.info.element_id; // The event came from the parent menu.
+                        self.openMenu(child_menu_id, .{ .parent_menu_id = parent_menu_id, .parent_item_id = highlighted_id });
+                    } else {
+                        // It's a regular menu item. Push an event for the application to handle...
+                        try self.pushEvent(highlighted_id, .activate_begin, null);
+                        try self.pushEvent(highlighted_id, .{ .activate_end = .{ .end_element = highlighted_id, .modifiers = .{} } }, null);
+                        // ...and close all menus.
+                        self.closeAllMenus();
+                    }
                 }
-            }
-        },
-        .left => {
-            // If we are in a submenu (level > 0), close this menu and go back to the parent.
-            if (self.menu_state.stack.items.len - 1 > 0) {
-                self.closeTopMenu();
-            }
-        },
-        else => {},
+            },
+            else => {},
+        }
     }
 }
 
@@ -2261,10 +1819,6 @@ fn handleMenuState(self: *Ui) !void {
         while (ms.stack.items.len > level) {
             // When popping a menu, we must remove its listeners and its navigable item list.
             const closed_menu = ms.stack.pop() orelse break;
-            self.removeListener(closed_menu.id, .key_down, anyopaque, &onMenuKeyDown);
-            self.removeListener(closed_menu.id, .scoped_focus_change, anyopaque, &onMenuFocusChange);
-            self.removeListener(closed_menu.id, .scoped_focus_close, anyopaque, &onMenuCloseScope);
-            self.removeListener(closed_menu.id, .activate_end, anyopaque, &onMenuActivate);
             self.popFocusScope();
 
             // Clean up the navigable items list for the closed menu to prevent memory leaks.
@@ -2326,10 +1880,6 @@ fn handleMenuState(self: *Ui) !void {
         while (ms.stack.items.len > open_at_level) {
             // Also remove listeners and navigable item lists when closing menus here.
             const closed_menu = ms.stack.pop() orelse break;
-            self.removeListener(closed_menu.id, .key_down, anyopaque, &onMenuKeyDown);
-            self.removeListener(closed_menu.id, .scoped_focus_change, anyopaque, &onMenuFocusChange);
-            self.removeListener(closed_menu.id, .scoped_focus_close, anyopaque, &onMenuCloseScope);
-            self.removeListener(closed_menu.id, .activate_end, anyopaque, &onMenuActivate);
             self.popFocusScope();
 
             if (ms.navigable_items.fetchRemove(closed_menu.id.id)) |removed_list| {
@@ -2355,13 +1905,6 @@ fn handleMenuState(self: *Ui) !void {
 
         // Fire the public event notifying the application that a menu was opened.
         try self.pushEvent(request.id, .menu_opened, null);
-
-        // Add the listeners now that the menu is officially open.
-        // These will persist until the menu is closed.
-        try self.addListener(request.id, .key_down, anyopaque, &onMenuKeyDown, undefined);
-        try self.addListener(request.id, .scoped_focus_change, anyopaque, &onMenuFocusChange, undefined);
-        try self.addListener(request.id, .scoped_focus_close, anyopaque, &onMenuCloseScope, undefined);
-        try self.addListener(request.id, .activate_end, anyopaque, &onMenuActivate, undefined);
 
         // Set focus to the new menu.
         self.state.focused_id = .{
@@ -2411,6 +1954,10 @@ fn handleMenuState(self: *Ui) !void {
 /// Processes the current UI state against the last frame's state to generate interaction events.
 fn generateEvents(self: *Ui) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
+
+    self.events.clearRetainingCapacity();
+    try self.events.appendSlice(self.gpa, self.widget_events.items);
+    self.widget_events.clearRetainingCapacity();
 
     const mouse_pos = self.bindings.getMousePosition();
     const primary_mouse_action = self.bindings.getAction(.primary_mouse);
@@ -3071,6 +2618,8 @@ fn generateEvents(self: *Ui) !void {
             }
         }
     }
+
+    try self.processInternalMenuEvents();
 }
 
 /// Processes the current array of RenderCommands from Clay and issues draw calls to Batch2D.

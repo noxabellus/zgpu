@@ -374,3 +374,52 @@ pub fn For(comptime T: type) type {
         };
     };
 }
+
+// /// Configure an open element as a dropdown selection widget for enum values.
+// pub fn bindDropdown(self: *Ui, comptime T: type, config: Widget.Dropdown.For(T).Config) !void {
+//     const Dropdown = Widget.Dropdown.For(T);
+
+//     std.debug.assert(clay.getCurrentContext() == self.clay_context);
+//     std.debug.assert(self.open_ids.items.len > 0);
+
+//     const id = self.open_ids.items[self.open_ids.items.len - 1];
+//     const gop = try self.widget_states.getOrPut(self.gpa, id.id);
+//     const widget = if (!gop.found_existing) create_new: {
+//         const ptr = try Dropdown.init(self, id, config);
+//         gop.value_ptr.* = Widget{
+//             .user_data = ptr,
+//             .get = @ptrCast(&Dropdown.onGet),
+//             .set = @ptrCast(&Dropdown.onSet),
+//             .state_type = @typeName(T),
+//             .render = @ptrCast(&Dropdown.render),
+//             .deinit = @ptrCast(&Dropdown.deinit),
+//             .seen_this_frame = true,
+//         };
+
+//         try ptr.bindEvents(self);
+
+//         break :create_new ptr;
+//     } else reuse_existing: {
+//         gop.value_ptr.seen_this_frame = true;
+
+//         const ptr: *Dropdown = @ptrCast(@alignCast(gop.value_ptr.user_data));
+
+//         // Update config properties in case they change frame-to-frame.
+//         ptr.box_color = config.box_color;
+//         ptr.box_color_hover = config.box_color_hover;
+//         ptr.text_color = config.text_color;
+//         ptr.font_id = config.font_id;
+//         ptr.font_size = config.font_size;
+//         ptr.panel_color = config.panel_color;
+//         ptr.option_color_hover = config.option_color_hover;
+
+//         break :reuse_existing ptr;
+//     };
+
+//     if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
+//         try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
+//     }
+
+//     // Crucially, the widget declares its own elements, including the floating panel if open.
+//     try widget.declare(self);
+// }

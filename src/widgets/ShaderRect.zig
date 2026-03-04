@@ -138,14 +138,6 @@ pub fn unbindEvents(self: *ShaderRect, ui: *Ui) void {
     _ = .{ self, ui };
 }
 
-pub fn onGet(self: *ShaderRect, _: *Ui) *const State {
-    return &self.state;
-}
-
-pub fn onSet(self: *ShaderRect, _: *Ui, new_value: *const State) !void {
-    self.state = new_value.*;
-}
-
 /// The rendering function for the checkbox, called by the UI system.
 pub fn render(self: *ShaderRect, ui: *Ui, command: Ui.RenderCommand) !void {
     const bb = command.bounding_box;
@@ -166,4 +158,36 @@ pub fn render(self: *ShaderRect, ui: *Ui, command: Ui.RenderCommand) !void {
         .{},
     );
     try ui.renderer.customPipelineEnd(self.shader_id);
+}
+
+pub fn shaderRect(ui: *Ui, config: ShaderRect.Config) !void {
+    const id = ui.open_ids.items[ui.open_ids.items.len - 1];
+    const gop = try ui.widget_states.getOrPut(ui.gpa, id.id);
+    const self = if (!gop.found_existing) create_new: {
+        const ptr = try ShaderRect.init(ui, id, config);
+        gop.value_ptr.* = Ui.Widget{
+            .user_data = ptr,
+            .render = @ptrCast(&ShaderRect.render),
+            .deinit = @ptrCast(&ShaderRect.deinit),
+            .seen_this_frame = true,
+        };
+
+        break :create_new ptr;
+    } else reuse_existing: {
+        gop.value_ptr.seen_this_frame = true;
+
+        var ptr: *ShaderRect = @ptrCast(@alignCast(gop.value_ptr.user_data));
+        if (!ptr.identity.eql(&.init(config.shader, config.texture_bindings, config.uniforms))) {
+            // if the identity has changed we need to destroy and recreate the widget
+            ptr.deinit(ui);
+            ptr = try ShaderRect.init(ui, id, config);
+            gop.value_ptr.user_data = ptr;
+        } else {
+            // otherwise, just copy the config textures in case they change from frame to frame
+            ptr.state = .fromSlices(config.textures, config.uniforms);
+        }
+
+        break :reuse_existing ptr;
+    };
+    _ = self;
 }

@@ -1,6 +1,6 @@
 //! Checkbox widget for bool values.
 
-const CheckboxWidget = @This();
+const Checkbox = @This();
 
 const std = @import("std");
 const Ui = @import("../Ui.zig");
@@ -15,7 +15,7 @@ test {
 }
 
 id: Ui.ElementId,
-current_value: bool,
+value: *bool,
 
 // Style properties
 box_color: Ui.Color,
@@ -23,19 +23,19 @@ check_color: Ui.Color,
 size: f32,
 
 pub const Config = struct {
-    default: bool = false,
+    value: *bool,
     box_color: Ui.Color = Ui.Color.init(200, 200, 200, 255),
     check_color: Ui.Color = Ui.Color.init(50, 50, 50, 255),
     size: f32 = 16.0,
 };
 
-pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*CheckboxWidget {
-    const self = try ui.gpa.create(CheckboxWidget);
+pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*Checkbox {
+    const self = try ui.gpa.create(Checkbox);
     errdefer ui.gpa.destroy(self);
 
-    self.* = CheckboxWidget{
+    self.* = Checkbox{
         .id = id,
-        .current_value = config.default,
+        .value = config.value,
         .box_color = config.box_color,
         .check_color = config.check_color,
         .size = config.size,
@@ -44,34 +44,12 @@ pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*CheckboxWidget {
     return self;
 }
 
-pub fn deinit(self: *CheckboxWidget, ui: *Ui) void {
+pub fn deinit(self: *Checkbox, ui: *Ui) void {
     ui.gpa.destroy(self);
 }
 
-pub fn bindEvents(self: *CheckboxWidget, ui: *Ui) !void {
-    try ui.addListener(self.id, .activate_end, CheckboxWidget, onActivate, self);
-}
-
-pub fn unbindEvents(self: *CheckboxWidget, ui: *Ui) void {
-    ui.removeListener(self.id, .activate_end, CheckboxWidget, onActivate);
-}
-
-pub fn onGet(self: *CheckboxWidget, _: *Ui) *const bool {
-    return &self.current_value;
-}
-
-pub fn onSet(self: *CheckboxWidget, _: *Ui, new_value: *const bool) !void {
-    self.current_value = new_value.*;
-}
-
-/// Called when the user clicks the checkbox or activates it with the keyboard.
-fn onActivate(self: *CheckboxWidget, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
-    self.current_value = !self.current_value;
-    try ui.pushEvent(self.id, .{ .bool_change = self.current_value }, self);
-}
-
 /// The rendering function for the checkbox, called by the UI system.
-pub fn render(self: *CheckboxWidget, ui: *Ui, command: Ui.RenderCommand) !void {
+pub fn render(self: *Checkbox, ui: *Ui, command: Ui.RenderCommand) !void {
     const bb = command.bounding_box;
 
     // Center the checkbox within its bounding box
@@ -86,7 +64,7 @@ pub fn render(self: *CheckboxWidget, ui: *Ui, command: Ui.RenderCommand) !void {
     try ui.renderer.drawRoundedRect(box_pos, box_size, .all(radius), self.box_color);
 
     // If checked, draw the checkmark
-    if (self.current_value) {
+    if (self.value.*) {
         // Simple checkmark using two lines
         const p1 = vec2{ box_pos[0] + self.size * 0.2, box_pos[1] + self.size * 0.5 };
         const p2 = vec2{ box_pos[0] + self.size * 0.45, box_pos[1] + self.size * 0.75 };
@@ -96,4 +74,38 @@ pub fn render(self: *CheckboxWidget, ui: *Ui, command: Ui.RenderCommand) !void {
         try ui.renderer.drawLine(p1, p2, line_width, self.check_color);
         try ui.renderer.drawLine(p2, p3, line_width, self.check_color);
     }
+}
+
+/// Configure an open element as a checkbox widget for boolean values.
+pub fn checkbox(ui: *Ui, config: Config) !bool {
+    const id = ui.open_ids.items[ui.open_ids.items.len - 1];
+    const gop = try ui.widget_states.getOrPut(ui.gpa, id.id);
+    const self = if (!gop.found_existing) create_new: {
+        const ptr = try Checkbox.init(ui, id, config);
+        gop.value_ptr.* = Ui.Widget{
+            .user_data = ptr,
+            .render = @ptrCast(&Checkbox.render),
+            .deinit = @ptrCast(&Checkbox.deinit),
+            .seen_this_frame = true,
+        };
+
+        break :create_new ptr;
+    } else reuse_existing: {
+        gop.value_ptr.seen_this_frame = true;
+
+        const ptr: *Checkbox = @ptrCast(@alignCast(gop.value_ptr.user_data));
+        // Update config properties in case they change frame-to-frame.
+        ptr.box_color = config.box_color;
+        ptr.check_color = config.check_color;
+        ptr.size = config.size;
+
+        break :reuse_existing ptr;
+    };
+
+    if (ui.getEvent(id, .activate_end)) |_| {
+        self.value.* = !self.value.*;
+        return true;
+    }
+
+    return false;
 }

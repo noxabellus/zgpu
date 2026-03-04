@@ -17,6 +17,7 @@ const AssetCache = @import("../AssetCache.zig");
 const BindingState = @import("../BindingState.zig");
 const Model = @import("../Model.zig");
 const Ui = @import("../Ui.zig");
+const widgets = Ui.widgets;
 const linalg = @import("../linalg.zig");
 const vec2u = linalg.vec2u;
 const vec2 = linalg.vec2;
@@ -279,73 +280,7 @@ pub fn main() !void {
 
     defer if (demo.model) |*m| m.deinit();
 
-    try ui.addListener(
-        .fromSlice("animIndexSlider"),
-        .uint_change,
-        Demo,
-        &struct {
-            pub fn slider_value_listener(d: *Demo, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.uint_change)) anyerror!void {
-                d.anim_state.setIndex(@intCast(new_value));
-            }
-        }.slider_value_listener,
-        &demo,
-    );
-
-    try ui.addListener(
-        .fromSlice("LoadButton"),
-        .activate_end,
-        Demo,
-        &struct {
-            pub fn load_button_listener(d: *Demo, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void {
-                try nfd.openDialogAsync("glb,gltf", ".", &d.path_to_load);
-            }
-        }.load_button_listener,
-        &demo,
-    );
-
-    try ui.addListener(
-        .fromSlice("UnloadButton"),
-        .activate_end,
-        Demo,
-        &struct {
-            pub fn unload_button_listener(d: *Demo, _: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void {
-                if (d.model) |*m| m.deinit();
-                d.model = null;
-
-                d.anim_state.clearCache();
-                d.anim_state.clearMatrices();
-                try d.anim_state.sync(&d.app.gpu);
-            }
-        }.unload_button_listener,
-        &demo,
-    );
-
-    try ui.addListener(
-        .fromSlice("lightBrightnessSlider"),
-        .float_change,
-        Demo,
-        &struct {
-            pub fn brightness_slider_listener(d: *Demo, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.float_change)) anyerror!void {
-                d.light.config.brightness = @floatCast(new_value);
-                std.debug.print("New Light Values: {any}\n", .{d.light.config});
-            }
-        }.brightness_slider_listener,
-        &demo,
-    );
-
     var draw_fps = true;
-    try ui.addListener(
-        .fromSlice("fpsOverlayToggle"),
-        .bool_change,
-        bool,
-        &struct {
-            pub fn fps_overlay_checkbox_listener(out: *bool, _: *Ui, _: Ui.Event.Info, new_value: Ui.Event.Payload(.bool_change)) anyerror!void {
-                out.* = new_value;
-                std.debug.print("new draw_fps value: {}\n", .{out.*});
-            }
-        }.fps_overlay_checkbox_listener,
-        &draw_fps,
-    );
 
     const skinned_mesh_lit_shader = try app.gpu.device.loadShaderText("static/shaders/GltfMultiPurpose.wgsl", @embedFile("shaders/GltfMultiPurpose.wgsl"));
     defer skinned_mesh_lit_shader.release();
@@ -478,8 +413,6 @@ pub fn main() !void {
                 demo.anim_state.setIndex(0);
                 demo.anim_state.clearMatrices();
                 try demo.anim_state.sync(&demo.app.gpu);
-
-                try ui.setWidgetState(.fromSlice("animIndexSlider"), u32, 0);
             }
         } else |err| {
             log.err("Failed to load model: {s}\n", .{@errorName(err)});
@@ -510,8 +443,6 @@ pub fn main() !void {
         if (camera_captured_mouse or !ui.wantsMouse(.fullscreen)) {
             camera_captured_mouse = demo.camera.update(&app.input_state, @floatFromInt(vec2u{ app.gpu.config.width, app.gpu.config.height }), delta_time);
         }
-
-        try ui.dispatchEvents();
 
         const mouse_pos = app.input_state.getMousePosition();
 
@@ -622,6 +553,10 @@ pub fn main() !void {
                                 }),
                             });
 
+                            if (ui.getEvent(.fromSlice("LoadButton"), .activate_end)) |_| {
+                                try nfd.openDialogAsync("glb,gltf", ".", &demo.path_to_load);
+                            }
+
                             try ui.text("Load Model", .{
                                 .font_id = FONT_ID_BODY,
                                 .font_size = 16,
@@ -654,6 +589,15 @@ pub fn main() !void {
                                     .activate = true,
                                 }) else .flags(.{}),
                             });
+
+                            if (ui.getEvent(.fromSlice("UnloadButton"), .activate_end)) |_| {
+                                if (demo.model) |*m| m.deinit();
+                                demo.model = null;
+
+                                demo.anim_state.clearCache();
+                                demo.anim_state.clearMatrices();
+                                try demo.anim_state.sync(&demo.app.gpu);
+                            }
 
                             try ui.text("Unload Model", .{
                                 .font_id = FONT_ID_BODY,
@@ -703,6 +647,7 @@ pub fn main() !void {
                                 try ui.beginElement(.fromSlice("animIndexSlider"));
                                 defer ui.closeElement();
 
+                                var index = demo.anim_state.index;
                                 try ui.configureElement(.{
                                     .layout = .{
                                         .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
@@ -716,13 +661,15 @@ pub fn main() !void {
                                     }),
                                 });
 
-                                try ui.bindSlider(u32, .{
-                                    .default = 0,
+                                if (try widgets.slider(ui, u32, .{
+                                    .value = &index,
                                     .min = 0,
                                     .max = if (demo.model != null and demo.model.?.animations.len > 0) @intCast(demo.model.?.animations.len - 1) else 0,
                                     .track_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
                                     .handle_color = COLOR_PHOSPHOR,
-                                });
+                                })) {
+                                    demo.anim_state.setIndex(index);
+                                }
                             }
                         }
                     }
@@ -780,8 +727,8 @@ pub fn main() !void {
                                 }),
                             });
 
-                            try ui.bindSlider(f32, .{
-                                .default = demo.light.config.brightness,
+                            _ = try widgets.slider(ui, f32, .{
+                                .value = &demo.light.config.brightness,
                                 .min = 0.0,
                                 .max = 3.0,
 
@@ -826,7 +773,7 @@ pub fn main() !void {
                             .widget = true,
                         });
 
-                        try ui.bindShaderRect(.{
+                        try widgets.shaderRect(ui, .{
                             .shader = pwp_shader,
                             .texture_bindings = &.{
                                 .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
@@ -851,7 +798,7 @@ pub fn main() !void {
                             .widget = true,
                         });
 
-                        try ui.bindShaderRect(.{
+                        try widgets.shaderRect(ui, .{
                             .shader = pid_shader,
                             .texture_bindings = &.{
                                 .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
@@ -888,8 +835,8 @@ pub fn main() !void {
                                 }),
                             });
 
-                            try ui.bindCheckbox(.{
-                                .default = true,
+                            _ = try widgets.checkbox(ui, .{
+                                .value = &draw_fps,
                                 .box_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
                                 .check_color = COLOR_PHOSPHOR,
                                 .size = 16.0,

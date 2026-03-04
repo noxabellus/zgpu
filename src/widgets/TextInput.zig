@@ -708,3 +708,39 @@ pub fn onText(self: *TextInputWidget, ui: *Ui, _: Ui.Event.Info, text_data: Ui.E
         },
     }
 }
+
+// /// Configure an open element as a text input widget
+// pub fn bindTextInput(self: *Ui, config: Widget.TextInput.Config) !void {
+//     std.debug.assert(clay.getCurrentContext() == self.clay_context);
+//     std.debug.assert(self.open_ids.items.len > 0);
+
+//     const id = self.open_ids.items[self.open_ids.items.len - 1];
+//     const gop = try self.widget_states.getOrPut(self.gpa, id.id);
+//     const widget = if (!gop.found_existing) create_new: {
+//         const ptr = try Widget.TextInput.init(self, id, config);
+//         gop.value_ptr.* = Widget{
+//             .user_data = ptr,
+//             .render = @ptrCast(&Widget.TextInput.render),
+//             .get = @ptrCast(&Widget.TextInput.onGet),
+//             .set = @ptrCast(&Widget.TextInput.onSet),
+//             .state_type = @typeName([]const u8),
+//             .deinit = @ptrCast(&Widget.TextInput.deinit),
+//             .seen_this_frame = true,
+//         };
+
+//         try ptr.bindEvents(self);
+
+//         break :create_new ptr;
+//     } else reuse_existing: {
+//         gop.value_ptr.seen_this_frame = true;
+//         const ptr: *Widget.TextInput = @ptrCast(@alignCast(gop.value_ptr.user_data));
+//         try ptr.swapBuffers(self);
+//         break :reuse_existing ptr;
+//     };
+
+//     if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
+//         try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
+//     }
+
+//     try self.text(widget.currentText(), config.toFull());
+// }
