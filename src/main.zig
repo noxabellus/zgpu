@@ -1,6 +1,6 @@
 const std = @import("std");
 
-pub const example = @import("examples/3d_sandbox.zig");
+pub const example = @import("examples/playground.zig");
 
 pub const main = example.main;
 
