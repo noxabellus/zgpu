@@ -306,20 +306,22 @@ pub fn build(b: *std.Build) void {
             .root = glfw_dep.path("src"),
         });
 
-        exe.linkSystemLibrary("dxgi");
-        exe.linkSystemLibrary("d3d12");
+        // FIXME: tests will fail on windows because the individual modules aren't linked with the necessary system libraries, but the final executable is linked correctly.
+        // Need to figure out which is for which.
+        exe_mod.linkSystemLibrary("dxgi", .{});
+        exe_mod.linkSystemLibrary("d3d12", .{});
 
-        exe.linkSystemLibrary("gdi32");
-        exe.linkSystemLibrary("shell32");
-        exe.linkSystemLibrary("user32");
-        exe.linkSystemLibrary("kernel32");
-        exe.linkSystemLibrary("ntdll");
+        exe_mod.linkSystemLibrary("gdi32", .{});
+        exe_mod.linkSystemLibrary("shell32", .{});
+        exe_mod.linkSystemLibrary("user32", .{});
+        exe_mod.linkSystemLibrary("kernel32", .{});
+        exe_mod.linkSystemLibrary("ntdll", .{});
 
         const dll_needed = wgpu_dep.path("lib/wgpu_native.dll");
         const install = b.addInstallFile(dll_needed, "bin/wgpu_native.dll");
         install_step.dependOn(&install.step);
 
-        exe.linkSystemLibrary("ole32");
+        exe_mod.linkSystemLibrary("ole32", .{});
         nfd_mod.addCSourceFile(.{
             .file = nfd_dep.path("src/nfd_win.cpp"),
             .flags = &.{"-fno-sanitize=undefined"},
@@ -338,20 +340,20 @@ pub fn build(b: *std.Build) void {
         });
 
         // for wgpu
-        exe.linkSystemLibrary("m");
-        exe.linkSystemLibrary("dl");
+        wgpu_mod.linkSystemLibrary("m", .{});
+        wgpu_mod.linkSystemLibrary("dl", .{});
 
         // for glfw
-        exe.linkSystemLibrary("X11");
-        exe.linkSystemLibrary("Xrandr");
-        exe.linkSystemLibrary("Xinerama");
-        exe.linkSystemLibrary("Xi");
-        exe.linkSystemLibrary("Xcursor");
+        glfw_mod.linkSystemLibrary("X11", .{});
+        glfw_mod.linkSystemLibrary("Xrandr", .{});
+        glfw_mod.linkSystemLibrary("Xinerama", .{});
+        glfw_mod.linkSystemLibrary("Xi", .{});
+        glfw_mod.linkSystemLibrary("Xcursor", .{});
 
         // for nfd
-        exe.linkSystemLibrary("gtk-3");
-        exe.linkSystemLibrary("glib-2.0");
-        exe.linkSystemLibrary("gobject-2.0");
+        nfd_mod.linkSystemLibrary("gtk-3", .{});
+        nfd_mod.linkSystemLibrary("glib-2.0", .{});
+        nfd_mod.linkSystemLibrary("gobject-2.0", .{});
 
         nfd_mod.addCSourceFile(.{
             .file = nfd_dep.path("src/nfd_gtk.c"),
