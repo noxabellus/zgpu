@@ -399,7 +399,7 @@ pub fn configureElement(self: *Ui, declaration: HeadlessElementDeclaration) !voi
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     const id = self.open_ids.items[self.open_ids.items.len - 1];
-    const full = attachHead(ElementDeclaration, declaration, id);
+    const full = declaration.attachHead(id);
     clay.configureElement(full.toClay());
 
     try self.handleStateSetup(full);
@@ -1385,35 +1385,6 @@ pub const ClipElementConfig = struct {
     }
 };
 
-pub fn Headless(comptime T: type) type {
-    comptime return switch (T) {
-        ElementDeclaration => HeadlessElementDeclaration,
-        else => @compileError("Unsupported type for Headless"),
-    };
-}
-
-fn attachHead(comptime T: type, value: Headless(T), head: ElementId) T {
-    var out: T = undefined;
-
-    out.id = head;
-
-    inline for (comptime std.meta.fieldNames(Headless(T))) |field| {
-        @field(out, field) = @field(value, field);
-    }
-
-    return out;
-}
-
-fn detachHead(comptime T: type, value: T) Headless(T) {
-    var out: Headless(T) = undefined;
-
-    inline for (comptime std.meta.fieldNames(Headless(T))) |field| {
-        @field(out, field) = @field(value, field);
-    }
-
-    return out;
-}
-
 pub const HeadlessElementDeclaration = struct {
     /// Controls various settings that affect the size and position of an element, as well as the sizes and positions of any child elements.
     layout: LayoutConfig = .{},
@@ -1438,6 +1409,18 @@ pub const HeadlessElementDeclaration = struct {
     border: BorderElementConfig = .{},
     /// A pointer that will be transparently passed through to resulting render command
     state: ElementState = .none,
+
+    fn attachHead(value: *const HeadlessElementDeclaration, head: ElementId) ElementDeclaration {
+        var out: ElementDeclaration = undefined;
+
+        out.id = head;
+
+        inline for (comptime std.meta.fieldNames(HeadlessElementDeclaration)) |field| {
+            @field(out, field) = @field(value, field);
+        }
+
+        return out;
+    }
 };
 
 pub const ElementDeclaration = struct {
