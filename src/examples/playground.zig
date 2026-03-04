@@ -391,6 +391,9 @@ pub fn main() !void {
 
     var camera_captured_mouse = false;
 
+    const BufferDebugMode = enum { None, Framebuffer, @"Picking Position", @"Picking Id" };
+    var buffer_debug_mode: BufferDebugMode = .None;
+
     var last_frame_time = std.time.milliTimestamp();
     main_loop: while (app.beginFrame()) {
         const current_time = std.time.milliTimestamp();
@@ -440,11 +443,15 @@ pub fn main() !void {
 
         // --- Process events ---
 
-        if (camera_captured_mouse or !ui.wantsMouse(.fullscreen)) {
+        const ui_wants_mouse = ui.wantsMouse(.fullscreen);
+        if (camera_captured_mouse or !ui_wants_mouse) {
             camera_captured_mouse = demo.camera.update(&app.input_state, @floatFromInt(vec2u{ app.gpu.config.width, app.gpu.config.height }), delta_time);
         }
 
         const mouse_pos = app.input_state.getMousePosition();
+        const mouse_uniforms = std.mem.asBytes(&MouseUniforms{
+            .mouse_pos = .{ mouse_pos[0] / SCALE_DIVISOR, mouse_pos[1] / SCALE_DIVISOR },
+        });
 
         // Generate the UI layout and cache rendering commands
         {
@@ -453,6 +460,9 @@ pub fn main() !void {
                 .{ @floatFromInt(w), @floatFromInt(h) },
                 delta_time,
             );
+            defer ui.endLayout() catch |err| {
+                log.err("Failed to end UI layout: {s}\n", .{@errorName(err)});
+            };
 
             {
                 try ui.openElement(.{
@@ -675,8 +685,8 @@ pub fn main() !void {
                     }
 
                     {
-                        {
-                            try ui.beginElement(.fromSlice("TitleText2"));
+                        { // Title
+                            try ui.beginElement(.fromSlice("DebugTitleText"));
                             defer ui.closeElement();
 
                             try ui.configureElement(.{
@@ -685,184 +695,266 @@ pub fn main() !void {
                                 },
                             });
 
-                            try ui.text("Light", .{
+                            try ui.text("Debug Options", .{
                                 .font_id = FONT_ID_TITLE,
                                 .font_size = 32,
                                 .color = COLOR_PHOSPHOR,
                             });
                         }
 
-                        {
-                            try ui.beginElement(.fromSlice("BrightnessText"));
-                            defer ui.closeElement();
-
-                            try ui.configureElement(.{
-                                .layout = .{
-                                    .sizing = .fit,
-                                },
-                            });
-
-                            var buf: [128]u8 = undefined;
-                            try ui.text(try std.fmt.bufPrint(&buf, "{d:0.2}", .{demo.light.config.brightness}), .{
-                                .font_id = FONT_ID_BODY,
-                                .font_size = 16,
-                                .color = COLOR_PHOSPHOR,
-                            });
-                        }
-
-                        {
-                            try ui.beginElement(.fromSlice("lightBrightnessSlider"));
-                            defer ui.closeElement();
-
-                            try ui.configureElement(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
-                                },
-                                .widget = true,
-                                .state = .flags(.{
-                                    .click = true,
-                                    .drag = true,
-                                    .focus = true,
-                                    .keyboard = true,
-                                }),
-                            });
-
-                            _ = try widgets.slider(ui, f32, .{
-                                .value = &demo.light.config.brightness,
-                                .min = 0.0,
-                                .max = 3.0,
-
-                                .track_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
-                                .handle_color = COLOR_PHOSPHOR,
-                            });
-                        }
-                    }
-
-                    {
-                        try ui.beginElement(.fromSlice("PictureInPictureTest"));
-                        defer ui.closeElement();
-
-                        try ui.configureElement(.{
-                            .layout = .{
-                                .sizing = .{
-                                    .w = .fixed(300),
-                                    .h = .fixed(300 / screen_ratio),
-                                },
-                            },
-                            .corner_radius = .all(10),
-                            .image = IMAGE_ID_PIP,
-                        });
-                    }
-
-                    const mouse_uniforms = std.mem.asBytes(&MouseUniforms{
-                        .mouse_pos = .{ mouse_pos[0] / SCALE_DIVISOR, mouse_pos[1] / SCALE_DIVISOR },
-                    });
-
-                    {
-                        try ui.beginElement(.fromSlice("ShaderTest1"));
-                        defer ui.closeElement();
-
-                        try ui.configureElement(.{
-                            .layout = .{
-                                .sizing = .{
-                                    .w = .fixed(300),
-                                    .h = .fixed(300 / screen_ratio),
-                                },
-                            },
-                            .corner_radius = .all(10),
-                            .widget = true,
-                        });
-
-                        try widgets.shaderRect(ui, .{
-                            .shader = pwp_shader,
-                            .texture_bindings = &.{
-                                .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
-                            },
-                            .textures = &.{demo.picking.view.?},
-                            .uniforms = mouse_uniforms,
-                        });
-                    }
-
-                    {
-                        try ui.beginElement(.fromSlice("ShaderTest2"));
-                        defer ui.closeElement();
-
-                        try ui.configureElement(.{
-                            .layout = .{
-                                .sizing = .{
-                                    .w = .fixed(300),
-                                    .h = .fixed(300 / screen_ratio),
-                                },
-                            },
-                            .corner_radius = .all(10),
-                            .widget = true,
-                        });
-
-                        try widgets.shaderRect(ui, .{
-                            .shader = pid_shader,
-                            .texture_bindings = &.{
-                                .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
-                            },
-                            .textures = &.{demo.picking.view.?},
-                            .uniforms = mouse_uniforms,
-                        });
-                    }
-
-                    {
-                        try ui.openElement(.{
-                            .id = .fromSlice("DebugFPSOverlayControlSection"),
-                            .layout = .{
-                                .sizing = .fit,
-                                .direction = .left_to_right,
-                                .child_alignment = .center,
-                                .child_gap = 5,
-                            },
-                        });
-                        defer ui.closeElement();
-
-                        {
-                            try ui.beginElement(.fromSlice("fpsOverlayToggle"));
-                            defer ui.closeElement();
-
-                            try ui.configureElement(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
-                                },
-                                .widget = true,
-                                .state = .flags(.{
-                                    .activate = true,
-                                    .focus = true,
-                                }),
-                            });
-
-                            _ = try widgets.checkbox(ui, .{
-                                .value = &draw_fps,
-                                .box_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
-                                .check_color = COLOR_PHOSPHOR,
-                                .size = 16.0,
-                            });
-                        }
-
-                        {
+                        { // Fps Overlay
                             try ui.openElement(.{
-                                .id = .fromSlice("FPSOverlayLabel"),
+                                .id = .fromSlice("DebugFPSOverlayControlSection"),
                                 .layout = .{
                                     .sizing = .fit,
+                                    .direction = .left_to_right,
+                                    .child_alignment = .center,
+                                    .child_gap = 5,
                                 },
                             });
                             defer ui.closeElement();
 
-                            try ui.text("Show FPS Overlay", .{
-                                .font_id = FONT_ID_BODY,
-                                .font_size = 16,
-                                .color = COLOR_PHOSPHOR,
+                            {
+                                try ui.openElement(.{
+                                    .id = .fromSlice("FPSOverlayLabel"),
+                                    .layout = .{
+                                        .sizing = .fit,
+                                    },
+                                });
+                                defer ui.closeElement();
+
+                                try ui.text("Show FPS Overlay", .{
+                                    .font_id = FONT_ID_BODY,
+                                    .font_size = 16,
+                                    .color = COLOR_PHOSPHOR,
+                                });
+                            }
+
+                            {
+                                try ui.beginElement(.fromSlice("fpsOverlayToggle"));
+                                defer ui.closeElement();
+
+                                try ui.configureElement(.{
+                                    .layout = .{
+                                        .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
+                                    },
+                                    .widget = true,
+                                    .state = .flags(.{
+                                        .activate = true,
+                                        .focus = true,
+                                    }),
+                                });
+
+                                _ = try widgets.checkbox(ui, .{
+                                    .value = &draw_fps,
+                                    .box_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                                    .check_color = COLOR_PHOSPHOR,
+                                    .size = 16.0,
+                                });
+                            }
+                        }
+
+                        { // Light brightness
+                            try ui.openElement(.{
+                                .id = .fromSlice("SliderRow"),
+                                .layout = .{
+                                    .sizing = .{
+                                        .w = .grow,
+                                        .h = .fit,
+                                    },
+                                    .direction = .left_to_right,
+                                    .child_alignment = .{
+                                        .x = .left,
+                                        .y = .center,
+                                    },
+                                    .child_gap = 10,
+                                },
                             });
+                            defer ui.closeElement();
+
+                            {
+                                try ui.beginElement(.fromSlice("BrightnessText"));
+                                defer ui.closeElement();
+
+                                try ui.configureElement(.{
+                                    .layout = .{
+                                        .sizing = .fit,
+                                    },
+                                });
+
+                                var buf: [128]u8 = undefined;
+                                try ui.text(try std.fmt.bufPrint(&buf, "Light {d:0.2}", .{demo.light.config.brightness}), .{
+                                    .font_id = FONT_ID_BODY,
+                                    .font_size = 16,
+                                    .color = COLOR_PHOSPHOR,
+                                });
+                            }
+
+                            {
+                                try ui.beginElement(.fromSlice("lightBrightnessSlider"));
+                                defer ui.closeElement();
+
+                                try ui.configureElement(.{
+                                    .layout = .{
+                                        .sizing = .{ .w = .grow, .h = .fixed(20) },
+                                    },
+                                    .widget = true,
+                                    .state = .flags(.{
+                                        .click = true,
+                                        .drag = true,
+                                        .focus = true,
+                                        .keyboard = true,
+                                    }),
+                                });
+
+                                _ = try widgets.slider(ui, f32, .{
+                                    .value = &demo.light.config.brightness,
+                                    .min = 0.0,
+                                    .max = 3.0,
+
+                                    .track_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                                    .handle_color = COLOR_PHOSPHOR,
+                                });
+                            }
+                        }
+
+                        { // Buffer Debug
+                            {
+                                try ui.openElement(.{
+                                    .id = .fromSlice("DropdownRow"),
+                                    .layout = .{
+                                        .sizing = .{
+                                            .w = .grow,
+                                            .h = .fit,
+                                        },
+                                        .direction = .left_to_right,
+                                        .child_alignment = .{
+                                            .x = .left,
+                                            .y = .center,
+                                        },
+                                        .child_gap = 10,
+                                    },
+                                });
+                                defer ui.closeElement();
+
+                                {
+                                    try ui.beginElement(.fromSlice("BufferDebugModeLabel"));
+                                    defer ui.closeElement();
+
+                                    try ui.configureElement(.{
+                                        .layout = .{
+                                            .sizing = .fit,
+                                        },
+                                    });
+
+                                    try ui.text("Buffer Debug Mode", .{
+                                        .font_id = FONT_ID_BODY,
+                                        .font_size = 16,
+                                        .color = COLOR_PHOSPHOR,
+                                    });
+                                }
+
+                                {
+                                    try ui.beginElement(.fromSlice("BufferDebugModeDropdown"));
+                                    defer ui.closeElement();
+
+                                    _ = try widgets.dropdown(ui, BufferDebugMode, .{
+                                        .value = &buffer_debug_mode,
+                                        // The color of the main dropdown box.
+                                        .box_color = COLOR_BROWN,
+                                        // The color of the main dropdown box when hovered.
+                                        .box_color_hover = COLOR_TAN,
+                                        // The color of the text for the selected value.
+                                        .text_color = COLOR_PHOSPHOR,
+                                        // The font to use for the text.
+                                        .font_id = FONT_ID_BODY,
+                                        // The font size for the text.
+                                        .font_size = 16,
+                                        // The background color of the floating options panel.
+                                        .panel_color = COLOR_GREYBROWN,
+                                        // The background color of an option when it is hovered.
+                                        .option_color_hover = COLOR_TAN,
+                                        .border_color = COLOR_PHOSPHOR,
+                                        .border_color_hover = COLOR_PHOSPHOR,
+                                        .border_width = .all(1),
+                                        .corner_radius = .all(5),
+                                    });
+                                }
+                            }
+
+                            switch (buffer_debug_mode) {
+                                .None => {},
+
+                                .Framebuffer => {
+                                    try ui.beginElement(.fromSlice("PictureInPictureTest"));
+                                    defer ui.closeElement();
+
+                                    try ui.configureElement(.{
+                                        .layout = .{
+                                            .sizing = .{
+                                                .w = .fixed(300),
+                                                .h = .fixed(300 / screen_ratio),
+                                            },
+                                        },
+                                        .corner_radius = .all(10),
+                                        .image = IMAGE_ID_PIP,
+                                    });
+                                },
+
+                                .@"Picking Position" => {
+                                    try ui.beginElement(.fromSlice("ShaderTest1"));
+                                    defer ui.closeElement();
+
+                                    try ui.configureElement(.{
+                                        .layout = .{
+                                            .sizing = .{
+                                                .w = .fixed(300),
+                                                .h = .fixed(300 / screen_ratio),
+                                            },
+                                        },
+                                        .corner_radius = .all(10),
+                                        .widget = true,
+                                    });
+
+                                    try widgets.shaderRect(ui, .{
+                                        .shader = pwp_shader,
+                                        .texture_bindings = &.{
+                                            .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
+                                        },
+                                        .textures = &.{demo.picking.view.?},
+                                        .uniforms = mouse_uniforms,
+                                    });
+                                },
+
+                                .@"Picking Id" => {
+                                    try ui.beginElement(.fromSlice("ShaderTest2"));
+                                    defer ui.closeElement();
+
+                                    try ui.configureElement(.{
+                                        .layout = .{
+                                            .sizing = .{
+                                                .w = .fixed(300),
+                                                .h = .fixed(300 / screen_ratio),
+                                            },
+                                        },
+                                        .corner_radius = .all(10),
+                                        .widget = true,
+                                    });
+
+                                    try widgets.shaderRect(ui, .{
+                                        .shader = pid_shader,
+                                        .texture_bindings = &.{
+                                            .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
+                                        },
+                                        .textures = &.{demo.picking.view.?},
+                                        .uniforms = mouse_uniforms,
+                                    });
+                                },
+                            }
                         }
                     }
                 }
             }
-
-            try ui.endLayout();
         }
 
         {
@@ -968,7 +1060,7 @@ pub fn main() !void {
                 picking_pass.end();
             }
 
-            const clicked = app.input_state.getMouseButton(.left) == .released;
+            const clicked = !ui_wants_mouse and app.input_state.getMouseButton(.left) == .released;
 
             if (clicked) {
                 const m_pos = app.input_state.getMousePosition();

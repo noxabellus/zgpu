@@ -1,6 +1,6 @@
 //! Dropdown widget for selecting one of multiple enum values.
 
-const DropdownWidget = @This();
+const Dropdown = @This();
 
 const std = @import("std");
 const Ui = @import("../Ui.zig");
@@ -24,19 +24,22 @@ pub fn For(comptime T: type) type {
     }
 
     const field_names = comptime std.meta.fieldNames(T);
-    const num_options = comptime field_names.len;
 
     return struct {
         const Self = @This();
 
         id: Ui.ElementId,
-        current_value: T,
+        value: *T,
         is_open: bool,
         highlighted_index: ?usize,
 
         // Style properties
         box_color: Ui.Color,
         box_color_hover: Ui.Color,
+        border_color: Ui.Color,
+        border_color_hover: Ui.Color,
+        border_width: Ui.BorderWidth,
+        corner_radius: Ui.CornerRadius,
         text_color: Ui.Color,
         font_id: Ui.FontId,
         font_size: u16,
@@ -46,7 +49,7 @@ pub fn For(comptime T: type) type {
 
         pub const Config = struct {
             /// The default enum value to be selected.
-            default: T,
+            value: *T,
             /// The color of the main dropdown box.
             box_color: Ui.Color = Ui.Color.fromLinearU8(224, 215, 210, 255),
             /// The color of the main dropdown box when hovered.
@@ -61,6 +64,14 @@ pub fn For(comptime T: type) type {
             panel_color: Ui.Color = Ui.Color.fromLinearU8(244, 235, 230, 255),
             /// The background color of an option when it is hovered.
             option_color_hover: Ui.Color = Ui.Color.fromLinearU8(224, 215, 210, 255),
+            /// The color of the element border.
+            border_color: Ui.Color = Ui.Color.fromLinearU8(200, 190, 185, 255),
+            /// The color of the element border when hovered or focused.
+            border_color_hover: Ui.Color = Ui.Color.fromLinearU8(150, 140, 135, 255),
+            /// The corner radius for the dropdown and options panel.
+            corner_radius: Ui.CornerRadius = .all(4.0),
+            /// The width of the border for the element.
+            border_width: Ui.BorderWidth = .all(1),
         };
 
         pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*Self {
@@ -69,7 +80,7 @@ pub fn For(comptime T: type) type {
 
             self.* = Self{
                 .id = id,
-                .current_value = config.default,
+                .value = config.value,
                 .is_open = false,
                 .highlighted_index = null,
                 .box_color = config.box_color,
@@ -79,6 +90,10 @@ pub fn For(comptime T: type) type {
                 .font_size = config.font_size,
                 .panel_color = config.panel_color,
                 .option_color_hover = config.option_color_hover,
+                .border_color = config.border_color,
+                .border_color_hover = config.border_color_hover,
+                .corner_radius = config.corner_radius,
+                .border_width = config.border_width,
             };
 
             return self;
@@ -86,45 +101,6 @@ pub fn For(comptime T: type) type {
 
         pub fn deinit(self: *Self, ui: *Ui) void {
             ui.gpa.destroy(self);
-        }
-
-        pub fn bindEvents(self: *Self, ui: *Ui) !void {
-            try ui.addListener(self.id, .activate_end, Self, EventHandler.onActivate, self);
-            try ui.addListener(self.id, .key_down, Self, EventHandler.onKeyDown, self);
-            try ui.addListener(self.id, .focus_lost, Self, EventHandler.onFocusLost, self);
-            try ui.addListener(self.id, .scoped_focus_change, Self, EventHandler.onScopedFocusChange, self);
-            try ui.addListener(self.id, .scoped_focus_close, Self, EventHandler.onCloseScope, self);
-
-            inline for (field_names) |field_name| {
-                const field_value = comptime @field(T, field_name);
-                const option_id = try optionId(self, ui, field_name);
-                try ui.addListener(option_id, .activate_end, Self, EventHandler.select(field_value), self);
-            }
-        }
-
-        pub fn unbindEvents(self: *Self, ui: *Ui) void {
-            ui.removeListener(self.id, .activate_end, Self, EventHandler.onActivate);
-            ui.removeListener(self.id, .key_down, Self, EventHandler.onKeyDown);
-            ui.removeListener(self.id, .focus_lost, Self, EventHandler.onFocusLost);
-            ui.removeListener(self.id, .scoped_focus_change, Self, EventHandler.onScopedFocusChange);
-            ui.removeListener(self.id, .scoped_focus_close, Self, EventHandler.onCloseScope);
-
-            inline for (field_names) |field_name| {
-                if (optionId(self, ui, field_name)) |option_id| {
-                    const field_value = comptime @field(T, field_name);
-                    ui.removeListener(option_id, .activate_end, Self, EventHandler.select(field_value));
-                } else |err| {
-                    log.err("Error generating option ID for unbinding: {s}", .{@errorName(err)});
-                }
-            }
-        }
-
-        pub fn onGet(self: *Self, _: *Ui) *const T {
-            return &self.current_value;
-        }
-
-        pub fn onSet(self: *Self, _: *Ui, new_value: *const T) !void {
-            self.current_value = new_value.*;
         }
 
         pub fn declare(self: *Self, ui: *Ui) !void {
@@ -135,14 +111,14 @@ pub fn For(comptime T: type) type {
                     .padding = .axes(10, 0),
                     .child_alignment = .center,
                 },
-                .background_color = if (ui.hovered()) self.box_color_hover else self.box_color,
-                .corner_radius = .all(4),
-                // .border = .{ .width = .all(1), .color = if (ui.focused()) Ui.Color.blue else Ui.Color.black }, FIXME
+                .background_color = if (ui.hovered() or ui.focused()) self.box_color_hover else self.box_color,
+                .corner_radius = self.corner_radius,
+                .border = .{ .width = self.border_width, .color = if (ui.focused() or ui.hovered()) self.border_color_hover else self.border_color },
                 .widget = false,
                 .state = .flags(.{ .activate = true, .focus = true, .keyboard = true }),
             });
 
-            try ui.text(@tagName(self.current_value), .{
+            try ui.text(@tagName(self.value.*), .{
                 .font_id = self.font_id,
                 .font_size = self.font_size,
                 .color = self.text_color,
@@ -164,8 +140,8 @@ pub fn For(comptime T: type) type {
                         .z_index = 10,
                     },
                     .background_color = self.panel_color,
-                    // .border = .{ .width = .all(1), .color = Ui.Color.black }, FIXME
-                    .corner_radius = .all(4),
+                    .border = .{ .width = self.border_width, .color = if (ui.focused() or ui.hovered()) self.border_color_hover else self.border_color },
+                    .corner_radius = self.corner_radius,
                 });
                 defer ui.closeElement();
 
@@ -188,7 +164,7 @@ pub fn For(comptime T: type) type {
                         },
                         .background_color = if (self.highlighted_index == i) self.option_color_hover else .transparent,
                         .widget = false,
-                        .corner_radius = .all(4),
+                        .corner_radius = self.corner_radius,
                         .state = .flags(.{ .activate = true }),
                     });
 
@@ -213,37 +189,25 @@ pub fn For(comptime T: type) type {
             return Ui.ElementId.fromSlice(try std.fmt.allocPrint(ui.frame_arena, "{x}_option_{s}", .{ self.id.id, name }));
         }
 
-        fn selectValue(self: *Self, ui: *Ui, value: T) !void {
-            const was_open = self.is_open;
-
-            if (self.current_value != value) {
-                self.current_value = value;
-                const int_value: std.meta.Tag(T) = @intFromEnum(value);
-                try ui.pushEvent(
-                    self.id,
-                    if (comptime @typeInfo(std.meta.Tag(T)).int.signedness == .signed)
-                        Ui.Event.Data{ .int_change = int_value }
-                    else
-                        Ui.Event.Data{ .uint_change = int_value },
-                    self,
-                );
-            }
-            self.is_open = false;
+        fn selectValue(self: *Self, ui: *Ui, value: T) !bool {
             self.highlighted_index = null;
 
-            if (was_open) {
+            defer self.is_open = false;
+            if (self.is_open) {
                 ui.popFocusScope();
             }
+
+            defer self.value.* = value;
+            return self.value.* == value;
         }
 
-        fn selectHighlighted(self: *Self, ui: *Ui) !void {
+        fn selectHighlighted(self: *Self, ui: *Ui) !bool {
             if (self.highlighted_index) |idx| {
                 inline for (comptime field_names, 0..) |field_name, i| {
                     if (i == idx) {
                         const selected_value = @field(T, field_name);
                         // selectValue will close the dropdown and pop the focus scope
-                        try self.selectValue(ui, selected_value);
-                        return;
+                        return self.selectValue(ui, selected_value);
                     }
                 }
             }
@@ -252,174 +216,172 @@ pub fn For(comptime T: type) type {
             self.is_open = false;
             self.highlighted_index = null;
             ui.popFocusScope();
+            return false;
         }
+    };
+}
 
-        const EventHandler = struct {
-            pub fn onActivate(self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
-                if (self.is_open) {
-                    // If dropdown is open, activation selects the highlighted item.
-                    try self.selectHighlighted(ui);
-                } else {
-                    // If dropdown is closed, activation opens it.
+/// Configure an open element as a dropdown selection widget for enum values.
+pub fn dropdown(ui: *Ui, comptime T: type, config: Dropdown.For(T).Config) !bool {
+    const D = Dropdown.For(T);
+
+    const field_names = comptime std.meta.fieldNames(T);
+    const num_options = comptime field_names.len;
+
+    const id = ui.open_ids.items[ui.open_ids.items.len - 1];
+    const gop = try ui.widget_states.getOrPut(ui.gpa, id.id);
+    const self = if (!gop.found_existing) create_new: {
+        const ptr = try D.init(ui, id, config);
+        gop.value_ptr.* = Ui.Widget{
+            .user_data = ptr,
+            .render = @ptrCast(&D.render),
+            .deinit = @ptrCast(&D.deinit),
+            .seen_this_frame = true,
+        };
+
+        break :create_new ptr;
+    } else reuse_existing: {
+        gop.value_ptr.seen_this_frame = true;
+
+        const ptr: *D = @ptrCast(@alignCast(gop.value_ptr.user_data));
+
+        // Update config properties in case they change frame-to-frame.
+        ptr.box_color = config.box_color;
+        ptr.box_color_hover = config.box_color_hover;
+        ptr.text_color = config.text_color;
+        ptr.font_id = config.font_id;
+        ptr.font_size = config.font_size;
+        ptr.panel_color = config.panel_color;
+        ptr.option_color_hover = config.option_color_hover;
+        ptr.border_color = config.border_color;
+        ptr.border_color_hover = config.border_color_hover;
+        ptr.corner_radius = config.corner_radius;
+        ptr.border_width = config.border_width;
+
+        break :reuse_existing ptr;
+    };
+
+    // Crucially, the widget declares its own elements, including the floating panel if open.
+    try self.declare(ui);
+
+    var changed = false;
+
+    if (ui.getEvent(self.id, .activate_end)) |_| {
+        if (self.is_open) {
+            // If dropdown is open, activation selects the highlighted item.
+            changed = changed or try self.selectHighlighted(ui);
+        } else {
+            // If dropdown is closed, activation opens it.
+            self.is_open = true;
+            try ui.pushFocusScope(self.id);
+
+            // When opening, set highlight to the current selection
+            inline for (field_names, 0..) |field_name, i| {
+                const value = comptime @field(T, field_name);
+                if (value == self.value.*) {
+                    self.highlighted_index = i;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (ui.getEvent(self.id, .key_down)) |event| key_down: {
+        if (!self.is_open) {
+            // When closed and focused, allow arrow keys to open the dropdown.
+            // Activation (Enter/Click) is handled by onActivate.
+            switch (event.data.key_down.key) {
+                .up, .down => {
                     self.is_open = true;
                     try ui.pushFocusScope(self.id);
 
                     // When opening, set highlight to the current selection
                     inline for (field_names, 0..) |field_name, i| {
                         const value = comptime @field(T, field_name);
-                        if (value == self.current_value) {
+                        if (value == self.value.*) {
                             self.highlighted_index = i;
                             break;
                         }
                     }
-                }
+                },
+                else => {},
             }
+            break :key_down;
+        }
 
-            pub fn onCloseScope(self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.scoped_focus_close)) !void {
-                // This handler is only called if this widget owns the scope.
-                // It should close the dropdown.
-                if (self.is_open) {
-                    self.is_open = false;
-                    self.highlighted_index = null;
-                    ui.popFocusScope();
+        // When open, handle navigation and selection.
+        switch (event.data.key_down.key) {
+            .up => {
+                if (self.highlighted_index) |idx| {
+                    self.highlighted_index = (idx + num_options - 1) % num_options;
+                } else {
+                    self.highlighted_index = num_options - 1;
                 }
-            }
-
-            pub fn onFocusLost(self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.focus_lost)) !void {
-                // When the dropdown loses focus, always close the panel and pop the scope.
-                if (self.is_open) {
-                    self.is_open = false;
-                    self.highlighted_index = null;
-                    ui.popFocusScope();
+            },
+            .down => {
+                if (self.highlighted_index) |idx| {
+                    self.highlighted_index = (idx + 1) % num_options;
+                } else {
+                    self.highlighted_index = 0;
                 }
-            }
+            },
+            .space => {
+                // Space is a common activation key, handle it directly for convenience.
+                changed = changed or try self.selectHighlighted(ui);
+            },
+            // .enter is handled by the 'activate_end' event.
+            // .escape is handled by the 'scoped_focus_close' event.
+            else => {},
+        }
+    }
 
-            pub fn onScopedFocusChange(self: *Self, _: *Ui, _: Ui.Event.Info, direction: Ui.Event.Payload(.scoped_focus_change)) !void {
-                if (!self.is_open) return;
+    if (ui.getEvent(self.id, .focus_lost)) |_| {
+        // When the dropdown loses focus, always close the panel and pop the scope.
+        if (self.is_open) {
+            self.is_open = false;
+            self.highlighted_index = null;
+            ui.popFocusScope();
+        }
+    }
 
-                switch (direction) {
-                    .prev => { // Equivalent to Shift+Tab
-                        if (self.highlighted_index) |idx| {
-                            self.highlighted_index = (idx + num_options - 1) % num_options;
-                        } else {
-                            self.highlighted_index = num_options - 1;
-                        }
-                    },
-                    .next => { // Equivalent to Tab
-                        if (self.highlighted_index) |idx| {
-                            self.highlighted_index = (idx + 1) % num_options;
-                        } else {
-                            self.highlighted_index = 0;
-                        }
-                    },
+    if (ui.getEvent(self.id, .scoped_focus_change)) |event| scoped_focus_change: {
+        if (!self.is_open) break :scoped_focus_change;
+
+        switch (event.data.scoped_focus_change) {
+            .prev => { // Equivalent to Shift+Tab
+                if (self.highlighted_index) |idx| {
+                    self.highlighted_index = (idx + num_options - 1) % num_options;
+                } else {
+                    self.highlighted_index = num_options - 1;
                 }
-            }
-
-            pub fn onKeyDown(self: *Self, ui: *Ui, _: Ui.Event.Info, key_data: Ui.Event.Payload(.key_down)) !void {
-                if (!self.is_open) {
-                    // When closed and focused, allow arrow keys to open the dropdown.
-                    // Activation (Enter/Click) is handled by onActivate.
-                    switch (key_data.key) {
-                        .up, .down => {
-                            self.is_open = true;
-                            try ui.pushFocusScope(self.id);
-
-                            // When opening, set highlight to the current selection
-                            inline for (field_names, 0..) |field_name, i| {
-                                const value = comptime @field(T, field_name);
-                                if (value == self.current_value) {
-                                    self.highlighted_index = i;
-                                    break;
-                                }
-                            }
-                        },
-                        else => {},
-                    }
-                    return;
+            },
+            .next => { // Equivalent to Tab
+                if (self.highlighted_index) |idx| {
+                    self.highlighted_index = (idx + 1) % num_options;
+                } else {
+                    self.highlighted_index = 0;
                 }
+            },
+        }
+    }
 
-                // When open, handle navigation and selection.
-                switch (key_data.key) {
-                    .up => {
-                        if (self.highlighted_index) |idx| {
-                            self.highlighted_index = (idx + num_options - 1) % num_options;
-                        } else {
-                            self.highlighted_index = num_options - 1;
-                        }
-                    },
-                    .down => {
-                        if (self.highlighted_index) |idx| {
-                            self.highlighted_index = (idx + 1) % num_options;
-                        } else {
-                            self.highlighted_index = 0;
-                        }
-                    },
-                    .space => {
-                        // Space is a common activation key, handle it directly for convenience.
-                        try self.selectHighlighted(ui);
-                    },
-                    // .enter is handled by the 'activate_end' event.
-                    // .escape is handled by the 'scoped_focus_close' event.
-                    else => {},
-                }
-            }
+    if (ui.getEvent(self.id, .scoped_focus_close)) |_| {
+        // This handler is only called if this widget owns the scope.
+        // It should close the dropdown.
+        if (self.is_open) {
+            self.is_open = false;
+            self.highlighted_index = null;
+            ui.popFocusScope();
+        }
+    }
 
-            pub fn select(comptime value: T) (fn (self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) anyerror!void) {
-                return struct {
-                    pub fn handler(self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
-                        try self.selectValue(ui, value);
-                    }
-                }.handler;
-            }
-        };
-    };
+    inline for (field_names) |field_name| {
+        const field_value = comptime @field(T, field_name);
+        const option_id = try D.optionId(self, ui, field_name);
+        if (ui.getEvent(option_id, .activate_end)) |_| {
+            changed = changed or try self.selectValue(ui, field_value);
+        }
+    }
+
+    return changed;
 }
-
-// /// Configure an open element as a dropdown selection widget for enum values.
-// pub fn bindDropdown(self: *Ui, comptime T: type, config: Widget.Dropdown.For(T).Config) !void {
-//     const Dropdown = Widget.Dropdown.For(T);
-
-//     std.debug.assert(clay.getCurrentContext() == self.clay_context);
-//     std.debug.assert(self.open_ids.items.len > 0);
-
-//     const id = self.open_ids.items[self.open_ids.items.len - 1];
-//     const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-//     const widget = if (!gop.found_existing) create_new: {
-//         const ptr = try Dropdown.init(self, id, config);
-//         gop.value_ptr.* = Widget{
-//             .user_data = ptr,
-//             .get = @ptrCast(&Dropdown.onGet),
-//             .set = @ptrCast(&Dropdown.onSet),
-//             .state_type = @typeName(T),
-//             .render = @ptrCast(&Dropdown.render),
-//             .deinit = @ptrCast(&Dropdown.deinit),
-//             .seen_this_frame = true,
-//         };
-
-//         try ptr.bindEvents(self);
-
-//         break :create_new ptr;
-//     } else reuse_existing: {
-//         gop.value_ptr.seen_this_frame = true;
-
-//         const ptr: *Dropdown = @ptrCast(@alignCast(gop.value_ptr.user_data));
-
-//         // Update config properties in case they change frame-to-frame.
-//         ptr.box_color = config.box_color;
-//         ptr.box_color_hover = config.box_color_hover;
-//         ptr.text_color = config.text_color;
-//         ptr.font_id = config.font_id;
-//         ptr.font_size = config.font_size;
-//         ptr.panel_color = config.panel_color;
-//         ptr.option_color_hover = config.option_color_hover;
-
-//         break :reuse_existing ptr;
-//     };
-
-//     if (self.deferred_widget_states_last.get(id.id)) |deferred_state| {
-//         try widget.onSet(self, @ptrCast(@alignCast(deferred_state)));
-//     }
-
-//     // Crucially, the widget declares its own elements, including the floating panel if open.
-//     try widget.declare(self);
-// }

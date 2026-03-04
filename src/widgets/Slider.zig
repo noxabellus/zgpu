@@ -391,8 +391,8 @@ pub fn slider(ui: *Ui, comptime T: type, config: Slider.For(T).Config) !bool {
     }
 
     if (ui.getEvent(id, .key)) |event| key: {
-        const key = event.data.key;
-        if (self.key_repeat.active_key != key.key) break :key;
+        const data = event.data.key;
+        if (self.key_repeat.active_key != data.key) break :key;
 
         const delay = switch (self.key_repeat.state) {
             .none => break :key,
@@ -402,13 +402,13 @@ pub fn slider(ui: *Ui, comptime T: type, config: Slider.For(T).Config) !bool {
 
         if (self.key_repeat.timer.?.read() < delay) break :key;
 
-        changed = changed or try self.performKeyAction(key.key);
+        changed = changed or try self.performKeyAction(data.key);
         self.key_repeat.advance();
         self.key_repeat.timer.?.reset();
     }
 
     if (ui.getEvent(id, .key_up)) |event| {
-        if (self.key_repeat.active_key == event.data.key.key) {
+        if (self.key_repeat.active_key == event.data.key_up.key) {
             self.key_repeat.state = .none;
             self.key_repeat.active_key = null;
         }
