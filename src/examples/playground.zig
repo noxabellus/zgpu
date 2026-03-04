@@ -838,7 +838,7 @@ pub fn main() !void {
                                 defer ui.closeElement();
 
                                 {
-                                    try ui.beginElement(.fromSlice("BufferDebugModeLabel"));
+                                    try ui.beginElement(.fromSlice("BufferDebugModeDropdownLabel"));
                                     defer ui.closeElement();
 
                                     try ui.configureElement(.{
@@ -878,6 +878,57 @@ pub fn main() !void {
                                         .border_color_hover = COLOR_PHOSPHOR,
                                         .border_width = .all(1),
                                         .corner_radius = .all(5),
+                                    });
+                                }
+                            }
+
+                            {
+                                try ui.openElement(.{
+                                    .id = .fromSlice("RadioRow"),
+                                    .layout = .{
+                                        .sizing = .{
+                                            .w = .grow,
+                                            .h = .fit,
+                                        },
+                                        .direction = .left_to_right,
+                                        .child_alignment = .{
+                                            .x = .left,
+                                            .y = .center,
+                                        },
+                                        .child_gap = 10,
+                                    },
+                                });
+                                defer ui.closeElement();
+
+                                inline for (comptime std.meta.fieldNames(BufferDebugMode)) |mode_name| {
+                                    try ui.openElement(.{
+                                        .id = .localID(mode_name),
+                                        .layout = .{
+                                            .sizing = .{
+                                                .w = .fixed(16),
+                                                .h = .fixed(16),
+                                            },
+                                        },
+                                        .border = .{
+                                            .color = COLOR_PHOSPHOR,
+                                            .width = .all(1),
+                                        },
+                                        .corner_radius = .all(8),
+                                        .widget = true,
+                                        .state = .flags(.{
+                                            .activate = true,
+                                            .focus = true,
+                                        }),
+                                    });
+                                    defer ui.closeElement();
+
+                                    _ = try widgets.radioButton(ui, BufferDebugMode, .{
+                                        .group_id = .fromSlice("BufferDebugModeRadioGroup"),
+                                        .value = @field(BufferDebugMode, mode_name),
+                                        .state = &buffer_debug_mode,
+                                        .circle_color = if (ui.focused() or ui.hovered()) COLOR_TAN else COLOR_BROWN,
+                                        .dot_color = COLOR_PHOSPHOR,
+                                        .size = 16.0,
                                     });
                                 }
                             }

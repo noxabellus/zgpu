@@ -27,8 +27,9 @@ const FrameElementInfo = struct {
 pub const widgets = struct {
     pub const checkbox = Widget.Checkbox.checkbox;
     pub const dropdown = Widget.Dropdown.dropdown;
-    pub const slider = Widget.Slider.slider;
+    pub const radioButton = Widget.RadioButton.radioButton;
     pub const shaderRect = Widget.ShaderRect.shaderRect;
+    pub const slider = Widget.Slider.slider;
 };
 
 pub const Widget = struct {
@@ -40,7 +41,7 @@ pub const Widget = struct {
     pub const Checkbox = @import("widgets/Checkbox.zig");
     pub const Slider = @import("widgets/Slider.zig");
     // pub const TextInput = @import("widgets/TextInput.zig");
-    // pub const RadioButton = @import("widgets/RadioButton.zig");
+    pub const RadioButton = @import("widgets/RadioButton.zig");
     pub const Dropdown = @import("widgets/Dropdown.zig");
     pub const ShaderRect = @import("widgets/ShaderRect.zig");
 

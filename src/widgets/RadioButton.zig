@@ -1,6 +1,6 @@
 //! Radio button widget for selecting one of multiple enum values.
 
-const RadioButtonWidget = @This();
+const RadioButton = @This();
 
 const std = @import("std");
 const Ui = @import("../Ui.zig");
@@ -31,6 +31,7 @@ pub fn For(comptime T: type) type {
         id: Ui.ElementId,
         group_id: Ui.ElementId,
         value: T,
+        state: *T,
 
         // Style properties
         circle_color: Ui.Color,
@@ -42,6 +43,8 @@ pub fn For(comptime T: type) type {
             group_id: Ui.ElementId,
             /// The specific enum value this button represents.
             value: T,
+            /// The enum value to control.
+            state: *T,
             /// The color of the button's outer circle.
             circle_color: Ui.Color = Ui.Color.fromLinearU8(200, 200, 200, 255),
             /// The color of the inner dot when the button is selected.
@@ -58,6 +61,7 @@ pub fn For(comptime T: type) type {
                 .id = id,
                 .group_id = config.group_id,
                 .value = config.value,
+                .state = config.state,
                 .circle_color = config.circle_color,
                 .dot_color = config.dot_color,
                 .size = config.size,
@@ -70,61 +74,10 @@ pub fn For(comptime T: type) type {
             ui.gpa.destroy(self);
         }
 
-        pub fn bindEvents(self: *Self, ui: *Ui) !void {
-            // A radio button is "activated" by a click or keyboard interaction.
-            // `activate_end` is the correct event as it fires on release for both.
-            try ui.addListener(self.id, .activate_end, Self, onActivate, self);
-        }
-
-        pub fn unbindEvents(self: *Self, ui: *Ui) void {
-            ui.removeListener(self.id, .activate_end, Self, onActivate);
-        }
-
-        /// Returns the enum value this specific button represents, not the group's current value.
-        pub fn onGet(self: *Self, _: *Ui) *const T {
-            return &self.value;
-        }
-
-        /// Setting the value of an individual radio button is not supported. This is a no-op.
-        /// To change the selected button programmatically, get the shared state pointer via
-        /// `ui.getOrPutSharedWidgetState` and modify its value directly.
-        pub fn onSet(_: *Self, _: *Ui, _: *const T) !void {}
-
-        /// Called when the user clicks the radio button or activates it with the keyboard.
-        fn onActivate(self: *Self, ui: *Ui, _: Ui.Event.Info, _: Ui.Event.Payload(.activate_end)) !void {
-            // Get the default value for the group if it doesn't exist yet.
-            // As per the requirement, this is the first field in the enum declaration.
-            const default_value = comptime @field(T, std.meta.fieldNames(T)[0]);
-
-            // Get a pointer to the shared state for this group. This will create it with
-            // the default value if it's the first button in the group to be activated.
-            const shared_state_ptr = try ui.getOrPutSharedWidgetState(T, self.group_id, default_value);
-
-            // Update the shared state to this button's value.
-            if (shared_state_ptr.* != self.value) {
-                shared_state_ptr.* = self.value;
-
-                // Push a value_change event to notify the application.
-                const int_value: std.meta.Tag(T) = @intFromEnum(self.value);
-                try ui.pushEvent(
-                    self.group_id,
-                    if (comptime @typeInfo(std.meta.Tag(T)).int.signedness == .signed)
-                        Ui.Event.Data{ .int_change = int_value }
-                    else
-                        Ui.Event.Data{ .uint_change = int_value },
-                    self,
-                );
-            }
-        }
-
         /// The rendering function for the radio button, called by the UI system.
         pub fn render(self: *Self, ui: *Ui, command: Ui.RenderCommand) !void {
-            // Get the default value for the group if it doesn't exist yet.
-            const default_value = comptime @field(T, std.meta.fieldNames(T)[0]);
-
             // Get a pointer to the shared state for this group to check if we are selected.
-            const shared_state_ptr = try ui.getOrPutSharedWidgetState(T, self.group_id, default_value);
-            const is_selected = (shared_state_ptr.* == self.value);
+            const is_selected = (self.state.* == self.value);
 
             const bb = command.bounding_box;
 
@@ -154,43 +107,44 @@ pub fn For(comptime T: type) type {
     };
 }
 
-// /// Configure an open element as a radio button widget for enum values.
-// /// All radio buttons sharing the same `group_id` in the config will be linked.
-// pub fn bindRadioButton(self: *Ui, comptime T: type, config: Widget.RadioButton.For(T).Config) !void {
-//     const RadioButton = Widget.RadioButton.For(T);
+/// Configure an open element as a radio button widget for enum values.
+/// All radio buttons sharing the same `group_id` in the config will be linked.
+pub fn radioButton(ui: *Ui, comptime T: type, config: RadioButton.For(T).Config) !bool {
+    const R = RadioButton.For(T);
 
-//     std.debug.assert(clay.getCurrentContext() == self.clay_context);
-//     std.debug.assert(self.open_ids.items.len > 0);
+    const id = ui.open_ids.items[ui.open_ids.items.len - 1];
+    const gop = try ui.widget_states.getOrPut(ui.gpa, id.id);
+    const self = if (!gop.found_existing) create_new: {
+        const ptr = try R.init(ui, id, config);
+        gop.value_ptr.* = Ui.Widget{
+            .user_data = ptr,
+            .render = @ptrCast(&R.render),
+            .deinit = @ptrCast(&R.deinit),
+            .seen_this_frame = true,
+        };
 
-//     const id = self.open_ids.items[self.open_ids.items.len - 1];
-//     const gop = try self.widget_states.getOrPut(self.gpa, id.id);
-//     if (!gop.found_existing) {
-//         const ptr = try RadioButton.init(self, id, config);
-//         gop.value_ptr.* = Widget{
-//             .user_data = ptr,
-//             .get = @ptrCast(&RadioButton.onGet),
-//             .set = @ptrCast(&RadioButton.onSet),
-//             .state_type = @typeName(T),
-//             .render = @ptrCast(&RadioButton.render),
-//             .deinit = @ptrCast(&RadioButton.deinit),
-//             .seen_this_frame = true,
-//         };
+        break :create_new ptr;
+    } else reuse_existing: {
+        gop.value_ptr.seen_this_frame = true;
 
-//         try ptr.bindEvents(self);
-//     } else {
-//         gop.value_ptr.seen_this_frame = true;
+        const ptr: *R = @ptrCast(@alignCast(gop.value_ptr.user_data));
 
-//         const ptr: *RadioButton = @ptrCast(@alignCast(gop.value_ptr.user_data));
+        // Update config properties in case they change frame-to-frame.
+        ptr.circle_color = config.circle_color;
+        ptr.dot_color = config.dot_color;
+        ptr.size = config.size;
 
-//         // Update config properties in case they change frame-to-frame.
-//         ptr.circle_color = config.circle_color;
-//         ptr.dot_color = config.dot_color;
-//         ptr.size = config.size;
-//     }
+        break :reuse_existing ptr;
+    };
 
-//     // We must "see" the shared state during the layout phase to prevent it
-//     // from being garbage collected by endLayout(). We don't need to do anything
-//     // with the returned pointer here; just calling the function is enough.
-//     const default_value = comptime @field(T, std.meta.fieldNames(T)[0]);
-//     _ = try self.getOrPutSharedWidgetState(T, config.group_id, default_value);
-// }
+    if (ui.getEvent(id, .activate_end)) |_| {
+        // Update the shared state to this button's value.
+        if (self.state.* != self.value) {
+            self.state.* = self.value;
+
+            return true;
+        }
+    }
+
+    return false;
+}
