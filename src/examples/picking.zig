@@ -160,7 +160,7 @@ const PickingUniforms = struct {
 pub fn main() !void {
     var timer = try std.time.Timer.start();
 
-    const app = try Application.init("zgpu lighting example");
+    const app = try Application.init("zgpu picking example");
     defer app.deinit();
 
     // Init Asset Cache
