@@ -40,7 +40,6 @@ fn optionId(ui: *Ui, id: Ui.ElementId, name: []const u8) !Ui.ElementId {
 fn selectValue(self: *Dropdown, ui: *Ui, value: usize) !bool {
     ui.popFocusScope();
     const changed = self.value.* != value;
-    log.info("selectValue: {d}, {d}, {any}", .{ self.value.*, value, changed });
     self.value.* = value;
     self.highlighted_index = null;
     return changed;
@@ -54,7 +53,6 @@ pub fn enumDropdown(ui: *Ui, id: Ui.ElementId, comptime T: type, selected: *T) !
     if (try dropdown(ui, id, &state, std.meta.fieldNames(T))) {
         inline for (comptime std.meta.fieldNames(T), 0..) |field_name, i| {
             if (i == state) {
-                log.info("enumDropdown changed {any} -> {any}", .{ selected.*, @field(T, field_name) });
                 selected.* = @field(T, field_name);
                 return true;
             }
@@ -129,20 +127,16 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
             });
 
             if (ui.getEvent(option_id, .activate_end)) |_| {
-                log.info("activated {s}", .{field_name});
                 return self.selectValue(ui, i);
             }
         }
     }
 
     if (ui.getEvent(id, .activate_end)) |_| {
-        log.info("activated main", .{});
         if (self.highlighted_index) |hi| {
-            log.info("Selecting {d}", .{hi});
             // If dropdown is open, activation selects the highlighted item.
             return self.selectValue(ui, hi);
         } else {
-            log.info("Opening", .{});
             // If dropdown is closed, activation opens it.
             try ui.pushFocusScope(id);
 
@@ -152,7 +146,6 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
     }
 
     if (ui.getEvent(id, .key_down)) |event| key_down: {
-        log.info("keydown {any}", .{event});
         if (self.highlighted_index == null) {
             // When closed and focused, allow arrow keys to open the dropdown.
             // Activation (Enter/Click) is handled by onActivate.
@@ -195,8 +188,6 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
     }
 
     if (ui.getEvent(id, .focus_lost)) |_| {
-        log.info(".focus_lost", .{});
-
         // When the dropdown loses focus, always close the panel and pop the scope.
         if (self.highlighted_index != null) {
             self.highlighted_index = null;
@@ -205,8 +196,6 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
     }
 
     if (ui.getEvent(id, .scoped_focus_change)) |event| scoped_focus_change: {
-        log.info(".scope_focus_change", .{});
-
         if (self.highlighted_index == null) break :scoped_focus_change;
 
         switch (event.data.scoped_focus_change) {
@@ -228,7 +217,6 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
     }
 
     if (ui.getEvent(id, .scoped_focus_close)) |_| {
-        log.info(".scope_focus_closed", .{});
         // This handler is only called if this widget owns the scope.
         // It should close the dropdown.
         if (self.highlighted_index != null) {
