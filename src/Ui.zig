@@ -20,6 +20,7 @@ test {
 }
 
 const FrameElementInfo = struct {
+    widget: bool,
     state: ElementState,
     parent_id: ?ElementId,
 };
@@ -90,6 +91,10 @@ events: std.ArrayList(Event) = .empty,
 user_data: ?*anyopaque = null,
 
 open_layout: bool = false,
+
+// A stack of widget themes
+theme_stack: std.ArrayList(*const Theme) = .empty,
+theme_match_levels: std.StringHashMapUnmanaged(Theme.MatchLevels) = .empty,
 
 // A stack of all elements currently under the mouse, populated during layout. The last element is the top-most.
 hovered_element_stack: std.ArrayList(StateElement) = .empty,
@@ -229,6 +234,8 @@ pub fn deinit(self: *Ui) void {
     }
 
     self.events.deinit(self.gpa);
+    self.theme_stack.deinit(self.gpa);
+    self.theme_match_levels.deinit(self.gpa);
     self.hovered_element_stack.deinit(self.gpa);
     self.navigable_elements.deinit(self.gpa);
     self.reverse_navigable_elements.deinit(self.gpa);
@@ -259,6 +266,7 @@ pub fn wantsMouse(self: *Ui, root_element_style: enum(u1) { containerized = 0, f
 pub fn beginLayout(self: *Ui, allow_mouse: bool, dimensions: vec2, delta_ms: f32) !void {
     self.render_commands = null;
 
+    self.theme_stack.clearRetainingCapacity();
     self.hovered_element_stack.clearRetainingCapacity();
     self.navigable_elements.clearRetainingCapacity();
     self.reverse_navigable_elements.clearRetainingCapacity();
@@ -1423,16 +1431,312 @@ pub const HeadlessElementDeclaration = struct {
     }
 };
 
-pub const ElementDeclaration = struct {
-    id: ElementId = .{},
-    /// Controls various settings that affect the size and position of an element, as well as the sizes and positions of any child elements.
-    layout: LayoutConfig = .{},
-    /// Controls the background color of the resulting element.
-    /// By convention specified as 0-255, but interpretation is up to the renderer.
-    /// If no other config is specified, `.background_color` will generate a `RECTANGLE` render command, otherwise it will be passed as a property to `IMAGE` or `CUSTOM` render commands.
-    background_color: Color = .{},
-    /// Controls the "radius", or corner rounding of elements, including rectangles, borders and images.
-    corner_radius: CornerRadius = .{},
+pub const ActionState = enum(u8) {
+    standard,
+    focus,
+    hover,
+    active,
+    disabled,
+
+    pub fn isOneOf(base: ActionState, elems: []const ActionState) bool {
+        return std.mem.indexOfScalar(ActionState, elems, base) != null;
+    }
+
+    pub fn match(element: ActionState, selector: ActionState) ?Theme.Match {
+        if (element == selector) return .exact;
+        switch (element) {
+            .standard => return null,
+            .focus => if (selector.isOneOf(&.{ .standard, .hover, .active })) return .inherit,
+            .hover => if (selector.isOneOf(&.{ .standard, .focus, .active })) return .inherit,
+            .active => if (selector.isOneOf(&.{ .standard, .focus, .hover })) return .inherit,
+            .disabled => if (selector == .standard) return .inherit,
+        }
+        return null;
+    }
+};
+
+pub fn getActionState(self: *Ui) ActionState {
+    // TODO: support disabling
+    return if (self.active()) .active else if (self.hovered()) .hover else if (self.focused()) .focus else .standard;
+}
+
+pub const Theme = struct {
+    map: Map = .empty,
+
+    pub fn deinit(self: *Theme, allocator: std.mem.Allocator) void {
+        var it = self.map.valueIterator();
+        while (it.next()) |key_map| key_map.deinit(allocator);
+        self.map.deinit(allocator);
+        self.map = .empty;
+    }
+
+    pub fn set(self: *Theme, allocator: std.mem.Allocator, comptime name: []const u8, kind: Kind, state: ActionState, value: anytype) !void {
+        const name_gop = try self.map.getOrPut(allocator, name);
+        const key_set = name_gop.value_ptr;
+        if (!name_gop.found_existing) key_set.* = .empty;
+
+        try key_set.append(allocator, .{ .kind = kind, .state = state, .data = .create(value) });
+    }
+
+    pub fn apply(
+        self: *const Theme,
+        allocator: std.mem.Allocator,
+        match_levels: *std.StringHashMapUnmanaged(MatchLevels),
+        layout: *const Binding.Set,
+        kind: Kind,
+        state: ActionState,
+        out: *anyopaque,
+    ) !void {
+        for (&layout.names, &layout.bindings) |name, *binding| {
+            if (self.map.getPtr(name)) |property_set| {
+                for (property_set.items) |property| {
+                    const new_lvls = MatchLevels{
+                        .kind = kind.match(property.kind) orelse continue,
+                        .state = state.match(property.state) orelse continue,
+                    };
+                    const match_gop = try match_levels.getOrPut(allocator, name);
+                    const ext_lvls = match_gop.value_ptr;
+
+                    if (match_gop.found_existing) {
+                        if (ext_lvls.kind == .exact and ext_lvls.state == .exact and new_lvls.kind != .exact and new_lvls.state != .exact) continue;
+                    }
+
+                    ext_lvls.* = new_lvls;
+
+                    property.data.apply(binding, out);
+                }
+            }
+        }
+    }
+
+    pub const Map = std.StringHashMapUnmanaged(std.ArrayList(Property));
+
+    pub const Property = struct {
+        kind: Kind = .content,
+        state: ActionState = .standard,
+        data: Data = .{},
+    };
+
+    pub const Match = enum { exact, inherit };
+    pub const MatchLevels = struct { kind: Match = .inherit, state: Match = .inherit };
+
+    pub const Kind = enum {
+        content,
+        widget,
+
+        pub fn match(element: Kind, selector: Kind) ?Match {
+            if (element == selector) return .exact;
+            return switch (element) {
+                .content => null,
+                .widget => .inherit,
+            };
+        }
+    };
+
+    pub const Data = struct {
+        size: u8 = 0,
+        value: [Data.MAX_SIZE]u8 = [1]u8{0} ** Data.MAX_SIZE,
+
+        pub const MAX_SIZE = 32;
+
+        pub fn create(value: anytype) Data {
+            var out = Data{
+                .size = @sizeOf(@TypeOf(value)),
+            };
+            @memcpy(out.value[0..out.size], std.mem.asBytes(&value));
+            return out;
+        }
+
+        pub fn apply(self: *const Data, binding: *const Binding, out: *anyopaque) void {
+            std.debug.assert(self.size == binding.size);
+            @memcpy(
+                @as([*]u8, @ptrCast(out))[binding.offset .. binding.offset + binding.size],
+                self.value[0..binding.size],
+            );
+        }
+    };
+
+    pub const Binding = struct {
+        size: u16 = 0,
+        offset: u16 = 0,
+
+        pub const Set = struct {
+            count: u8 = 0,
+            names: [MAX_BINDINGS][]const u8 = [1][]const u8{""} ** Set.MAX_BINDINGS,
+            bindings: [MAX_BINDINGS]Binding = [1]Binding{.{}} ** Set.MAX_BINDINGS,
+
+            pub const ELEM_DECL_BIND_SET = Binding.Set.custom(HeadlessElementDeclaration, .{
+                "background_color",
+                .{ "border_color", "border.color" },
+                .{ "border_width", "border.width" },
+                "corner_radius",
+                .{ "padding", "layout.padding" },
+                .{ "child_gap", "layout.child_gap" },
+                .{ "child_alignment", "layout.child_alignment" },
+                .{ "child_direction", "layout.direction" },
+            });
+
+            pub const TEXT_CONF_BIND_SET = Binding.Set.custom(TextElementConfig, .{
+                .{ "text_color", "color" },
+                "font_id",
+                "letter_spacing",
+                "line_height",
+                .{ "text_wrap_mode", "wrap_mode" },
+                .{ "text_alignment", "alignment" },
+            });
+
+            pub const MAX_BINDINGS = 32;
+
+            pub fn find(self: *const Set, search_name: []const u8) ?*const Binding {
+                for (self.names, 0..) |bound_name, i| {
+                    if (std.mem.eql(u8, search_name, bound_name)) {
+                        return &self.bindings[i];
+                    }
+                }
+                return null;
+            }
+
+            pub inline fn create(comptime T: type) Set {
+                comptime {
+                    if (T == TextElementConfig) return TEXT_CONF_BIND_SET;
+                    if (T == HeadlessElementDeclaration) return ELEM_DECL_BIND_SET;
+                    std.debug.assert(T != ElementDeclaration);
+
+                    const fields = std.meta.fieldNames(T);
+
+                    var out = Set{ .count = fields.len };
+
+                    for (fields, 0..) |field_name, i| {
+                        out.names[i] = field_name;
+                        out.bindings[i] = Binding.create(T, field_name);
+                    }
+
+                    return out;
+                }
+            }
+
+            pub inline fn custom(comptime T: type, comptime Fset: anytype) Set {
+                comptime {
+                    var out = Set{ .count = Fset.len };
+
+                    for (0..Fset.len) |i| {
+                        const x = Fset[i];
+                        if (@typeInfo(@TypeOf(x)) == .@"struct") {
+                            out.names[i] = x[0];
+                            out.bindings[i] = .custom(T, x[1]);
+                        } else {
+                            out.names[i] = x;
+                            out.bindings[i] = .create(T, x);
+                        }
+                    }
+
+                    return out;
+                }
+            }
+        };
+
+        pub inline fn create(comptime T: type, comptime F: []const u8) Binding {
+            comptime return .{
+                .size = @sizeOf(@FieldType(T, F)),
+                .offset = @offsetOf(T, F),
+            };
+        }
+
+        pub inline fn custom(comptime T: type, comptime Fs: []const u8) Binding {
+            comptime {
+                var X = T;
+                var offset = 0;
+                var it = std.mem.tokenizeScalar(u8, Fs, '.');
+                while (it.next()) |field_name| {
+                    offset += @offsetOf(X, field_name);
+                    X = @FieldType(X, field_name);
+                }
+                return .{
+                    .size = @sizeOf(X),
+                    .offset = offset,
+                };
+            }
+        }
+    };
+};
+
+pub fn pushTheme(self: *Ui, theme: *const Theme) !void {
+    try self.theme_stack.append(self.gpa, theme);
+}
+
+pub fn popTheme(self: *Ui) ?*const Theme {
+    return self.theme_stack.pop();
+}
+
+pub fn applyTheme(self: *Ui, binding_set: *const Theme.Binding.Set, kind: Theme.Kind, out: *anyopaque) !void {
+    self.theme_match_levels.clearRetainingCapacity();
+
+    const state = self.getActionState();
+    for (self.theme_stack.items) |theme| {
+        try theme.apply(self.gpa, &self.theme_match_levels, binding_set, kind, state, out);
+    }
+}
+
+pub fn beginSection(self: *Ui, id: ElementId, section: SectionDeclaration) !void {
+    try self.beginElement(id);
+
+    var decl = HeadlessElementDeclaration{
+        .aspect_ratio = section.aspect_ratio,
+        .image = section.image,
+        .floating = section.floating,
+        .widget = section.widget,
+        .clip = section.clip,
+        .state = section.state,
+    };
+
+    decl.layout.sizing = section.sizing;
+
+    try self.applyTheme(&Theme.Binding.Set.ELEM_DECL_BIND_SET, if (section.widget) .widget else .content, &decl);
+
+    try self.configureElement(decl);
+}
+
+pub fn endSection(self: *Ui) void {
+    return self.endElement();
+}
+
+pub fn textSection(self: *Ui, content: []const u8) !void {
+    var decl = TextElementConfig{};
+
+    const parent_id: ElementId = if (self.open_ids.items.len > 1)
+        self.open_ids.items[self.open_ids.items.len - 2]
+    else
+        return error.TextSectionMustBeInContentSection;
+    const parent_info = self.frame_element_info.get(parent_id.id) orelse return error.Unexpected;
+
+    try self.applyTheme(&Theme.Binding.Set.TEXT_CONF_BIND_SET, if (parent_info.widget) .widget else .content, &decl);
+
+    return self.text(content, decl);
+}
+
+pub fn getOrCreateWidget(self: *Ui, comptime T: type, id: ElementId) !*T {
+    const gop = try self.widget_states.getOrPut(self.gpa, id.id);
+    if (!gop.found_existing) {
+        const ptr = try self.gpa.create(T);
+        gop.value_ptr.* = Ui.Widget{
+            .user_data = ptr,
+            .render = @ptrCast(&T.render),
+            .deinit = @ptrCast(&T.deinit),
+            .seen_this_frame = true,
+        };
+
+        return ptr;
+    } else {
+        gop.value_ptr.seen_this_frame = true;
+
+        const ptr: *T = @ptrCast(@alignCast(gop.value_ptr.user_data));
+        return ptr;
+    }
+}
+
+pub const SectionDeclaration = struct {
+    /// Controls sizing of this element inside its parent container
+    sizing: Sizing = .{},
     // Controls settings related to aspect ratio scaling.
     aspect_ratio: AspectRatioElementConfig = 0,
     /// Controls settings related to image elements.
@@ -1444,10 +1748,37 @@ pub const ElementDeclaration = struct {
     widget: bool = false,
     /// Controls whether an element should clip its contents and allow scrolling rather than expanding to contain them.
     clip: ClipElementConfig = .{},
-    /// Controls settings related to element borders, and will generate BORDER render command
-    border: BorderElementConfig = .{},
     /// A pointer that will be transparently passed through to resulting render command
     state: ElementState = .none,
+};
+
+pub const ElementDeclaration = struct {
+    id: ElementId = .{},
+
+    /// Controls various settings that affect the size and position of an element, as well as the sizes and positions of any child elements.
+    layout: LayoutConfig = .{},
+    // Controls settings related to aspect ratio scaling.
+    aspect_ratio: AspectRatioElementConfig = 0,
+    /// Controls settings related to image elements.
+    image: ImageElementConfig = null,
+    /// Controls whether and how an element "floats", which means it layers over the top of other elements in z order, and doesn't affect the position and size of siblings or parent elements.
+    /// Note: in order to activate floating, `.floating.attachTo` must be set to something other than the default value.
+    floating: FloatingElementConfig = .{},
+    /// Whether or not this element will be treated as a widget.
+    widget: bool = false,
+    /// Controls whether an element should clip its contents and allow scrolling rather than expanding to contain them.
+    clip: ClipElementConfig = .{},
+    /// A pointer that will be transparently passed through to resulting render command
+    state: ElementState = .none,
+
+    /// Controls the background color of the resulting element.
+    /// By convention specified as 0-255, but interpretation is up to the renderer.
+    /// If no other config is specified, `.background_color` will generate a `RECTANGLE` render command, otherwise it will be passed as a property to `IMAGE` or `CUSTOM` render commands.
+    background_color: Color = .{},
+    /// Controls the "radius", or corner rounding of elements, including rectangles, borders and images.
+    corner_radius: CornerRadius = .{},
+    /// Controls settings related to element borders, and will generate BORDER render command
+    border: BorderElementConfig = .{},
 
     fn toClay(self: ElementDeclaration) clay.ElementDeclaration {
         return clay.ElementDeclaration{
@@ -1557,6 +1888,7 @@ fn handleStateSetup(self: *Ui, declaration: ElementDeclaration) !void {
         null;
 
     try self.frame_element_info.put(self.gpa, declaration.id.id, .{
+        .widget = declaration.widget,
         .state = declaration.state,
         .parent_id = parent_id,
     });

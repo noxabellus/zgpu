@@ -398,6 +398,17 @@ pub fn main() !void {
     var text_buffer: std.ArrayList(u8) = .empty;
     var dummy_slider_value: f32 = 0.0;
 
+    var theme = Ui.Theme{};
+    defer theme.deinit(app.generalAllocator());
+
+    try theme.set(app.generalAllocator(), "background_color", .content, .standard, COLOR_BROWN);
+    try theme.set(app.generalAllocator(), "background_color", .widget, .standard, COLOR_BROWN);
+    try theme.set(app.generalAllocator(), "background_color", .widget, .active, COLOR_TAN);
+    try theme.set(app.generalAllocator(), "border_color", .widget, .standard, COLOR_PHOSPHOR);
+    try theme.set(app.generalAllocator(), "border_width", .widget, .standard, Ui.BorderWidth.all(1));
+    try theme.set(app.generalAllocator(), "check_color", .widget, .standard, COLOR_PHOSPHOR);
+    try theme.set(app.generalAllocator(), "corner_radius", .content, .standard, Ui.CornerRadius.all(8));
+
     var last_frame_time = std.time.milliTimestamp();
     main_loop: while (app.beginFrame()) {
         const current_time = std.time.milliTimestamp();
@@ -467,6 +478,8 @@ pub fn main() !void {
             defer ui.endLayout() catch |err| {
                 log.err("Failed to end UI layout: {s}\n", .{@errorName(err)});
             };
+
+            try ui.pushTheme(&theme);
 
             if (bindings.getAction(.open_context_menu) == .released) {
                 log.info("Right click released, opening context menu.", .{});
@@ -785,26 +798,30 @@ pub fn main() !void {
                             }
 
                             {
-                                try ui.beginElement(.fromSlice("fpsOverlayToggle"));
-                                defer ui.endElement();
+                                // try ui.beginElement(.fromSlice("fpsOverlayToggle"));
+                                // defer ui.endElement();
 
-                                try ui.configureElement(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
-                                    },
-                                    .widget = true,
-                                    .state = .flags(.{
-                                        .activate = true,
-                                        .focus = true,
-                                    }),
+                                // try ui.configureElement(.{
+                                //     .layout = .{
+                                //         .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
+                                //     },
+                                //     .widget = true,
+                                //     .state = .flags(.{
+                                //         .activate = true,
+                                //         .focus = true,
+                                //     }),
+                                // });
+
+                                _ = try widgets.checkbox(ui, .fromSlice("fpsOverlayToggle"), &draw_fps, .{
+                                    .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
                                 });
 
-                                _ = try widgets.checkbox(ui, .{
-                                    .value = &draw_fps,
-                                    .box_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
-                                    .check_color = COLOR_PHOSPHOR,
-                                    .size = 16.0,
-                                });
+                                // _ = try widgets.checkbox(ui, .{
+                                //     .value = &draw_fps,
+                                //     .box_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
+                                //     .check_color = COLOR_PHOSPHOR,
+                                //     .size = 16.0,
+                                // });
                             }
                         }
 

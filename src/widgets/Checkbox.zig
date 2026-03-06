@@ -14,35 +14,28 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-id: Ui.ElementId,
 value: *bool,
+style: Style,
+theme: Theme,
 
-// Style properties
-box_color: Ui.Color,
-check_color: Ui.Color,
-size: f32,
-
-pub const Config = struct {
-    value: *bool,
-    box_color: Ui.Color = Ui.Color.init(200, 200, 200, 255),
-    check_color: Ui.Color = Ui.Color.init(50, 50, 50, 255),
-    size: f32 = 16.0,
+pub const Style = struct {
+    ratio: f32 = 0.9,
+    mark: Mark = .check,
 };
 
-pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*Checkbox {
-    const self = try ui.gpa.create(Checkbox);
-    errdefer ui.gpa.destroy(self);
+pub const Mark = enum {
+    check,
+    block,
+};
 
-    self.* = Checkbox{
-        .id = id,
-        .value = config.value,
-        .box_color = config.box_color,
-        .check_color = config.check_color,
-        .size = config.size,
-    };
+pub const Theme = struct {
+    check_color: Ui.Color = .black,
+};
 
-    return self;
-}
+pub const Config = struct {
+    sizing: Ui.Sizing = .{ .w = .fixed(16), .h = .fixed(16) },
+    style: Style = .{},
+};
 
 pub fn deinit(self: *Checkbox, ui: *Ui) void {
     ui.gpa.destroy(self);
@@ -52,55 +45,86 @@ pub fn deinit(self: *Checkbox, ui: *Ui) void {
 pub fn render(self: *Checkbox, ui: *Ui, command: Ui.RenderCommand) !void {
     const bb = command.bounding_box;
 
-    // Center the checkbox within its bounding box
-    const box_pos = vec2{
-        bb.x + (bb.width - self.size) / 2.0,
-        bb.y + (bb.height - self.size) / 2.0,
-    };
-    const box_size = vec2{ self.size, self.size };
-    const radius = self.size * 0.15; // A small corner radius
-
     // Draw the box
-    try ui.renderer.drawRoundedRect(box_pos, box_size, .all(radius), self.box_color);
+    try ui.renderer.drawRoundedRect(
+        .{ bb.x, bb.y },
+        .{ bb.width, bb.height },
+        .{
+            .top_left = command.render_data.custom.corner_radius.top_left,
+            .top_right = command.render_data.custom.corner_radius.top_right,
+            .bottom_left = command.render_data.custom.corner_radius.bottom_left,
+            .bottom_right = command.render_data.custom.corner_radius.bottom_right,
+        },
+        .{
+            .r = command.render_data.custom.background_color[0],
+            .g = command.render_data.custom.background_color[1],
+            .b = command.render_data.custom.background_color[2],
+            .a = command.render_data.custom.background_color[3],
+        },
+    );
 
-    // If checked, draw the checkmark
+    // If checked, draw mark
     if (self.value.*) {
-        // Simple checkmark using two lines
-        const p1 = vec2{ box_pos[0] + self.size * 0.2, box_pos[1] + self.size * 0.5 };
-        const p2 = vec2{ box_pos[0] + self.size * 0.45, box_pos[1] + self.size * 0.75 };
-        const p3 = vec2{ box_pos[0] + self.size * 0.8, box_pos[1] + self.size * 0.25 };
-        const line_width = self.size * 0.125;
+        switch (self.style.mark) {
+            .check => {
+                const cx = bb.x + bb.width * 0.5;
+                const cy = bb.y + bb.height * 0.5;
+                const sw = (self.style.ratio * bb.width) * 0.4;
+                const sh = (self.style.ratio * bb.height) * 0.4;
+                const p1 = vec2{ cx - sw, cy };
+                const p2 = vec2{ cx - sw * 0.1, cy + sh };
+                const p3 = vec2{ cx + sw, cy - sh };
+                const line_width = (@min(bb.width, bb.height) * self.style.ratio) * 0.25;
 
-        try ui.renderer.drawLine(p1, p2, line_width, self.check_color);
-        try ui.renderer.drawLine(p2, p3, line_width, self.check_color);
+                try ui.renderer.drawLine(p1, p2, line_width, self.theme.check_color);
+                try ui.renderer.drawLine(p2 - vec2{ line_width * 0.5, 0 }, p3, line_width, self.theme.check_color);
+            },
+
+            .block => {
+                const padding = (1.0 - self.style.ratio) * 0.5;
+                const mark_bb = Ui.BoundingBox{
+                    .x = bb.x + bb.width * padding,
+                    .y = bb.y + bb.height * padding,
+                    .width = bb.width * self.style.ratio,
+                    .height = bb.height * self.style.ratio,
+                };
+
+                try ui.renderer.drawRoundedRect(
+                    .{ mark_bb.x, mark_bb.y },
+                    .{ mark_bb.width, mark_bb.height },
+                    .{
+                        .top_left = command.render_data.rectangle.corner_radius.top_left,
+                        .top_right = command.render_data.rectangle.corner_radius.top_right,
+                        .bottom_left = command.render_data.rectangle.corner_radius.bottom_left,
+                        .bottom_right = command.render_data.rectangle.corner_radius.bottom_right,
+                    },
+                    self.theme.check_color,
+                );
+            },
+        }
     }
 }
 
+const BINDING_SET = Ui.Theme.Binding.Set.create(Theme);
+
 /// Configure an open element as a checkbox widget for boolean values.
-pub fn checkbox(ui: *Ui, config: Config) !bool {
-    const id = ui.open_ids.items[ui.open_ids.items.len - 1];
-    const gop = try ui.widget_states.getOrPut(ui.gpa, id.id);
-    const self = if (!gop.found_existing) create_new: {
-        const ptr = try Checkbox.init(ui, id, config);
-        gop.value_ptr.* = Ui.Widget{
-            .user_data = ptr,
-            .render = @ptrCast(&Checkbox.render),
-            .deinit = @ptrCast(&Checkbox.deinit),
-            .seen_this_frame = true,
-        };
+pub fn checkbox(ui: *Ui, id: Ui.ElementId, value: *bool, config: Config) !bool {
+    try ui.beginSection(id, .{
+        .sizing = config.sizing,
+        .widget = true,
+        .state = .flags(.{
+            .activate = true,
+            .focus = true,
+        }),
+    });
+    defer ui.endSection();
 
-        break :create_new ptr;
-    } else reuse_existing: {
-        gop.value_ptr.seen_this_frame = true;
+    const self = try ui.getOrCreateWidget(Checkbox, id);
+    self.value = value;
+    self.style = config.style;
+    self.theme = .{};
 
-        const ptr: *Checkbox = @ptrCast(@alignCast(gop.value_ptr.user_data));
-        // Update config properties in case they change frame-to-frame.
-        ptr.box_color = config.box_color;
-        ptr.check_color = config.check_color;
-        ptr.size = config.size;
-
-        break :reuse_existing ptr;
-    };
+    try ui.applyTheme(&BINDING_SET, .widget, &self.theme);
 
     if (ui.getEvent(id, .activate_end)) |_| {
         self.value.* = !self.value.*;
