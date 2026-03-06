@@ -398,16 +398,16 @@ pub fn main() !void {
     var text_buffer: std.ArrayList(u8) = .empty;
     var dummy_slider_value: f32 = 0.0;
 
-    var theme = Ui.Theme{};
-    defer theme.deinit(app.generalAllocator());
+    var theme = Ui.Theme.init(app.generalAllocator());
+    defer theme.deinit();
 
-    try theme.set(app.generalAllocator(), "background_color", .content, .standard, COLOR_BROWN);
-    try theme.set(app.generalAllocator(), "background_color", .widget, .standard, COLOR_BROWN);
-    try theme.set(app.generalAllocator(), "background_color", .widget, .active, COLOR_TAN);
-    try theme.set(app.generalAllocator(), "border_color", .widget, .standard, COLOR_PHOSPHOR);
-    try theme.set(app.generalAllocator(), "border_width", .widget, .standard, Ui.BorderWidth.all(1));
-    try theme.set(app.generalAllocator(), "check_color", .widget, .standard, COLOR_PHOSPHOR);
-    try theme.set(app.generalAllocator(), "corner_radius", .content, .standard, Ui.CornerRadius.all(8));
+    try theme.set("background_color", .content, .standard, COLOR_BROWN);
+    try theme.set("background_color", .widget, .standard, COLOR_BROWN);
+    try theme.set("background_color", .widget, .active, COLOR_TAN);
+    try theme.set("border_color", .widget, .standard, COLOR_PHOSPHOR);
+    try theme.set("border_width", .widget, .standard, Ui.BorderWidth.all(1));
+    try theme.set("check_color", .widget, .standard, COLOR_PHOSPHOR);
+    try theme.set("corner_radius", .content, .standard, Ui.CornerRadius.all(8));
 
     var last_frame_time = std.time.milliTimestamp();
     main_loop: while (app.beginFrame()) {

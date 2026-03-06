@@ -1461,21 +1461,26 @@ pub fn getActionState(self: *Ui) ActionState {
 }
 
 pub const Theme = struct {
+    allocator: std.mem.Allocator,
     map: Map = .empty,
 
-    pub fn deinit(self: *Theme, allocator: std.mem.Allocator) void {
+    pub fn init(allocator: std.mem.Allocator) Theme {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *Theme) void {
         var it = self.map.valueIterator();
-        while (it.next()) |key_map| key_map.deinit(allocator);
-        self.map.deinit(allocator);
+        while (it.next()) |prop_set| prop_set.deinit(self.allocator);
+        self.map.deinit(self.allocator);
         self.map = .empty;
     }
 
-    pub fn set(self: *Theme, allocator: std.mem.Allocator, comptime name: []const u8, kind: Kind, state: ActionState, value: anytype) !void {
-        const name_gop = try self.map.getOrPut(allocator, name);
-        const key_set = name_gop.value_ptr;
-        if (!name_gop.found_existing) key_set.* = .empty;
+    pub fn set(self: *Theme, comptime name: []const u8, kind: Kind, state: ActionState, value: anytype) !void {
+        const name_gop = try self.map.getOrPut(self.allocator, name);
+        const prop_set = name_gop.value_ptr;
+        if (!name_gop.found_existing) prop_set.* = .empty;
 
-        try key_set.append(allocator, .{ .kind = kind, .state = state, .data = .create(value) });
+        try prop_set.append(self.allocator, .{ .kind = kind, .state = state, .data = .create(value) });
     }
 
     pub fn apply(
