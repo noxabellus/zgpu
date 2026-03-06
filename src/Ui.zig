@@ -1483,6 +1483,12 @@ pub const Theme = struct {
         try prop_set.append(self.allocator, .{ .kind = kind, .state = state, .data = .create(value) });
     }
 
+    pub fn setAll(self: *Theme, kind: Kind, state: ActionState, ksvs: anytype) !void {
+        inline for (comptime std.meta.fieldNames(@TypeOf(ksvs))) |name| {
+            try self.set(name, kind, state, @field(ksvs, name));
+        }
+    }
+
     pub fn apply(
         self: *const Theme,
         allocator: std.mem.Allocator,

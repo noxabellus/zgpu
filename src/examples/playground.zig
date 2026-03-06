@@ -401,13 +401,19 @@ pub fn main() !void {
     var theme = Ui.Theme.init(app.generalAllocator());
     defer theme.deinit();
 
-    try theme.set("background_color", .content, .standard, COLOR_BROWN);
-    try theme.set("background_color", .widget, .standard, COLOR_BROWN);
+    try theme.setAll(.content, .standard, .{
+        .background_color = COLOR_BROWN,
+        .border_color = COLOR_PHOSPHOR,
+        .border_width = Ui.BorderWidth.all(1),
+        .corner_radius = Ui.CornerRadius.all(8),
+    });
+
+    try theme.setAll(.widget, .standard, .{
+        .background_color = COLOR_BROWN,
+        .check_color = COLOR_PHOSPHOR,
+    });
+
     try theme.set("background_color", .widget, .active, COLOR_TAN);
-    try theme.set("border_color", .widget, .standard, COLOR_PHOSPHOR);
-    try theme.set("border_width", .widget, .standard, Ui.BorderWidth.all(1));
-    try theme.set("check_color", .widget, .standard, COLOR_PHOSPHOR);
-    try theme.set("corner_radius", .content, .standard, Ui.CornerRadius.all(8));
 
     var last_frame_time = std.time.milliTimestamp();
     main_loop: while (app.beginFrame()) {
