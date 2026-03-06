@@ -404,16 +404,20 @@ pub fn main() !void {
     try theme.setAll(.content, .standard, .{
         .background_color = COLOR_BROWN,
         .border_color = COLOR_PHOSPHOR,
+        .text_color = COLOR_PHOSPHOR,
+        .padding = Ui.Padding.all(10),
         .border_width = Ui.BorderWidth.all(1),
         .corner_radius = Ui.CornerRadius.all(8),
     });
 
     try theme.setAll(.widget, .standard, .{
         .background_color = COLOR_BROWN,
-        .check_color = COLOR_PHOSPHOR,
+        .checkbox_mark_color = COLOR_PHOSPHOR,
     });
 
-    try theme.set("background_color", .widget, .active, COLOR_TAN);
+    try theme.setAll(.widget, .active, .{
+        .background_color = COLOR_TAN,
+    });
 
     var last_frame_time = std.time.milliTimestamp();
     main_loop: while (app.beginFrame()) {
@@ -495,7 +499,7 @@ pub fn main() !void {
             }
 
             {
-                try ui.openElement(.{
+                try ui.beginElement(.{
                     .id = .fromSlice("OuterContainer"),
                     .layout = .{
                         .sizing = .{
@@ -510,7 +514,7 @@ pub fn main() !void {
                 defer ui.endElement();
 
                 {
-                    try ui.beginElement(.fromSlice("MenuContainer"));
+                    try ui.openElement(.fromSlice("MenuContainer"));
                     defer ui.endElement();
 
                     try ui.configureElement(.{
@@ -550,7 +554,7 @@ pub fn main() !void {
                     });
 
                     {
-                        try ui.openElement(.{
+                        try ui.beginElement(.{
                             .id = .fromSlice("ButtonRow"),
                             .layout = .{
                                 .sizing = .{
@@ -568,7 +572,7 @@ pub fn main() !void {
                         defer ui.endElement();
 
                         {
-                            try ui.beginElement(.fromSlice("LoadButton"));
+                            try ui.openElement(.fromSlice("LoadButton"));
                             defer ui.endElement();
 
                             try ui.configureElement(.{
@@ -605,7 +609,7 @@ pub fn main() !void {
                         }
 
                         {
-                            try ui.beginElement(.fromSlice("UnloadButton"));
+                            try ui.openElement(.fromSlice("UnloadButton"));
                             defer ui.endElement();
 
                             try ui.configureElement(.{
@@ -650,7 +654,7 @@ pub fn main() !void {
                     if (demo.model) |*model| {
                         if (model.animations.len > 0) {
                             {
-                                try ui.beginElement(.fromSlice("TitleText"));
+                                try ui.openElement(.fromSlice("TitleText"));
                                 defer ui.endElement();
 
                                 try ui.configureElement(.{
@@ -667,7 +671,7 @@ pub fn main() !void {
                             }
 
                             {
-                                try ui.beginElement(.fromSlice("NameText"));
+                                try ui.openElement(.fromSlice("NameText"));
                                 defer ui.endElement();
 
                                 try ui.configureElement(.{
@@ -684,7 +688,7 @@ pub fn main() !void {
                             }
 
                             {
-                                try ui.beginElement(.fromSlice("animIndexSlider"));
+                                try ui.openElement(.fromSlice("animIndexSlider"));
                                 defer ui.endElement();
 
                                 var index = demo.anim_state.index;
@@ -692,7 +696,7 @@ pub fn main() !void {
                                     .layout = .{
                                         .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
                                     },
-                                    .widget = true,
+                                    .type = .render_widget,
                                     .state = .flags(.{
                                         .click = true,
                                         .drag = true,
@@ -716,7 +720,7 @@ pub fn main() !void {
 
                     {
                         { // Title
-                            try ui.beginElement(.fromSlice("DebugTitleText"));
+                            try ui.openElement(.fromSlice("DebugTitleText"));
                             defer ui.endElement();
 
                             try ui.configureElement(.{
@@ -733,7 +737,7 @@ pub fn main() !void {
                         }
 
                         { // Random text input
-                            try ui.beginElement(.fromSlice("TextInputTest"));
+                            try ui.openElement(.fromSlice("TextInputTest"));
                             defer ui.endElement();
 
                             try ui.configureElement(.{
@@ -751,7 +755,7 @@ pub fn main() !void {
                                     .vertical = true,
                                     .child_offset = ui.scrollOffset(),
                                 },
-                                .widget = true,
+                                .type = .render_widget,
                                 .state = .flags(.{
                                     .click = true,
                                     .focus = true,
@@ -776,7 +780,7 @@ pub fn main() !void {
                         }
 
                         { // Fps Overlay
-                            try ui.openElement(.{
+                            try ui.beginElement(.{
                                 .id = .fromSlice("DebugFPSOverlayControlSection"),
                                 .layout = .{
                                     .sizing = .fit,
@@ -788,7 +792,7 @@ pub fn main() !void {
                             defer ui.endElement();
 
                             {
-                                try ui.openElement(.{
+                                try ui.beginElement(.{
                                     .id = .fromSlice("FPSOverlayLabel"),
                                     .layout = .{
                                         .sizing = .fit,
@@ -804,23 +808,21 @@ pub fn main() !void {
                             }
 
                             {
-                                // try ui.beginElement(.fromSlice("fpsOverlayToggle"));
+                                // try ui.openElement(.fromSlice("fpsOverlayToggle"));
                                 // defer ui.endElement();
 
                                 // try ui.configureElement(.{
                                 //     .layout = .{
                                 //         .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
                                 //     },
-                                //     .widget = true,
+                                //     .type = true,
                                 //     .state = .flags(.{
                                 //         .activate = true,
                                 //         .focus = true,
                                 //     }),
                                 // });
 
-                                _ = try widgets.checkbox(ui, .fromSlice("fpsOverlayToggle"), &draw_fps, .{
-                                    .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
-                                });
+                                _ = try widgets.checkbox(ui, .fromSlice("fpsOverlayToggle"), &draw_fps);
 
                                 // _ = try widgets.checkbox(ui, .{
                                 //     .value = &draw_fps,
@@ -832,7 +834,7 @@ pub fn main() !void {
                         }
 
                         { // Light brightness
-                            try ui.openElement(.{
+                            try ui.beginElement(.{
                                 .id = .fromSlice("SliderRow"),
                                 .layout = .{
                                     .sizing = .{
@@ -850,7 +852,7 @@ pub fn main() !void {
                             defer ui.endElement();
 
                             {
-                                try ui.beginElement(.fromSlice("BrightnessText"));
+                                try ui.openElement(.fromSlice("BrightnessText"));
                                 defer ui.endElement();
 
                                 try ui.configureElement(.{
@@ -868,14 +870,14 @@ pub fn main() !void {
                             }
 
                             {
-                                try ui.beginElement(.fromSlice("lightBrightnessSlider"));
+                                try ui.openElement(.fromSlice("lightBrightnessSlider"));
                                 defer ui.endElement();
 
                                 try ui.configureElement(.{
                                     .layout = .{
                                         .sizing = .{ .w = .grow, .h = .fixed(20) },
                                     },
-                                    .widget = true,
+                                    .type = .render_widget,
                                     .state = .flags(.{
                                         .click = true,
                                         .drag = true,
@@ -897,7 +899,7 @@ pub fn main() !void {
 
                         { // Buffer Debug
                             {
-                                try ui.openElement(.{
+                                try ui.beginElement(.{
                                     .id = .fromSlice("DropdownRow"),
                                     .layout = .{
                                         .sizing = .{
@@ -915,7 +917,7 @@ pub fn main() !void {
                                 defer ui.endElement();
 
                                 {
-                                    try ui.beginElement(.fromSlice("BufferDebugModeDropdownLabel"));
+                                    try ui.openElement(.fromSlice("BufferDebugModeDropdownLabel"));
                                     defer ui.endElement();
 
                                     try ui.configureElement(.{
@@ -931,36 +933,11 @@ pub fn main() !void {
                                     });
                                 }
 
-                                {
-                                    try ui.beginElement(.fromSlice("BufferDebugModeDropdown"));
-                                    defer ui.endElement();
-
-                                    _ = try widgets.dropdown(ui, BufferDebugMode, .{
-                                        .value = &buffer_debug_mode,
-                                        // The color of the main dropdown box.
-                                        .box_color = COLOR_BROWN,
-                                        // The color of the main dropdown box when hovered.
-                                        .box_color_hover = COLOR_TAN,
-                                        // The color of the text for the selected value.
-                                        .text_color = COLOR_PHOSPHOR,
-                                        // The font to use for the text.
-                                        .font_id = FONT_ID_BODY,
-                                        // The font size for the text.
-                                        .font_size = 16,
-                                        // The background color of the floating options panel.
-                                        .panel_color = COLOR_GREYBROWN,
-                                        // The background color of an option when it is hovered.
-                                        .option_color_hover = COLOR_TAN,
-                                        .border_color = COLOR_PHOSPHOR,
-                                        .border_color_hover = COLOR_PHOSPHOR,
-                                        .border_width = .all(1),
-                                        .corner_radius = .all(5),
-                                    });
-                                }
+                                if (try widgets.enumDropdown(ui, .fromSlice("BufferDebugModeDropdown"), BufferDebugMode, &buffer_debug_mode)) std.debug.print("dropdown_changek\n", .{});
                             }
 
                             {
-                                try ui.openElement(.{
+                                try ui.beginElement(.{
                                     .id = .fromSlice("RadioRow"),
                                     .layout = .{
                                         .sizing = .{
@@ -978,7 +955,7 @@ pub fn main() !void {
                                 defer ui.endElement();
 
                                 inline for (comptime std.meta.fieldNames(BufferDebugMode)) |mode_name| {
-                                    try ui.openElement(.{
+                                    try ui.beginElement(.{
                                         .id = .localID(mode_name),
                                         .layout = .{
                                             .sizing = .{
@@ -991,7 +968,7 @@ pub fn main() !void {
                                             .width = .all(1),
                                         },
                                         .corner_radius = .all(8),
-                                        .widget = true,
+                                        .type = .render_widget,
                                         .state = .flags(.{
                                             .activate = true,
                                             .focus = true,
@@ -1014,7 +991,7 @@ pub fn main() !void {
                                 .None => {},
 
                                 .Framebuffer => {
-                                    try ui.beginElement(.fromSlice("PictureInPictureTest"));
+                                    try ui.openElement(.fromSlice("PictureInPictureTest"));
                                     defer ui.endElement();
 
                                     try ui.configureElement(.{
@@ -1030,7 +1007,7 @@ pub fn main() !void {
                                 },
 
                                 .@"Picking Position" => {
-                                    try ui.beginElement(.fromSlice("ShaderTest1"));
+                                    try ui.openElement(.fromSlice("ShaderTest1"));
                                     defer ui.endElement();
 
                                     try ui.configureElement(.{
@@ -1041,7 +1018,7 @@ pub fn main() !void {
                                             },
                                         },
                                         .corner_radius = .all(10),
-                                        .widget = true,
+                                        .type = .render_widget,
                                     });
 
                                     try widgets.shaderRect(ui, .{
@@ -1055,7 +1032,7 @@ pub fn main() !void {
                                 },
 
                                 .@"Picking Id" => {
-                                    try ui.beginElement(.fromSlice("ShaderTest2"));
+                                    try ui.openElement(.fromSlice("ShaderTest2"));
                                     defer ui.endElement();
 
                                     try ui.configureElement(.{
@@ -1066,7 +1043,7 @@ pub fn main() !void {
                                             },
                                         },
                                         .corner_radius = .all(10),
-                                        .widget = true,
+                                        .type = .render_widget,
                                     });
 
                                     try widgets.shaderRect(ui, .{
@@ -1112,18 +1089,18 @@ pub fn main() !void {
 
                 // Embedded Widget Test
                 {
-                    try ui.openElement(.{ .id = .fromSlice("MenuSliderContainer"), .layout = .{ .padding = .all(4), .direction = .top_to_bottom } });
+                    try ui.beginElement(.{ .id = .fromSlice("MenuSliderContainer"), .layout = .{ .padding = .all(4), .direction = .top_to_bottom } });
                     defer ui.endElement();
 
                     try ui.text("Opacity", .{ .font_id = FONT_ID_MONO, .font_size = 12 });
                     {
-                        try ui.beginElement(.fromSlice("MenuSlider"));
+                        try ui.openElement(.fromSlice("MenuSlider"));
                         defer ui.endElement();
 
                         const bb = ui.getElementBounds(.fromSlice("ContextMenuRoot")).?; // Note: This is kind of dangerous; if you were to set the fixed width to be exactly the menu width, it would actually grow each frame
                         try ui.configureElement(.{
                             .layout = .{ .sizing = .{ .w = .fixed(bb.width - 16), .h = .fixed(20) } },
-                            .widget = true,
+                            .type = .render_widget,
                             .state = .flags(.{
                                 .click = true,
                                 .drag = true,

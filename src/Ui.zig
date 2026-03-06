@@ -28,6 +28,7 @@ const FrameElementInfo = struct {
 pub const widgets = struct {
     pub const checkbox = Widget.Checkbox.checkbox;
     pub const dropdown = Widget.Dropdown.dropdown;
+    pub const enumDropdown = Widget.Dropdown.enumDropdown;
     pub const radioButton = Widget.RadioButton.radioButton;
     pub const shaderRect = Widget.ShaderRect.shaderRect;
     pub const slider = Widget.Slider.slider;
@@ -393,7 +394,7 @@ pub fn setDebugMode(self: *Ui, enabled: bool) void {
 /// Create a new, unconfigured element.
 /// * Must be followed by calls to `Ui.configureElement` and `Ui.closeElement`.
 /// * See also `Ui.openElement`, `Ui.elem`.
-pub fn beginElement(self: *Ui, id: ElementId) !void {
+pub fn openElement(self: *Ui, id: ElementId) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     try self.open_ids.append(self.gpa, id);
@@ -417,7 +418,7 @@ pub fn configureElement(self: *Ui, declaration: HeadlessElementDeclaration) !voi
 /// * Must be followed by a call to `Ui.closeElement`.
 /// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside the passed declaration; use `Ui.beginElement` and `Ui.configureElement` instead.
 /// * See also `Ui.elem`.
-pub fn openElement(self: *Ui, declaration: ElementDeclaration) !void {
+pub fn beginElement(self: *Ui, declaration: ElementDeclaration) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     try self.open_ids.append(self.gpa, declaration.id);
@@ -444,7 +445,7 @@ pub fn endElement(self: *Ui) void {
 pub fn elem(self: *Ui, declaration: ElementDeclaration) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    try self.openElement(declaration);
+    try self.beginElement(declaration);
     self.endElement();
 }
 
@@ -619,7 +620,7 @@ pub fn beginMenu(self: *Ui, id: ElementId, config: MenuConfig) !bool {
         }
     }
 
-    try self.openElement(.{
+    try self.beginElement(.{
         .id = id,
         .layout = .{
             .sizing = .{ .w = .fit, .h = .fit },
@@ -685,7 +686,7 @@ pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemCon
     const level = self.menu_state.stack.items.len - 1;
     const is_highlighted = self.menu_state.highlighted_path.items.len > level and self.menu_state.highlighted_path.items[level].id == id.id;
 
-    try self.openElement(.{
+    try self.beginElement(.{
         .id = id,
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fixed(config.height) },
@@ -755,7 +756,7 @@ pub fn subMenu(self: *Ui, self_id: ElementId, label: []const u8, child_menu_id: 
         }
     }
 
-    try self.openElement(.{
+    try self.beginElement(.{
         .id = self_id,
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fixed(config.height) },
@@ -1410,7 +1411,7 @@ pub const HeadlessElementDeclaration = struct {
     /// Note: in order to activate floating, `.floating.attachTo` must be set to something other than the default value.
     floating: FloatingElementConfig = .{},
     /// Whether or not this element will be treated as a widget.
-    widget: bool = false,
+    type: ElementType = .content,
     /// Controls whether an element should clip its contents and allow scrolling rather than expanding to contain them.
     clip: ClipElementConfig = .{},
     /// Controls settings related to element borders, and will generate BORDER render command
@@ -1679,40 +1680,62 @@ pub fn popTheme(self: *Ui) ?*const Theme {
     return self.theme_stack.pop();
 }
 
-pub fn applyTheme(self: *Ui, binding_set: *const Theme.Binding.Set, kind: Theme.Kind, out: *anyopaque) !void {
+pub fn applyThemeState(self: *Ui, binding_set: *const Theme.Binding.Set, kind: Theme.Kind, state: ActionState, out: *anyopaque) !void {
     self.theme_match_levels.clearRetainingCapacity();
 
-    const state = self.getActionState();
     for (self.theme_stack.items) |theme| {
         try theme.apply(self.gpa, &self.theme_match_levels, binding_set, kind, state, out);
     }
 }
 
-pub fn beginSection(self: *Ui, id: ElementId, section: SectionDeclaration) !void {
-    try self.beginElement(id);
+pub fn applyTheme(self: *Ui, binding_set: *const Theme.Binding.Set, kind: Theme.Kind, out: *anyopaque) !void {
+    return self.applyThemeState(binding_set, kind, self.getActionState(), out);
+}
 
-    var decl = HeadlessElementDeclaration{
-        .aspect_ratio = section.aspect_ratio,
-        .image = section.image,
-        .floating = section.floating,
-        .widget = section.widget,
-        .clip = section.clip,
-        .state = section.state,
-    };
+pub fn openSection(self: *Ui, id: ElementId) !void {
+    try self.openElement(id);
+}
 
-    decl.layout.sizing = section.sizing;
+pub fn configureSection(self: *Ui, decl: SectionDeclaration) !void {
+    var config = HeadlessElementDeclaration{};
 
-    try self.applyTheme(&Theme.Binding.Set.ELEM_DECL_BIND_SET, if (section.widget) .widget else .content, &decl);
+    try self.applyThemeState(
+        &Theme.Binding.Set.ELEM_DECL_BIND_SET,
+        if (decl.type == .content) .content else .widget,
+        if (decl.state) |st| st else self.getActionState(),
+        &config,
+    );
 
-    try self.configureElement(decl);
+    config.aspect_ratio = decl.aspect_ratio;
+    config.image = decl.image;
+    config.floating = decl.floating;
+    config.type = decl.type;
+    config.clip = decl.clip;
+    config.state = .custom(decl.event_flags, decl.userdata);
+    if (decl.sizing) |x| config.layout.sizing = x;
+    if (decl.padding) |x| config.layout.padding = x;
+    if (decl.child_gap) |x| config.layout.child_gap = x;
+    if (decl.child_alignment) |x| config.layout.child_alignment = x;
+    if (decl.direction) |x| config.layout.direction = x;
+    if (decl.background_color) |x| config.background_color = x;
+    if (decl.corner_radius) |x| config.corner_radius = x;
+    if (decl.border_width) |x| config.border.width = x;
+    if (decl.border_color) |x| config.border.color = x;
+
+    try self.configureElement(config);
+}
+
+pub fn beginSection(self: *Ui, id: ElementId, decl: SectionDeclaration) !void {
+    try self.openElement(id);
+    try self.configureSection(decl);
 }
 
 pub fn endSection(self: *Ui) void {
     return self.endElement();
 }
 
-pub fn textSection(self: *Ui, content: []const u8) !void {
-    var decl = TextElementConfig{};
+pub fn textSection(self: *Ui, content: []const u8, decl: TextDeclaration) !void {
+    var config = TextElementConfig{};
 
     const parent_id: ElementId = if (self.open_ids.items.len > 1)
         self.open_ids.items[self.open_ids.items.len - 2]
@@ -1720,12 +1743,21 @@ pub fn textSection(self: *Ui, content: []const u8) !void {
         return error.TextSectionMustBeInContentSection;
     const parent_info = self.frame_element_info.get(parent_id.id) orelse return error.Unexpected;
 
-    try self.applyTheme(&Theme.Binding.Set.TEXT_CONF_BIND_SET, if (parent_info.widget) .widget else .content, &decl);
+    try self.applyTheme(&Theme.Binding.Set.TEXT_CONF_BIND_SET, if (parent_info.widget) .widget else .content, &config);
 
-    return self.text(content, decl);
+    config.user_data = decl.user_data;
+    if (decl.color) |x| config.color = x;
+    if (decl.font_id) |x| config.font_id = x;
+    if (decl.font_size) |x| config.font_size = x;
+    if (decl.letter_spacing) |x| config.letter_spacing = x;
+    if (decl.line_height) |x| config.line_height = x;
+    if (decl.wrap_mode) |x| config.wrap_mode = x;
+    if (decl.alignment) |x| config.alignment = x;
+
+    return self.text(content, config);
 }
 
-pub fn getOrCreateWidget(self: *Ui, comptime T: type, id: ElementId) !*T {
+pub fn getOrCreateWidget(self: *Ui, comptime T: type, id: ElementId) !struct { *T, bool } {
     const gop = try self.widget_states.getOrPut(self.gpa, id.id);
     if (!gop.found_existing) {
         const ptr = try self.gpa.create(T);
@@ -1736,31 +1768,50 @@ pub fn getOrCreateWidget(self: *Ui, comptime T: type, id: ElementId) !*T {
             .seen_this_frame = true,
         };
 
-        return ptr;
+        return .{ ptr, true };
     } else {
         gop.value_ptr.seen_this_frame = true;
 
-        const ptr: *T = @ptrCast(@alignCast(gop.value_ptr.user_data));
-        return ptr;
+        return .{ @ptrCast(@alignCast(gop.value_ptr.user_data)), false };
     }
 }
 
 pub const SectionDeclaration = struct {
-    /// Controls sizing of this element inside its parent container
-    sizing: Sizing = .{},
-    // Controls settings related to aspect ratio scaling.
-    aspect_ratio: AspectRatioElementConfig = 0,
-    /// Controls settings related to image elements.
+    sizing: ?Sizing = null,
+    padding: ?Padding = null,
+    child_gap: ?u16 = null,
+    child_alignment: ?ChildAlignment = null,
+    direction: ?LayoutDirection = null,
     image: ImageElementConfig = null,
-    /// Controls whether and how an element "floats", which means it layers over the top of other elements in z order, and doesn't affect the position and size of siblings or parent elements.
-    /// Note: in order to activate floating, `.floating.attachTo` must be set to something other than the default value.
+    background_color: ?Color = null,
+    corner_radius: ?CornerRadius = null,
+    border_width: ?BorderWidth = null,
+    border_color: ?Color = null,
+    state: ?ActionState = null,
     floating: FloatingElementConfig = .{},
-    /// Whether or not this element will be treated as a widget.
-    widget: bool = false,
-    /// Controls whether an element should clip its contents and allow scrolling rather than expanding to contain them.
+    aspect_ratio: AspectRatioElementConfig = 0,
+    type: ElementType = .content,
     clip: ClipElementConfig = .{},
-    /// A pointer that will be transparently passed through to resulting render command
-    state: ElementState = .none,
+    event_flags: ElementState.Flags = .{},
+    userdata: ?*anyopaque = null,
+};
+
+pub const TextDeclaration = struct {
+    color: ?Color = null,
+    font_id: ?AssetCache.FontId = null,
+    font_size: ?u16 = null,
+    letter_spacing: ?u16 = null,
+    line_height: ?u16 = null,
+    wrap_mode: ?TextElementConfigWrapMode = null,
+    alignment: ?TextAlignment = null,
+    state: ?ActionState = null,
+    user_data: ?*anyopaque = null,
+};
+
+pub const ElementType = enum {
+    content,
+    render_widget,
+    layout_widget,
 };
 
 pub const ElementDeclaration = struct {
@@ -1776,7 +1827,7 @@ pub const ElementDeclaration = struct {
     /// Note: in order to activate floating, `.floating.attachTo` must be set to something other than the default value.
     floating: FloatingElementConfig = .{},
     /// Whether or not this element will be treated as a widget.
-    widget: bool = false,
+    type: ElementType = .content,
     /// Controls whether an element should clip its contents and allow scrolling rather than expanding to contain them.
     clip: ClipElementConfig = .{},
     /// A pointer that will be transparently passed through to resulting render command
@@ -1800,7 +1851,7 @@ pub const ElementDeclaration = struct {
             .aspect_ratio = .{ .aspect_ratio = self.aspect_ratio },
             .image = imageToClay(self.image),
             .floating = self.floating.toClay(),
-            .custom = .{ .custom_data = @ptrFromInt(@intFromBool(self.widget)) },
+            .custom = .{ .custom_data = @ptrFromInt(@intFromBool(self.type == .render_widget)) },
             .clip = self.clip.toClay(),
             .border = self.border.toClay(),
             .user_data = self.state.toClay(),
@@ -1899,7 +1950,7 @@ fn handleStateSetup(self: *Ui, declaration: ElementDeclaration) !void {
         null;
 
     try self.frame_element_info.put(self.gpa, declaration.id.id, .{
-        .widget = declaration.widget,
+        .widget = declaration.type != .content,
         .state = declaration.state,
         .parent_id = parent_id,
     });
@@ -2606,17 +2657,45 @@ fn generateEvents(self: *Ui) !void {
 
     // Handle focus changes on mouse press
     if (primary_mouse_action == .pressed) {
-        var clear_focus = true;
+        var new_focus_target: ?StateElement = null;
+
+        // 1. Search the hovered stack for a focusable element
         for (self.hovered_element_stack.items, 0..) |_, i| {
             const hovered_state = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1 - i];
             if (hovered_state.state.event_flags.focus) {
-                self.state.focused_id = hovered_state;
-                clear_focus = false;
+                new_focus_target = hovered_state;
                 break;
             }
         }
-        if (clear_focus) {
-            self.state.focused_id = null;
+
+        if (new_focus_target) |target| {
+            // We clicked directly on a focusable element (or a visual child of one). Shift focus.
+            self.state.focused_id = target;
+        } else {
+            // We clicked on something unfocusable.
+            // Only clear focus if the click was OUTSIDE the currently focused element's logical hierarchy.
+            var click_was_inside_current_focus = false;
+
+            if (self.state.focused_id) |current_focus| {
+                if (self.hovered_element_stack.items.len > 0) {
+                    const top_hovered = self.hovered_element_stack.items[self.hovered_element_stack.items.len - 1];
+                    var walker_id: ?ElementId = top_hovered.id;
+
+                    // Walk up the lexical tree to see if the focused element is an ancestor
+                    while (walker_id) |current_id| {
+                        if (current_id.id == current_focus.id.id) {
+                            click_was_inside_current_focus = true;
+                            break;
+                        }
+                        const info = self.frame_element_info.get(current_id.id) orelse break;
+                        walker_id = info.parent_id;
+                    }
+                }
+            }
+
+            if (!click_was_inside_current_focus) {
+                self.state.focused_id = null;
+            }
         }
     }
 
