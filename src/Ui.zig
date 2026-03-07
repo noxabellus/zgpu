@@ -114,6 +114,7 @@ events: std.ArrayList(Event) = .empty,
 user_data: ?*anyopaque = null,
 
 open_layout: bool = false,
+dimensions: vec2 = .{ 0, 0 },
 
 // A stack of widget themes
 theme_stack: std.ArrayList(*const Theme) = .empty,
@@ -329,6 +330,7 @@ pub fn beginLayout(self: *Ui, allow_mouse: bool, dimensions: vec2, delta_ms: f32
     clay.setCurrentContext(self.clay_context);
 
     clay.setLayoutDimensions(vec2ToDims(dimensions));
+    self.dimensions = dimensions;
 
     // Although we inform Clay of current mouse button state, it is only used in debug mode or for drag scrolling.
     clay.setPointerState(vec2ToClay(self.bindings.getMousePosition()), allow_mouse and self.bindings.getAction(.primary_mouse).isDown());
@@ -379,6 +381,12 @@ pub fn endLayout(self: *Ui) !void {
         if (self.shared_widget_states.fetchRemove(key)) |removed_entry| {
             const state = removed_entry.value;
             state.deinit(state.data, self);
+        }
+    }
+
+    for (self.menu_state.stack.items) |*menu_info| {
+        if (self.getElementBounds(menu_info.id)) |bb| {
+            menu_info.last_size = .{ bb.width, bb.height };
         }
     }
 
@@ -627,20 +635,44 @@ pub fn beginMenu(self: *Ui, id: ElementId, config: MenuConfig) !bool {
 
     const current_level = maybe_current_level.?;
     const info = maybe_info.?;
+    // TODO: for embedded rendering (ie, not the entire screen) we will need an extra dimensions property
+    const viewport = self.dimensions;
 
-    const final_offset = info.position;
-    var attach_to_element = false;
+    var final_offset = info.position;
+    var attach_points = FloatingAttachPoints{ .parent = .left_top, .element = .left_top };
+    var attach_to: FloatingAttachToElement = .root;
+
+    // Identify if this is the layout-discovery frame
+    const is_first_frame = info.last_size[0] == 0;
 
     if (info.parent_item_id) |item_id| {
-        // This is a submenu. We need to find its trigger item's position.
-        const item_data = clay.getElementData(item_id);
-        if (item_data.found) {
-            // The position should be relative to the viewport, not the parent menu.
-            // Clay handles attaching to an element correctly if we provide the
-            // element's ID and use attach points. The offset can be zero.
-            attach_to_element = true;
+        attach_to = .element_with_id;
+        attach_points = .{ .parent = .right_top, .element = .left_top };
+
+        if (!is_first_frame) {
+            const item_data = clay.getElementData(item_id);
+            if (item_data.found) {
+                const right_edge_x = item_data.bounding_box.x + item_data.bounding_box.width;
+                if (right_edge_x + info.last_size[0] > viewport[0]) {
+                    // Flip to the left
+                    attach_points = .{ .parent = .left_top, .element = .right_top };
+                }
+            }
+        }
+    } else {
+        if (!is_first_frame) {
+            final_offset[0] = std.math.clamp(final_offset[0], 0, viewport[0] - info.last_size[0]);
+            final_offset[1] = std.math.clamp(final_offset[1], 0, viewport[1] - info.last_size[1]);
         }
     }
+
+    // If we don't know the size yet, throw it completely off-screen
+    const applied_offset = if (is_first_frame)
+        vec2{ -99999.0, -99999.0 }
+    else if (attach_to == .element_with_id)
+        vec2{ 0, 0 }
+    else
+        final_offset;
 
     try self._beginElement(.{
         .id = id,
@@ -650,14 +682,10 @@ pub fn beginMenu(self: *Ui, id: ElementId, config: MenuConfig) !bool {
             .padding = config.padding,
         },
         .floating = .{
-            // If it's a submenu, attach to the ITEM. If not, attach to the root.
-            .attach_to = if (attach_to_element) .element_with_id else .root,
-            // The parentId for attachment is the ITEM's ID.
+            .attach_to = attach_to,
             .parentId = (info.parent_item_id orelse ElementId{}).id,
-            // If it's a root menu (context menu), use the specified position.
-            .offset = if (attach_to_element) .{ 0, 0 } else final_offset,
-            // For submenus, attach our top-left to the parent item's top-right.
-            .attach_points = .{ .parent = if (attach_to_element) .right_top else .left_top, .element = .left_top },
+            .offset = applied_offset,
+            .attach_points = attach_points,
             .z_index = @intCast(MenuState.MENU_Z_INDEX_BASE + current_level),
         },
         .background_color = config.background_color,
@@ -1114,6 +1142,7 @@ pub const MenuState = struct {
         parent_item_id: ?ElementId, // id of the menu item that triggered this menu
         // attach_to is now redundant, we derive it from parent_item_id
         position: vec2, // screen-relative position to open the menu at
+        last_size: vec2 = .{ 0, 0 },
     };
 
     pub const OpenMenuConfig = struct {
