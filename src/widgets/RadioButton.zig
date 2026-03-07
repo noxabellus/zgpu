@@ -112,6 +112,8 @@ pub fn radioButton(ui: *Ui, id: Ui.ElementId, selected: *usize, value: usize) !b
         },
     });
 
+    try ui.menuNavigable();
+
     if (ui.getEvent(id, .activate_end)) |_| {
         // Update the shared state to this button's value.
         if (self.selected.* != self.value) {

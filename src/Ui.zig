@@ -33,6 +33,7 @@ pub const widgets = struct {
     pub const enumRadioButton = Widget.RadioButton.enumRadioButton;
     pub const shaderRect = Widget.ShaderRect.shaderRect;
     pub const slider = Widget.Slider.slider;
+    pub const enumSlider = Widget.Slider.enumSlider;
     pub const textInput = Widget.TextInput.textInput;
 };
 
@@ -60,6 +61,22 @@ pub const SharedWidgetState = struct {
     deinit: *const fn (*anyopaque, *Ui) void,
     state_type: *const anyopaque,
     seen_this_frame: bool,
+};
+
+pub const KeyRepeatState = struct {
+    timer: std.time.Timer,
+    initial_delay: u64 = 350 * std.time.ns_per_ms,
+    nth_delay: u64 = 25 * std.time.ns_per_ms,
+    state: enum { none, first, nth } = .none,
+    active_key: ?BindingState.Key = null,
+
+    pub fn advance(self: *@This()) void {
+        self.state = switch (self.state) {
+            .none => .first,
+            .first => .nth,
+            else => self.state,
+        };
+    }
 };
 
 pub const Color = Batch2D.Color;
@@ -842,9 +859,6 @@ pub fn menuNavigable(self: *Ui) !void {
             return;
         }
     }
-
-    // If we get here, we are trying to make something navigable but we aren't inside a menu.
-    log.err("menuNavigable called, but no ancestor menu found in open_ids stack.", .{});
 }
 
 pub fn menuSeparator(self: *Ui) !void {

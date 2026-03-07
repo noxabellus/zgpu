@@ -397,6 +397,7 @@ pub fn main() !void {
     var buffer_debug_mode: BufferDebugMode = .None;
     var text_buffer: std.ArrayList(u8) = .empty;
     var dummy_slider_value: f32 = 0.0;
+    var anim_index_slider: u32 = 0;
 
     var theme = Ui.Theme.init(app.generalAllocator());
     defer theme.deinit();
@@ -415,6 +416,7 @@ pub fn main() !void {
         .checkbox_mark = Ui.Widget.Checkbox.Mark.block,
         .checkbox_mark_color = COLOR_PHOSPHOR,
         .radio_mark_color = COLOR_PHOSPHOR,
+        .slider_handle_color = COLOR_PHOSPHOR,
     });
 
     try theme.setAll(.widget, .active, .{
@@ -689,33 +691,11 @@ pub fn main() !void {
                                 });
                             }
 
-                            {
-                                try ui.openElement(.fromSlice("animIndexSlider"));
-                                defer ui.endElement();
-
-                                var index = demo.anim_state.index;
-                                try ui.configureElement(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .fixed(300), .h = .fixed(20) },
-                                    },
-                                    .type = .render_widget,
-                                    .state = .flags(.{
-                                        .click = true,
-                                        .drag = true,
-                                        .focus = true,
-                                        .keyboard = true,
-                                    }),
-                                });
-
-                                if (try widgets.slider(ui, u32, .{
-                                    .value = &index,
-                                    .min = 0,
-                                    .max = if (demo.model != null and demo.model.?.animations.len > 0) @intCast(demo.model.?.animations.len - 1) else 0,
-                                    .track_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
-                                    .handle_color = COLOR_PHOSPHOR,
-                                })) {
-                                    demo.anim_state.setIndex(index);
-                                }
+                            if (try widgets.slider(u32, ui, .fromSlice("animIndexSlider"), &anim_index_slider, .{
+                                .min = 0,
+                                .max = if (demo.model != null and demo.model.?.animations.len > 0) @intCast(demo.model.?.animations.len - 1) else 0,
+                            })) {
+                                demo.anim_state.setIndex(anim_index_slider);
                             }
                         }
                     }
@@ -871,32 +851,10 @@ pub fn main() !void {
                                 });
                             }
 
-                            {
-                                try ui.openElement(.fromSlice("lightBrightnessSlider"));
-                                defer ui.endElement();
-
-                                try ui.configureElement(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .grow, .h = .fixed(20) },
-                                    },
-                                    .type = .render_widget,
-                                    .state = .flags(.{
-                                        .click = true,
-                                        .drag = true,
-                                        .focus = true,
-                                        .keyboard = true,
-                                    }),
-                                });
-
-                                _ = try widgets.slider(ui, f32, .{
-                                    .value = &demo.light.config.brightness,
-                                    .min = 0.0,
-                                    .max = 3.0,
-
-                                    .track_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
-                                    .handle_color = COLOR_PHOSPHOR,
-                                });
-                            }
+                            _ = try widgets.slider(f32, ui, .fromSlice("lightBrightnessSlider"), &demo.light.config.brightness, .{
+                                .min = 0.0,
+                                .max = 3.0,
+                            });
                         }
 
                         { // Buffer Debug
@@ -960,6 +918,8 @@ pub fn main() !void {
                                     _ = try widgets.enumRadioButton(BufferDebugMode, ui, .fromSlice(mode_name ++ "_radio"), &buffer_debug_mode, @field(BufferDebugMode, mode_name));
                                 }
                             }
+
+                            _ = try widgets.enumSlider(BufferDebugMode, ui, .fromSlice("buffer_debug_slider"), &buffer_debug_mode);
 
                             switch (buffer_debug_mode) {
                                 .None => {},
@@ -1063,34 +1023,19 @@ pub fn main() !void {
 
                 // Embedded Widget Test
                 {
-                    try ui.beginElement(.{ .id = .fromSlice("MenuSliderContainer"), .layout = .{ .padding = .all(4), .direction = .top_to_bottom } });
+                    try ui.beginElement(.{
+                        .id = .fromSlice("MenuSliderContainer"),
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .fit },
+                            .padding = .all(4),
+                            .direction = .top_to_bottom,
+                        },
+                    });
                     defer ui.endElement();
 
                     try ui.text("Opacity", .{ .font_id = FONT_ID_MONO, .font_size = 12 });
-                    {
-                        try ui.openElement(.fromSlice("MenuSlider"));
-                        defer ui.endElement();
 
-                        const bb = ui.getElementBounds(.fromSlice("ContextMenuRoot")).?; // Note: This is kind of dangerous; if you were to set the fixed width to be exactly the menu width, it would actually grow each frame
-                        try ui.configureElement(.{
-                            .layout = .{ .sizing = .{ .w = .fixed(bb.width - 16), .h = .fixed(20) } },
-                            .type = .render_widget,
-                            .state = .flags(.{
-                                .click = true,
-                                .drag = true,
-                                .focus = true,
-                                .keyboard = true,
-                            }),
-                        });
-                        try ui.menuNavigable(); // makes this element navigable via keyboard in menus
-                        _ = try widgets.slider(ui, f32, .{
-                            .min = 0,
-                            .max = 1,
-                            .value = &dummy_slider_value,
-                            .track_color = if (ui.focused()) COLOR_BLUE else COLOR_LIGHT_HOVER,
-                            .handle_color = COLOR_TEAL,
-                        });
-                    }
+                    _ = try widgets.slider(f32, ui, .fromSlice("MenuSlider"), &dummy_slider_value, .{});
                 }
             }
 

@@ -20,7 +20,6 @@ test {
 id: Ui.ElementId,
 text: *std.ArrayList(u8),
 allocator: std.mem.Allocator,
-selection_render_data: SelectionRenderData,
 
 carets: std.ArrayList(Caret) = .empty,
 spatial_actions: std.ArrayList(SpatialAction) = .empty,
@@ -87,11 +86,9 @@ pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*TextInput {
         .id = id,
         .text = config.text,
         .allocator = config.allocator,
-        .selection_render_data = undefined,
         .selection_color = config.selection_color,
         .caret_color = config.caret_color,
     };
-    self.selection_render_data = .{ .carets = &self.carets };
 
     // Start the cursor at the end of whatever text initially exists
     const text_len: u32 = @intCast(config.text.items.len);
@@ -451,7 +448,7 @@ pub fn render(self: *TextInput, ui: *Ui, command: Ui.RenderCommand) !void {
         return;
     }
 
-    const caret_list = self.selection_render_data.carets;
+    const caret_list = self.carets;
     const caret_width: f32 = 1.5;
 
     for (caret_list.items) |caret| {

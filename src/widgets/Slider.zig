@@ -1,4 +1,4 @@
-//! Slider widget for f32 values.
+//! Slider widget for numeric values.
 
 const Slider = @This();
 
@@ -11,362 +11,199 @@ const vec2 = linalg.vec2;
 const log = std.log.scoped(.slider_widget);
 
 test {
-    log.debug("semantic analysis for widgets/Slider.zig", .{});
+    log.debug("semantic analysis for widgets/FSlider.zig", .{});
     std.testing.refAllDecls(@This());
 }
 
-const KeyRepeatState = struct {
-    timer: ?std.time.Timer = null,
-    initial_delay: u64 = 350 * std.time.ns_per_ms,
-    nth_delay: u64 = 25 * std.time.ns_per_ms,
-    state: enum { none, first, nth } = .none,
-    active_key: ?BindingState.Key = null,
+pub fn State(comptime T: type) type {
+    const T_info = @typeInfo(T);
+    return struct {
+        value: *T,
+        config: Config,
+        theme: Theme,
+        key_repeat: Ui.KeyRepeatState,
 
-    fn advance(self: *@This()) void {
-        self.state = switch (self.state) {
-            .none => .first,
-            .first => .nth,
-            else => self.state,
+        pub const Config = struct {
+            min: T = if (T_info == .int and T_info.int.signedness == .signed) -50 else 0,
+            max: T = if (T_info == .float) 1.0 else if (T_info.int.signedness == .signed) 50 else 100,
+            step: T = if (T_info == .float) 0.01 else 1,
         };
-    }
-};
 
-pub fn For(comptime T: type) type {
-    const TInfo = @typeInfo(T);
+        fn performKeyAction(self: *@This(), key: BindingState.Key) !bool {
+            var new_value = self.value.*;
 
-    if ((TInfo == .int and TInfo.int.bits > 64) or (TInfo == .float and TInfo.float.bits > 64)) {
-        @compileError("SliderWidget supports a maximum of 64-bits on operand types");
-    }
-
-    return switch (TInfo) {
-        .float => struct {
-            const Self = @This();
-
-            id: Ui.ElementId,
-            min: T,
-            max: T,
-            value: *T,
-
-            key_repeat: KeyRepeatState = .{},
-
-            // Style properties
-            track_color: Ui.Color,
-            handle_color: Ui.Color,
-            handle_size: f32,
-
-            pub const Config = struct {
-                value: *T,
-                min: T = 0.0,
-                max: T = 1.0,
-                track_color: Ui.Color = Ui.Color.init(200, 200, 200, 255),
-                handle_color: Ui.Color = Ui.Color.init(100, 100, 100, 255),
-                handle_size: f32 = 16.0,
-            };
-
-            pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*Self {
-                const self = try ui.gpa.create(Self);
-                errdefer ui.gpa.destroy(self);
-
-                config.value.* = std.math.clamp(config.value.*, config.min, config.max);
-
-                self.* = Self{
-                    .id = id,
-                    .min = config.min,
-                    .max = config.max,
-                    .value = config.value,
-                    .track_color = config.track_color,
-                    .handle_color = config.handle_color,
-                    .handle_size = config.handle_size,
-                };
-                self.key_repeat.timer = try std.time.Timer.start();
-
-                return self;
-            }
-
-            pub fn deinit(self: *Self, ui: *Ui) void {
-                ui.gpa.destroy(self);
-            }
-
-            fn performKeyAction(self: *Self, key: BindingState.Key) !bool {
-                const step = (self.max - self.min) * 0.01;
-                var new_value = self.value.*;
-
+            if (comptime @typeInfo(T) == .float) {
                 switch (key) {
-                    .left, .down => new_value -= step,
-                    .right, .up => new_value += step,
+                    .left, .down => if (new_value > self.config.max) {
+                        new_value -= self.config.step;
+                    },
+                    .right, .up => if (new_value < self.config.max) {
+                        new_value += self.config.step;
+                    },
                     else => return false,
                 }
-
-                new_value = std.math.clamp(new_value, self.min, self.max);
-
-                defer self.value.* = new_value;
-                return self.value.* != new_value;
+            } else {
+                switch (key) {
+                    .left, .down => if (new_value > self.config.max) {
+                        new_value = new_value -| self.config.step;
+                    },
+                    .right, .up => if (new_value < self.config.max) {
+                        new_value = new_value +| self.config.step;
+                    },
+                    else => return false,
+                }
             }
 
-            fn updateValueFromMouse(self: *Self, info: Ui.Event.Info, mouse_pos: vec2) !bool {
-                const bb = info.bounding_box;
-                const relative_x = mouse_pos[0] - bb.x;
-                const proportion = std.math.clamp(relative_x / bb.width, 0.0, 1.0);
-                const new_value = self.min + proportion * (self.max - self.min);
+            new_value = std.math.clamp(new_value, self.config.min, self.config.max);
 
-                defer self.value.* = new_value;
-                return self.value.* != new_value;
-            }
+            defer self.value.* = new_value;
+            return self.value.* != new_value;
+        }
 
-            pub fn render(self: *Self, ui: *Ui, command: Ui.RenderCommand) !void {
-                const bb = command.bounding_box;
+        fn updateValueFromMouse(self: *@This(), info: Ui.Event.Info, mouse_pos: vec2) !bool {
+            const bb = info.bounding_box;
+            const relative_x = mouse_pos[0] - bb.x;
+            const proportion = std.math.clamp(relative_x / bb.width, 0.0, 1.0);
 
-                const track_height: f32 = 4.0;
-                const track_y = bb.y + (bb.height - track_height) / 2.0;
-                try ui.renderer.drawRoundedRect(.{ bb.x, track_y }, .{ bb.width, track_height }, .all(track_height / 2.0), self.track_color);
-
-                const value_proportion: f32 = @floatCast((self.value.* - self.min) / (self.max - self.min));
-                const handle_x = bb.x + (value_proportion * (bb.width - self.handle_size));
-                const handle_y = bb.y + (bb.height - self.handle_size) / 2.0;
-
-                try ui.renderer.drawRoundedRect(.{ handle_x, handle_y }, .{ self.handle_size, self.handle_size }, .all(self.handle_size / 2.0), self.handle_color);
-            }
-        },
-
-        .int => |int_info| switch (int_info.signedness) {
-            .signed => struct {
-                const Self = @This();
-
-                id: Ui.ElementId,
-                min: T,
-                max: T,
-                value: *T,
-
-                key_repeat: KeyRepeatState = .{},
-
-                // Style properties
-                track_color: Ui.Color,
-                handle_color: Ui.Color,
-                handle_size: f32,
-
-                pub const Config = struct {
-                    value: *T,
-                    min: T = -50,
-                    max: T = 50,
-                    track_color: Ui.Color = Ui.Color.init(200, 200, 200, 255),
-                    handle_color: Ui.Color = Ui.Color.init(100, 100, 100, 255),
-                    handle_size: f32 = 16.0,
+            const new_value =
+                if (comptime T_info == .float)
+                    self.config.min + proportion * (self.config.max - self.config.min)
+                else int: {
+                    const range = @as(f32, @floatFromInt(self.config.max - self.config.min));
+                    const float_offset = std.math.round(proportion * range);
+                    break :int self.config.min + @as(T, @intFromFloat(float_offset));
                 };
 
-                pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*Self {
-                    const self = try ui.gpa.create(Self);
-                    errdefer ui.gpa.destroy(self);
+            defer self.value.* = new_value;
+            return self.value.* != new_value;
+        }
 
-                    config.value.* = std.math.clamp(config.value.*, config.min, config.max);
+        pub fn render(self: *@This(), ui: *Ui, command: Ui.RenderCommand) !void {
+            const bb = command.bounding_box;
 
-                    self.* = Self{
-                        .id = id,
-                        .min = config.min,
-                        .max = config.max,
-                        .value = config.value,
-                        .track_color = config.track_color,
-                        .handle_color = config.handle_color,
-                        .handle_size = config.handle_size,
-                    };
-                    self.key_repeat.timer = try std.time.Timer.start();
+            const track_color = command.render_data.custom.background_color;
+            const corner_radius = command.render_data.custom.corner_radius;
 
-                    return self;
-                }
+            const track_y = bb.y + (bb.height - self.theme.slider_track_size) / 2.0;
+            try ui.renderer.drawRoundedRect(
+                .{ bb.x, track_y },
+                .{ bb.width, self.theme.slider_track_size },
+                .{
+                    .bottom_left = self.theme.slider_track_radius.bottom_left,
+                    .bottom_right = self.theme.slider_track_radius.bottom_right,
+                    .top_left = self.theme.slider_track_radius.top_left,
+                    .top_right = self.theme.slider_track_radius.top_right,
+                },
+                .{
+                    .r = track_color[0],
+                    .g = track_color[1],
+                    .b = track_color[2],
+                    .a = track_color[3],
+                },
+            );
 
-                pub fn deinit(self: *Self, ui: *Ui) void {
-                    ui.gpa.destroy(self);
-                }
+            try ui.renderer.drawRoundedRectLine(
+                .{ bb.x, track_y },
+                .{ bb.width, self.theme.slider_track_size },
+                .{
+                    .bottom_left = self.theme.slider_track_radius.bottom_left,
+                    .bottom_right = self.theme.slider_track_radius.bottom_right,
+                    .top_left = self.theme.slider_track_radius.top_left,
+                    .top_right = self.theme.slider_track_radius.top_right,
+                },
+                .{
+                    .bottom = @floatFromInt(self.theme.border_width.bottom),
+                    .left = @floatFromInt(self.theme.border_width.left),
+                    .right = @floatFromInt(self.theme.border_width.right),
+                    .top = @floatFromInt(self.theme.border_width.top),
+                },
+                self.theme.border_color,
+            );
 
-                fn performKeyAction(self: *Self, key: BindingState.Key) !bool {
-                    const step: T = 1;
-                    var new_value = self.value.*;
+            const value_proportion: f32 =
+                if (comptime T_info == .float)
+                    @floatCast((self.value.* - self.config.min) / (self.config.max - self.config.min))
+                else if (self.config.max - self.config.min == 0)
+                    0.0
+                else
+                    @as(f32, @floatFromInt(self.value.* - self.config.min)) / @as(f32, @floatFromInt(self.config.max - self.config.min));
 
-                    switch (key) {
-                        .left, .down => new_value -= step,
-                        .right, .up => new_value += step,
-                        else => return false,
-                    }
+            const handle_x = bb.x + (value_proportion * (bb.width - self.theme.slider_handle_size));
+            const handle_y = bb.y + (bb.height - self.theme.slider_handle_size) / 2.0;
 
-                    new_value = std.math.clamp(new_value, self.min, self.max);
-
-                    defer self.value.* = new_value;
-                    return self.value.* != new_value;
-                }
-
-                fn updateValueFromMouse(self: *Self, info: Ui.Event.Info, mouse_pos: vec2) !bool {
-                    const bb = info.bounding_box;
-                    const relative_x = mouse_pos[0] - bb.x;
-                    const proportion = std.math.clamp(relative_x / bb.width, 0.0, 1.0);
-
-                    const range = @as(f32, @floatFromInt(self.max - self.min));
-                    const float_offset = std.math.round(proportion * range);
-                    const new_value = self.min + @as(T, @intFromFloat(float_offset));
-
-                    defer self.value.* = new_value;
-                    return self.value.* != new_value;
-                }
-
-                pub fn render(self: *Self, ui: *Ui, command: Ui.RenderCommand) !void {
-                    const bb = command.bounding_box;
-
-                    const track_height: f32 = 4.0;
-                    const track_y = bb.y + (bb.height - track_height) / 2.0;
-                    try ui.renderer.drawRoundedRect(.{ bb.x, track_y }, .{ bb.width, track_height }, .all(track_height / 2.0), self.track_color);
-
-                    const value_proportion = if (self.max - self.min == 0)
-                        0.0
-                    else
-                        @as(f32, @floatFromInt(self.value.* - self.min)) / @as(f32, @floatFromInt(self.max - self.min));
-
-                    const handle_x = bb.x + (value_proportion * (bb.width - self.handle_size));
-                    const handle_y = bb.y + (bb.height - self.handle_size) / 2.0;
-
-                    try ui.renderer.drawRoundedRect(.{ handle_x, handle_y }, .{ self.handle_size, self.handle_size }, .all(self.handle_size / 2.0), self.handle_color);
-                }
-            },
-
-            .unsigned => struct {
-                const Self = @This();
-                id: Ui.ElementId,
-                min: T,
-                max: T,
-                value: *T,
-
-                key_repeat: KeyRepeatState = .{},
-
-                // Style properties
-                track_color: Ui.Color,
-                handle_color: Ui.Color,
-                handle_size: f32,
-
-                pub const Config = struct {
-                    value: *T,
-                    min: T = 0,
-                    max: T = 100,
-                    track_color: Ui.Color = Ui.Color.init(200, 200, 200, 255),
-                    handle_color: Ui.Color = Ui.Color.init(100, 100, 100, 255),
-                    handle_size: f32 = 16.0,
-                };
-
-                pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*Self {
-                    const self = try ui.gpa.create(Self);
-                    errdefer ui.gpa.destroy(self);
-
-                    config.value.* = std.math.clamp(config.value.*, config.min, config.max);
-
-                    self.* = Self{
-                        .id = id,
-                        .min = config.min,
-                        .max = config.max,
-                        .value = config.value,
-                        .track_color = config.track_color,
-                        .handle_color = config.handle_color,
-                        .handle_size = config.handle_size,
-                    };
-                    self.key_repeat.timer = try std.time.Timer.start();
-
-                    return self;
-                }
-
-                pub fn deinit(self: *Self, ui: *Ui) void {
-                    ui.gpa.destroy(self);
-                }
-
-                fn performKeyAction(self: *Self, key: BindingState.Key) !bool {
-                    const step: T = 1;
-                    var new_value = self.value.*;
-
-                    switch (key) {
-                        .left, .down => {
-                            if (new_value > self.min) {
-                                new_value -= step;
-                            } else {
-                                new_value = self.min;
-                            }
-                        },
-                        .right, .up => {
-                            if (new_value < self.max) {
-                                new_value += step;
-                            } else {
-                                new_value = self.max;
-                            }
-                        },
-                        else => return false,
-                    }
-
-                    new_value = std.math.clamp(new_value, self.min, self.max);
-
-                    defer self.value.* = new_value;
-                    return self.value.* != new_value;
-                }
-
-                fn updateValueFromMouse(self: *Self, info: Ui.Event.Info, mouse_pos: vec2) !bool {
-                    const bb = info.bounding_box;
-                    const relative_x = mouse_pos[0] - bb.x;
-                    const proportion = std.math.clamp(relative_x / bb.width, 0.0, 1.0);
-
-                    const range = @as(f32, @floatFromInt(self.max - self.min));
-                    const float_offset = std.math.round(proportion * range);
-                    const new_value = self.min + @as(T, @intFromFloat(float_offset));
-
-                    defer self.value.* = new_value;
-                    return self.value.* != new_value;
-                }
-
-                pub fn render(self: *Self, ui: *Ui, command: Ui.RenderCommand) !void {
-                    const bb = command.bounding_box;
-
-                    const track_height: f32 = 4.0;
-                    const track_y = bb.y + (bb.height - track_height) / 2.0;
-                    try ui.renderer.drawRoundedRect(.{ bb.x, track_y }, .{ bb.width, track_height }, .all(track_height / 2.0), self.track_color);
-
-                    const value_proportion = if (self.max - self.min == 0)
-                        0.0
-                    else
-                        @as(f32, @floatFromInt(self.value.* - self.min)) / @as(f32, @floatFromInt(self.max - self.min));
-
-                    const handle_x = bb.x + (value_proportion * (bb.width - self.handle_size));
-                    const handle_y = bb.y + (bb.height - self.handle_size) / 2.0;
-
-                    try ui.renderer.drawRoundedRect(.{ handle_x, handle_y }, .{ self.handle_size, self.handle_size }, .all(self.handle_size / 2.0), self.handle_color);
-                }
-            },
-        },
-        else => @compileError("Type " ++ @typeName(T) ++ " not supported in Slider Widget"),
+            try ui.renderer.drawRoundedRect(
+                .{ handle_x, handle_y },
+                .{ self.theme.slider_handle_size, self.theme.slider_handle_size },
+                .{
+                    .bottom_left = corner_radius.bottom_left,
+                    .bottom_right = corner_radius.bottom_right,
+                    .top_left = corner_radius.top_left,
+                    .top_right = corner_radius.top_right,
+                },
+                self.theme.slider_handle_color,
+            );
+        }
     };
 }
 
-/// Configure an open element as a slider widget; works with floats and integers of all signs and sizes up to 64 bits.
-pub fn slider(ui: *Ui, comptime T: type, config: Slider.For(T).Config) !bool {
-    const S = Slider.For(T);
+pub const Theme = struct {
+    slider_handle_color: Ui.Color = Ui.Color.init(100, 100, 100, 255),
+    slider_handle_size: f32 = 16.0,
+    slider_track_size: f32 = 8.0,
+    slider_track_radius: Ui.CornerRadius = .all(4),
+    border_width: Ui.BorderWidth = .all(0),
+    border_color: Ui.Color = .black,
 
-    const id = ui.open_ids.items[ui.open_ids.items.len - 1];
-    const gop = try ui.widget_states.getOrPut(ui.gpa, id.id);
-    const self = if (!gop.found_existing) create_new: {
-        const ptr = try S.init(ui, id, config);
-        gop.value_ptr.* = Ui.Widget{
-            .user_data = ptr,
-            .render = @ptrCast(&S.render),
-            .deinit = @ptrCast(&S.deinit),
-            .seen_this_frame = true,
-        };
+    pub const BINDING_SET = Ui.Theme.Binding.Set.create(Theme);
+};
 
-        break :create_new ptr;
-    } else reuse_existing: {
-        gop.value_ptr.seen_this_frame = true;
+pub fn enumSlider(comptime T: type, ui: *Ui, id: Ui.ElementId, value: *T) !bool {
+    const state, _ = try ui.getOrCreateSharedWidgetState(usize, id);
 
-        const ptr: *S = @ptrCast(@alignCast(gop.value_ptr.user_data));
+    state.* = inline for (comptime std.meta.fieldNames(T), 0..) |field_name, i| {
+        if (@field(T, field_name) == value.*) break i;
+    } else unreachable;
 
-        // Update config properties in case they change frame-to-frame.
-        ptr.value.* = std.math.clamp(ptr.value.*, config.min, config.max);
-        ptr.min = config.min;
-        ptr.max = config.max;
-        ptr.track_color = config.track_color;
-        ptr.handle_color = config.handle_color;
-        ptr.handle_size = config.handle_size;
+    if (try slider(usize, ui, id, state, .{ .min = 0, .max = std.meta.fieldNames(T).len - 1 })) {
+        inline for (comptime std.meta.fieldNames(T), 0..) |field_name, i| {
+            if (i == state.*) {
+                value.* = @field(T, field_name);
+                return true;
+            }
+        }
+        unreachable;
+    }
+    return false;
+}
 
-        break :reuse_existing ptr;
-    };
+pub fn slider(comptime T: type, ui: *Ui, id: Ui.ElementId, value: *T, config: State(T).Config) !bool {
+    const self, const new = try ui.getOrCreateWidget(State(T), id);
+
+    self.value = value;
+    self.config = config;
+    self.theme = .{};
+    if (new) {
+        self.key_repeat = .{ .timer = try .start() };
+    }
+
+    try ui.openSection(id);
+    defer ui.endSection();
+
+    try ui.applyTheme(&Theme.BINDING_SET, .widget, &self.theme);
+
+    try ui.configureSection(.{
+        .sizing = .{ .w = .grow, .h = .fixed(self.theme.slider_handle_size) },
+        .border_width = .all(0),
+        .type = .render_widget,
+        .event_flags = .{
+            .click = true,
+            .drag = true,
+            .focus = true,
+            .keyboard = true,
+        },
+    });
+
+    try ui.menuNavigable();
 
     var changed = false;
     if (ui.getEvent(id, .mouse_down)) |event| {
@@ -387,7 +224,7 @@ pub fn slider(ui: *Ui, comptime T: type, config: Slider.For(T).Config) !bool {
         changed = changed or try self.performKeyAction(key);
 
         self.key_repeat.advance();
-        self.key_repeat.timer.?.reset();
+        self.key_repeat.timer.reset();
     }
 
     if (ui.getEvent(id, .key)) |event| key: {
@@ -400,11 +237,11 @@ pub fn slider(ui: *Ui, comptime T: type, config: Slider.For(T).Config) !bool {
             .nth => self.key_repeat.nth_delay,
         };
 
-        if (self.key_repeat.timer.?.read() < delay) break :key;
+        if (self.key_repeat.timer.read() < delay) break :key;
 
         changed = changed or try self.performKeyAction(data.key);
         self.key_repeat.advance();
-        self.key_repeat.timer.?.reset();
+        self.key_repeat.timer.reset();
     }
 
     if (ui.getEvent(id, .key_up)) |event| {

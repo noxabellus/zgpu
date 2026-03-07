@@ -108,6 +108,8 @@ pub fn checkbox(ui: *Ui, id: Ui.ElementId, value: *bool) !bool {
         },
     });
 
+    try ui.menuNavigable();
+
     if (ui.getEvent(id, .activate_end)) |_| {
         self.value.* = !self.value.*;
         return true;

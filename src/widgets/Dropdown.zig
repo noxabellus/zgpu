@@ -67,6 +67,8 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
     });
     defer ui.endSection();
 
+    try ui.menuNavigable();
+
     var theme = Theme{};
     try ui.applyTheme(&Theme.BINDING_SET, .widget, &theme);
 
