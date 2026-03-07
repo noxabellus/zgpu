@@ -26,16 +26,17 @@ const FrameElementInfo = struct {
 };
 
 pub const widgets = struct {
+    pub const button = Widget.Button.button;
     pub const checkbox = Widget.Checkbox.checkbox;
     pub const dropdown = Widget.Dropdown.dropdown;
     pub const enumDropdown = Widget.Dropdown.enumDropdown;
+    pub const image = Widget.Image.image;
     pub const radioButton = Widget.RadioButton.radioButton;
     pub const enumRadioButton = Widget.RadioButton.enumRadioButton;
     pub const shaderRect = Widget.ShaderRect.shaderRect;
     pub const slider = Widget.Slider.slider;
     pub const enumSlider = Widget.Slider.enumSlider;
     pub const textInput = Widget.TextInput.textInput;
-    pub const image = Widget.Image.image;
 };
 
 pub const Widget = struct {
@@ -44,13 +45,14 @@ pub const Widget = struct {
     deinit: *const fn (*anyopaque, *Ui) void,
     seen_this_frame: bool,
 
+    pub const Button = @import("widgets/Button.zig");
     pub const Checkbox = @import("widgets/Checkbox.zig");
+    pub const Dropdown = @import("widgets/Dropdown.zig");
+    pub const Image = @import("widgets/Image.zig");
+    pub const RadioButton = @import("widgets/RadioButton.zig");
+    pub const ShaderRect = @import("widgets/ShaderRect.zig");
     pub const Slider = @import("widgets/Slider.zig");
     pub const TextInput = @import("widgets/TextInput.zig");
-    pub const RadioButton = @import("widgets/RadioButton.zig");
-    pub const Dropdown = @import("widgets/Dropdown.zig");
-    pub const ShaderRect = @import("widgets/ShaderRect.zig");
-    pub const Image = @import("widgets/Image.zig");
 
     test {
         log.debug("semantic analysis for Ui.Widgets", .{});

@@ -407,6 +407,9 @@ pub fn main() !void {
         .background_color = COLOR_GREYBROWN,
         .border_color = COLOR_PHOSPHOR,
         .text_color = COLOR_PHOSPHOR,
+        .font_id = FONT_ID_MONO,
+        .font_size = @as(u16, 16),
+
         .padding = Ui.Padding.all(10),
         .border_width = Ui.BorderWidth.all(1),
         .corner_radius = Ui.CornerRadius.all(8),
@@ -534,41 +537,17 @@ pub fn main() !void {
                         });
                         defer ui.endSection();
 
-                        {
-                            try ui.beginElement(.fromSlice("LoadButton"), .{
-                                .sizing = .{ .w = .fit, .h = .fit },
-                                .child_alignment = .center,
-                                .type = .layout_widget,
-                                .event_flags = .{ .click = true, .focus = true, .activate = true },
-                            });
-                            defer ui.endElement();
-
-                            try ui.text("Load Model", .{});
-
-                            if (ui.getEvent(.fromSlice("LoadButton"), .activate_end)) |_| {
-                                try nfd.openDialogAsync("glb,gltf", ".", &demo.path_to_load);
-                            }
+                        if (try widgets.button(ui, .fromSlice("LoadButton"), "Load Model")) {
+                            try nfd.openDialogAsync("glb,gltf", ".", &demo.path_to_load);
                         }
 
-                        {
-                            try ui.beginElement(.fromSlice("UnloadButton"), .{
-                                .sizing = .{ .w = .fit, .h = .fit },
-                                .child_alignment = .center,
-                                .type = if (demo.model != null) .layout_widget else .content,
-                                .event_flags = if (demo.model != null) .{ .click = true, .focus = true, .activate = true } else .{},
-                            });
-                            defer ui.endElement();
+                        if (try widgets.button(ui, .fromSlice("UnloadButton"), "Unload Model")) {
+                            if (demo.model) |*m| m.deinit();
+                            demo.model = null;
 
-                            try ui.text("Unload Model", .{});
-
-                            if (ui.getEvent(.fromSlice("UnloadButton"), .activate_end)) |_| {
-                                if (demo.model) |*m| m.deinit();
-                                demo.model = null;
-
-                                demo.anim_state.clearCache();
-                                demo.anim_state.clearMatrices();
-                                try demo.anim_state.sync(&demo.app.gpu);
-                            }
+                            demo.anim_state.clearCache();
+                            demo.anim_state.clearMatrices();
+                            try demo.anim_state.sync(&demo.app.gpu);
                         }
                     }
 
