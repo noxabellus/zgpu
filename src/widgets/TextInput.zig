@@ -21,14 +21,22 @@ id: Ui.ElementId,
 text: *std.ArrayList(u8),
 allocator: std.mem.Allocator,
 
-carets: std.ArrayList(Caret) = .empty,
-spatial_actions: std.ArrayList(SpatialAction) = .empty,
+carets: std.ArrayList(Caret), // = .empty,
+spatial_actions: std.ArrayList(SpatialAction), // = .empty,
 
-column_select_start_pos: ?u32 = null,
-drag_additive: u32 = 0,
+column_select_start_pos: ?u32, // = null,
+drag_additive: u32, // = 0,
 
-selection_color: Ui.Color,
-caret_color: Ui.Color,
+theme: Theme,
+
+pub const Theme = struct {
+    /// The RGBA color of selection highlights.
+    text_selection_color: Ui.Color = .{ .r = 0.75, .g = 0, .b = 0.75, .a = 0.5 },
+    /// The RGBA color of selection carets.
+    text_caret_color: Ui.Color = .{ .r = 1, .a = 1 },
+
+    pub const BINDING_SET = Ui.Theme.Binding.Set.create(Theme);
+};
 
 const SpatialAction = union(enum) {
     mouse_down: struct { location: vec2, modifiers: BindingState.Modifiers },
@@ -40,71 +48,28 @@ const SpatialAction = union(enum) {
     end: BindingState.Modifiers,
 };
 
-pub const Config = struct {
-    /// The mutable text buffer for this input.
-    text: *std.ArrayList(u8),
-    /// The allocator backing the text buffer.
-    allocator: std.mem.Allocator,
-    /// The RGBA color of the font to render, conventionally specified as 0-255.
-    color: Ui.Color = .{ .r = 0, .g = 0, .b = 0, .a = 255 },
-    /// Identifies the font to use.
-    font_id: Ui.FontId = 0, // The debug view will pass fontId = 0 for its internal text.
-    /// Controls the size of the font.
-    font_size: u16 = 20, // Handled by the function provided to Clay_MeasureText.
-    /// Controls extra horizontal spacing between characters.
-    letter_spacing: u16 = 0, // TODO: Not yet handled by the function provided to Clay_MeasureText.
-    /// Additional vertical space between wrapped lines of text
-    line_height: u16 = 0,
-    /// Controls how text "wraps", that is how it is broken into multiple lines when there is insufficient horizontal space.
-    wrap_mode: Ui.TextElementConfigWrapMode = .words,
-    /// Controls how wrapped lines of text are horizontally aligned within the outer text bounding box.
-    alignment: Ui.TextAlignment = .left,
-    /// The RGBA color of selection highlights.
-    selection_color: Ui.Color = .{ .r = 0.75, .g = 0, .b = 0.75, .a = 0.5 },
-    /// The RGBA color of selection carets.
-    caret_color: Ui.Color = .{ .r = 1, .a = 1 },
+// pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*TextInput {
+//     const self = try ui.gpa.create(TextInput);
+//     errdefer ui.gpa.destroy(self);
 
-    pub fn toFull(self: *const Config) Ui.TextElementConfig {
-        return .{
-            .color = self.color,
-            .font_id = self.font_id,
-            .font_size = self.font_size,
-            .letter_spacing = self.letter_spacing,
-            .line_height = self.line_height,
-            .wrap_mode = self.wrap_mode,
-            .alignment = self.alignment,
-            .user_data = null,
-        };
-    }
-};
+//     self.* = TextInput{
+//         .id = id,
+//         .text = config.text,
+//         .allocator = config.allocator,
+//         .selection_color = config.selection_color,
+//         .caret_color = config.caret_color,
+//     };
 
-pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*TextInput {
-    const self = try ui.gpa.create(TextInput);
-    errdefer ui.gpa.destroy(self);
+//     // Start the cursor at the end of whatever text initially exists
+//     const text_len: u32 = @intCast(config.text.items.len);
+//     try self.carets.append(ui.gpa, .{ .start = text_len, .end = text_len });
 
-    self.* = TextInput{
-        .id = id,
-        .text = config.text,
-        .allocator = config.allocator,
-        .selection_color = config.selection_color,
-        .caret_color = config.caret_color,
-    };
-
-    // Start the cursor at the end of whatever text initially exists
-    const text_len: u32 = @intCast(config.text.items.len);
-    try self.carets.append(ui.gpa, .{ .start = text_len, .end = text_len });
-
-    return self;
-}
+//     return self;
+// }
 
 pub fn deinit(self: *TextInput, ui: *Ui) void {
     self.carets.deinit(ui.gpa);
     self.spatial_actions.deinit(ui.gpa);
-    ui.gpa.destroy(self);
-}
-
-pub fn currentText(self: *TextInput) []const u8 {
-    return self.text.items;
 }
 
 const Caret = struct {
@@ -174,7 +139,7 @@ fn applyTextModification(
         new_carets.deinit(ui.gpa);
     }
 
-    const source_text = self.currentText();
+    const source_text = self.text.items;
 
     var last_idx: u32 = 0;
     for (self.carets.items) |caret| {
@@ -330,7 +295,7 @@ pub fn render(self: *TextInput, ui: *Ui, command: Ui.RenderCommand) !void {
                     self.carets.shrinkRetainingCapacity(base);
 
                     var scan_index: u32 = 0;
-                    while (scan_index < self.currentText().len) {
+                    while (scan_index < self.text.items.len) {
                         const char_offset = ui.getCharacterOffset(self.id, scan_index) orelse {
                             scan_index += 1;
                             continue;
@@ -351,7 +316,7 @@ pub fn render(self: *TextInput, ui: *Ui, command: Ui.RenderCommand) !void {
                         }
 
                         var next_scan_index = scan_index;
-                        while (next_scan_index < self.currentText().len) {
+                        while (next_scan_index < self.text.items.len) {
                             const next_char_offset = ui.getCharacterOffset(self.id, next_scan_index) orelse break;
                             if (next_char_offset.offset.y > line_y) break;
                             next_scan_index += 1;
@@ -416,7 +381,7 @@ pub fn render(self: *TextInput, ui: *Ui, command: Ui.RenderCommand) !void {
             .end => |action_mod| {
                 for (self.carets.items) |*caret| {
                     if (action_mod.ctrl) {
-                        caret.end = @intCast(self.currentText().len);
+                        caret.end = @intCast(self.text.items.len);
                     } else {
                         if (ui.getCharacterOffset(self.id, caret.end)) |current_offset_res| {
                             const end_of_line_target_loc = vec2{ 999999.0, current_offset_res.offset.y };
@@ -425,7 +390,7 @@ pub fn render(self: *TextInput, ui: *Ui, command: Ui.RenderCommand) !void {
                                 const check_offset_res = ui.getCharacterOffset(self.id, last_char_idx);
                                 if (check_offset_res != null and check_offset_res.?.offset.y != current_offset_res.offset.y and last_char_idx > 0) {
                                     var prev_char_start = last_char_idx - 1;
-                                    while (prev_char_start > 0 and (self.currentText()[prev_char_start] & 0b1100_0000) == 0b1000_0000) {
+                                    while (prev_char_start > 0 and (self.text.items[prev_char_start] & 0b1100_0000) == 0b1000_0000) {
                                         prev_char_start -= 1;
                                     }
                                     last_char_idx = prev_char_start;
@@ -493,7 +458,7 @@ pub fn render(self: *TextInput, ui: *Ui, command: Ui.RenderCommand) !void {
                     // The selection covers the rest of the line
                     end_offset.offset.x - start_offset.offset.x;
 
-                try ui.renderer.drawRect(.{ rect_x, rect_y }, .{ rect_w, rect_h }, self.selection_color);
+                try ui.renderer.drawRect(.{ rect_x, rect_y }, .{ rect_w, rect_h }, self.theme.text_selection_color);
 
                 i = end_of_line + 1;
             }
@@ -503,45 +468,65 @@ pub fn render(self: *TextInput, ui: *Ui, command: Ui.RenderCommand) !void {
         if (ui.getCharacterOffset(.fromRawId(command.id), caret.end)) |caret_offset| {
             const caret_x = command.bounding_box.x + caret_offset.offset.x;
             const caret_y = command.bounding_box.y + caret_offset.offset.y;
-            try ui.renderer.drawRect(.{ caret_x, caret_y }, .{ caret_width, caret_offset.line_height }, self.caret_color);
+            try ui.renderer.drawRect(.{ caret_x, caret_y }, .{ caret_width, caret_offset.line_height }, self.theme.text_caret_color);
         }
     }
 }
 
 /// Configure an open element as a text input widget, applying mutative state to the passed-in config text buffer.
-pub fn textInput(ui: *Ui, config: TextInput.Config) !bool {
-    const id = ui.open_ids.items[ui.open_ids.items.len - 1];
-    const gop = try ui.widget_states.getOrPut(ui.gpa, id.id);
-    const self = if (!gop.found_existing) create_new: {
-        const ptr = try TextInput.init(ui, id, config);
-        gop.value_ptr.* = Ui.Widget{
-            .user_data = ptr,
-            .render = @ptrCast(&TextInput.render),
-            .deinit = @ptrCast(&TextInput.deinit),
-            .seen_this_frame = true,
-        };
+pub fn textInput(ui: *Ui, id: Ui.ElementId, allocator: std.mem.Allocator, text: *std.ArrayList(u8), sizing: Ui.Sizing) !bool {
+    const self, const new = try ui.getOrCreateWidget(TextInput, id);
 
-        break :create_new ptr;
-    } else reuse_existing: {
-        gop.value_ptr.seen_this_frame = true;
-        const ptr: *TextInput = @ptrCast(@alignCast(gop.value_ptr.user_data));
+    if (new) {
+        self.id = id;
+        self.allocator = allocator;
+        self.text = text;
+        self.column_select_start_pos = null;
+        self.drag_additive = 0;
+        self.carets = .empty;
+        self.spatial_actions = .empty;
+    } else if (self.text != text) {
+        self.text = text;
+        self.allocator = allocator;
+        self.column_select_start_pos = null;
+        self.drag_additive = 0;
+        self.carets.clearRetainingCapacity();
+        self.spatial_actions.clearRetainingCapacity();
+    } else {
+        std.debug.assert(self.allocator.ptr == allocator.ptr);
+    }
 
-        // Update transient per-frame config & state pointers
-        ptr.text = config.text;
-        ptr.selection_color = config.selection_color;
-        ptr.caret_color = config.caret_color;
+    if (self.carets.items.len == 0) {
+        // Start the cursor at the end of whatever text initially exists
+        const text_len: u32 = @intCast(self.text.items.len);
+        try self.carets.append(ui.gpa, .{ .start = text_len, .end = text_len });
+    }
 
-        // Ensure carets remain in bounds if the buffer was externally manipulated
-        const text_len: u32 = @intCast(ptr.text.items.len);
-        for (ptr.carets.items) |*c| {
-            c.start = @min(c.start, text_len);
-            c.end = @min(c.end, text_len);
-        }
+    self.theme = .{};
 
-        break :reuse_existing ptr;
-    };
+    try ui.openSection(id);
+    defer ui.endSection();
 
-    try ui.text(self.currentText(), config.toFull());
+    try ui.configureSection(.{
+        .sizing = sizing,
+        .clip = .{
+            .vertical = true,
+            .child_offset = ui.scrollOffset(),
+        },
+        .type = .render_widget,
+        .event_flags = .{
+            .click = true,
+            .focus = true,
+            .text = true,
+            .drag = true,
+        },
+    });
+
+    try ui.applyTheme(&Theme.BINDING_SET, .widget, &self.theme);
+
+    try ui.menuNavigable();
+
+    try ui.textSection(self.text.items, .{});
 
     var changed = false;
 
@@ -571,8 +556,8 @@ pub fn textInput(ui: *Ui, config: TextInput.Config) !bool {
     if (ui.getEvent(self.id, .double_clicked)) |_| {
         if (self.carets.items.len > 0) {
             const caret = &self.carets.items[self.carets.items.len - 1];
-            caret.start = findPrevWordBreak(self.currentText(), caret.end);
-            caret.end = findNextWordBreak(self.currentText(), caret.end);
+            caret.start = findPrevWordBreak(self.text.items, caret.end);
+            caret.end = findNextWordBreak(self.text.items, caret.end);
             try sortAndMergeCarets(&self.carets);
         }
     }
@@ -606,7 +591,7 @@ pub fn textInput(ui: *Ui, config: TextInput.Config) !bool {
                         if (!first) try clipboard_list.append(ui.frame_arena, '\n');
                         first = false;
 
-                        const selection = self.currentText()[caret.min()..caret.max()];
+                        const selection = self.text.items[caret.min()..caret.max()];
                         try clipboard_list.appendSlice(ui.frame_arena, selection);
                     }
 
@@ -621,7 +606,7 @@ pub fn textInput(ui: *Ui, config: TextInput.Config) !bool {
                     if (cmd.modifiers.ctrl) {
                         for (self.carets.items) |*caret| {
                             if (!caret.hasSelection()) {
-                                caret.end = findNextWordBreak(self.currentText(), caret.end);
+                                caret.end = findNextWordBreak(self.text.items, caret.end);
                             }
                         }
                     }
@@ -632,7 +617,7 @@ pub fn textInput(ui: *Ui, config: TextInput.Config) !bool {
                     if (cmd.modifiers.ctrl) {
                         for (self.carets.items) |*caret| {
                             if (!caret.hasSelection()) {
-                                caret.end = findPrevWordBreak(self.currentText(), caret.end);
+                                caret.end = findPrevWordBreak(self.text.items, caret.end);
                             }
                         }
                     }
@@ -645,17 +630,17 @@ pub fn textInput(ui: *Ui, config: TextInput.Config) !bool {
                 },
                 .select_all => {
                     self.carets.clearRetainingCapacity();
-                    try self.carets.append(ui.gpa, .{ .start = 0, .end = @intCast(self.currentText().len) });
+                    try self.carets.append(ui.gpa, .{ .start = 0, .end = @intCast(self.text.items.len) });
                 },
                 .move_left => {
                     for (self.carets.items) |*caret| {
                         if (caret.hasSelection() and !cmd.modifiers.shift) {
                             caret.end = caret.min();
                         } else if (cmd.modifiers.ctrl) {
-                            caret.end = findPrevWordBreak(self.currentText(), caret.end);
+                            caret.end = findPrevWordBreak(self.text.items, caret.end);
                         } else if (caret.end > 0) {
                             var new_pos = caret.end - 1;
-                            while (new_pos > 0 and (self.currentText()[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos -= 1) {}
+                            while (new_pos > 0 and (self.text.items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos -= 1) {}
                             caret.end = new_pos;
                         }
                         if (!cmd.modifiers.shift) caret.start = caret.end;
@@ -667,10 +652,10 @@ pub fn textInput(ui: *Ui, config: TextInput.Config) !bool {
                         if (caret.hasSelection() and !cmd.modifiers.shift) {
                             caret.end = caret.max();
                         } else if (cmd.modifiers.ctrl) {
-                            caret.end = findNextWordBreak(self.currentText(), caret.end);
-                        } else if (caret.end < self.currentText().len) {
+                            caret.end = findNextWordBreak(self.text.items, caret.end);
+                        } else if (caret.end < self.text.items.len) {
                             var new_pos = caret.end + 1;
-                            while (new_pos < self.currentText().len and (self.currentText()[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos += 1) {}
+                            while (new_pos < self.text.items.len and (self.text.items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos += 1) {}
                             caret.end = new_pos;
                         }
                         if (!cmd.modifiers.shift) caret.start = caret.end;

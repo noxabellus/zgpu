@@ -396,6 +396,7 @@ pub fn main() !void {
     const BufferDebugMode = enum { None, Framebuffer, @"Picking Position", @"Picking Id" };
     var buffer_debug_mode: BufferDebugMode = .None;
     var text_buffer: std.ArrayList(u8) = .empty;
+    try text_buffer.appendSlice(app.generalAllocator(), "Test text input");
     var dummy_slider_value: f32 = 0.0;
     var anim_index_slider: u32 = 0;
 
@@ -417,6 +418,8 @@ pub fn main() !void {
         .checkbox_mark_color = COLOR_PHOSPHOR,
         .radio_mark_color = COLOR_PHOSPHOR,
         .slider_handle_color = COLOR_PHOSPHOR,
+        .text_selection_color = COLOR_PHOSPHOR.withAlpha(0.1),
+        .text_caret_color = COLOR_PHOSPHOR,
     });
 
     try theme.setAll(.widget, .active, .{
@@ -718,47 +721,15 @@ pub fn main() !void {
                             });
                         }
 
-                        { // Random text input
-                            try ui.openElement(.fromSlice("TextInputTest"));
-                            defer ui.endElement();
-
-                            try ui.configureElement(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .fixed(300 + 5 * 2 + 2 * 2), .h = .fixed(16 * 6 + 5 * 2 + 2 * 2) },
-                                    .padding = .all(5),
-                                },
-                                .background_color = COLOR_BROWN,
-                                .border = .{
-                                    .width = .all(2),
-                                    .color = COLOR_PHOSPHOR,
-                                },
-                                .corner_radius = .all(5),
-                                .clip = .{
-                                    .vertical = true,
-                                    .child_offset = ui.scrollOffset(),
-                                },
-                                .type = .render_widget,
-                                .state = .flags(.{
-                                    .click = true,
-                                    .focus = true,
-                                    .text = true,
-                                    .drag = true,
-                                }),
-                            });
-
-                            if (try widgets.textInput(ui, .{
-                                .text = &text_buffer,
-                                .allocator = app.generalAllocator(),
-                                .alignment = .left,
-                                .font_id = FONT_ID_TITLE,
-                                .font_size = 16,
-                                .color = COLOR_PHOSPHOR,
-                                .caret_color = COLOR_PHOSPHOR,
-                                .selection_color = COLOR_PHOSPHOR.withAlpha(0.25),
-                                .line_height = 20,
-                            })) {
-                                std.debug.print("Text input changed:\n{s}\n", .{text_buffer.items});
-                            }
+                        // Random text input
+                        if (try widgets.textInput(
+                            ui,
+                            .fromSlice("TextInputTest"),
+                            app.generalAllocator(),
+                            &text_buffer,
+                            .{ .w = .fixed(300), .h = .fixed(16 * 6) },
+                        )) {
+                            std.debug.print("Text input changed:\n{s}\n", .{text_buffer.items});
                         }
 
                         { // Fps Overlay
