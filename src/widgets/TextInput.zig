@@ -504,10 +504,10 @@ pub fn textInput(ui: *Ui, id: Ui.ElementId, allocator: std.mem.Allocator, text: 
 
     self.theme = .{};
 
-    try ui.openSection(id);
-    defer ui.endSection();
+    try ui.openElement(id);
+    defer ui.endElement();
 
-    try ui.configureSection(.{
+    try ui.configureElement(.{
         .sizing = sizing,
         .clip = .{
             .vertical = true,
@@ -526,7 +526,7 @@ pub fn textInput(ui: *Ui, id: Ui.ElementId, allocator: std.mem.Allocator, text: 
 
     try ui.menuNavigable();
 
-    try ui.textSection(self.text.items, .{});
+    try ui.text(self.text.items, .{});
 
     var changed = false;
 

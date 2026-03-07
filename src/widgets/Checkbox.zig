@@ -91,15 +91,15 @@ pub fn render(self: *Checkbox, ui: *Ui, command: Ui.RenderCommand) !void {
 
 /// Configure an open element as a checkbox widget for boolean values.
 pub fn checkbox(ui: *Ui, id: Ui.ElementId, value: *bool) !bool {
-    try ui.openSection(id);
-    defer ui.endSection();
+    try ui.openElement(id);
+    defer ui.endElement();
 
     const self, _ = try ui.getOrCreateWidget(Checkbox, id);
     self.value = value;
     self.theme = .{};
     try ui.applyTheme(&Theme.BINDING_SET, .widget, &self.theme);
 
-    try ui.configureSection(.{
+    try ui.configureElement(.{
         .sizing = self.theme.checkbox_size,
         .type = .render_widget,
         .event_flags = .{

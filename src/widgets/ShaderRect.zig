@@ -17,7 +17,6 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-id: Ui.ElementId,
 shader_id: u32,
 identity: PipelineIdentity,
 state: State,
@@ -96,49 +95,10 @@ pub const Config = struct {
     texture_bindings: []const Gpu.TextureBindingLayout,
     textures: []const *Gpu.TextureView = &.{},
     uniforms: []const u8 = &.{},
+    sizing: Ui.Sizing = .grow,
+    aspect_ratio: f32 = 0,
 };
 
-var pipeline_cache: std.AutoHashMap(PipelineIdentity, u32) = std.AutoHashMap(PipelineIdentity, u32).init(std.heap.page_allocator);
-
-pub fn init(ui: *Ui, id: Ui.ElementId, config: Config) !*ShaderRect {
-    const self = try ui.gpa.create(ShaderRect);
-    errdefer ui.gpa.destroy(self);
-
-    if (config.texture_bindings.len > Batch2D.MAX_CUSTOM_TEXTURES) {
-        return error.TooManyTextures;
-    }
-
-    const pipeline_identity = PipelineIdentity.init(config.shader, config.texture_bindings, config.uniforms);
-
-    const shader_id = if (pipeline_cache.get(pipeline_identity)) |sid| sid else create_new_pipeline: {
-        const shader_id = try ui.renderer.createCustomPipeline("Ui:ShaderRect:custom_shader", .quad, config.shader, config.texture_bindings, config.uniforms.len);
-        try pipeline_cache.put(pipeline_identity, shader_id);
-        break :create_new_pipeline shader_id;
-    };
-
-    self.* = ShaderRect{
-        .id = id,
-        .shader_id = shader_id,
-        .identity = pipeline_identity,
-        .state = .fromSlices(config.textures, config.uniforms),
-    };
-
-    return self;
-}
-
-pub fn deinit(self: *ShaderRect, ui: *Ui) void {
-    ui.gpa.destroy(self);
-}
-
-pub fn bindEvents(self: *ShaderRect, ui: *Ui) !void {
-    _ = .{ self, ui };
-}
-
-pub fn unbindEvents(self: *ShaderRect, ui: *Ui) void {
-    _ = .{ self, ui };
-}
-
-/// The rendering function for the checkbox, called by the UI system.
 pub fn render(self: *ShaderRect, ui: *Ui, command: Ui.RenderCommand) !void {
     const bb = command.bounding_box;
     const rad = command.render_data.rectangle.corner_radius;
@@ -160,34 +120,44 @@ pub fn render(self: *ShaderRect, ui: *Ui, command: Ui.RenderCommand) !void {
     try ui.renderer.customPipelineEnd(self.shader_id);
 }
 
-pub fn shaderRect(ui: *Ui, config: ShaderRect.Config) !void {
-    const id = ui.open_ids.items[ui.open_ids.items.len - 1];
-    const gop = try ui.widget_states.getOrPut(ui.gpa, id.id);
-    const self = if (!gop.found_existing) create_new: {
-        const ptr = try ShaderRect.init(ui, id, config);
-        gop.value_ptr.* = Ui.Widget{
-            .user_data = ptr,
-            .render = @ptrCast(&ShaderRect.render),
-            .deinit = @ptrCast(&ShaderRect.deinit),
-            .seen_this_frame = true,
-        };
+pub const PipelineCache = struct {
+    map: std.AutoHashMapUnmanaged(PipelineIdentity, u32) = .empty,
 
-        break :create_new ptr;
-    } else reuse_existing: {
-        gop.value_ptr.seen_this_frame = true;
+    pub fn deinit(self: *PipelineCache, ui: *Ui) void {
+        self.map.deinit(ui.gpa);
+    }
+};
 
-        var ptr: *ShaderRect = @ptrCast(@alignCast(gop.value_ptr.user_data));
-        if (!ptr.identity.eql(&.init(config.shader, config.texture_bindings, config.uniforms))) {
-            // if the identity has changed we need to destroy and recreate the widget
-            ptr.deinit(ui);
-            ptr = try ShaderRect.init(ui, id, config);
-            gop.value_ptr.user_data = ptr;
-        } else {
-            // otherwise, just copy the config textures in case they change from frame to frame
-            ptr.state = .fromSlices(config.textures, config.uniforms);
-        }
+pub fn shaderRect(ui: *Ui, id: Ui.ElementId, config: ShaderRect.Config) !void {
+    const self, _ = try ui.getOrCreateWidget(ShaderRect, id);
+    const pipeline_cache, const new_cache = try ui.getOrCreateSharedWidgetState(PipelineCache, .fromSlice("ShaderRectPipelineCache"));
+    if (new_cache) pipeline_cache.* = .{};
 
-        break :reuse_existing ptr;
-    };
-    _ = self;
+    if (config.texture_bindings.len > Batch2D.MAX_CUSTOM_TEXTURES) {
+        return error.TooManyTextures;
+    }
+
+    const pipeline_identity = PipelineIdentity.init(config.shader, config.texture_bindings, config.uniforms);
+
+    const gop = try pipeline_cache.map.getOrPut(ui.gpa, pipeline_identity);
+    if (!gop.found_existing) {
+        gop.value_ptr.* = try ui.renderer.createCustomPipeline(
+            "Ui:ShaderRect:custom_shader",
+            .quad,
+            config.shader,
+            config.texture_bindings,
+            config.uniforms.len,
+        );
+    }
+
+    self.shader_id = gop.value_ptr.*;
+    self.identity = pipeline_identity;
+    self.state = .fromSlices(config.textures, config.uniforms);
+
+    try ui.beginElement(id, .{
+        .type = .render_widget,
+        .sizing = config.sizing,
+        .aspect_ratio = config.aspect_ratio,
+    });
+    ui.endElement();
 }

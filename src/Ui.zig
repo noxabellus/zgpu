@@ -35,6 +35,7 @@ pub const widgets = struct {
     pub const slider = Widget.Slider.slider;
     pub const enumSlider = Widget.Slider.enumSlider;
     pub const textInput = Widget.TextInput.textInput;
+    pub const image = Widget.Image.image;
 };
 
 pub const Widget = struct {
@@ -49,6 +50,7 @@ pub const Widget = struct {
     pub const RadioButton = @import("widgets/RadioButton.zig");
     pub const Dropdown = @import("widgets/Dropdown.zig");
     pub const ShaderRect = @import("widgets/ShaderRect.zig");
+    pub const Image = @import("widgets/Image.zig");
 
     test {
         log.debug("semantic analysis for Ui.Widgets", .{});
@@ -409,10 +411,7 @@ pub fn setDebugMode(self: *Ui, enabled: bool) void {
 
 // --- Element Interface ---
 
-/// Create a new, unconfigured element.
-/// * Must be followed by calls to `Ui.configureElement` and `Ui.closeElement`.
-/// * See also `Ui.openElement`, `Ui.elem`.
-pub fn openElement(self: *Ui, id: ElementId) !void {
+fn _openElement(self: *Ui, id: ElementId) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     try self.open_ids.append(self.gpa, id);
@@ -420,9 +419,7 @@ pub fn openElement(self: *Ui, id: ElementId) !void {
     clay.beginElement();
 }
 
-/// Configure the current element opened with `Ui.beginElement`.
-/// * See also `Ui.openElement`, `Ui.elem`.
-pub fn configureElement(self: *Ui, declaration: HeadlessElementDeclaration) !void {
+fn _configureElement(self: *Ui, declaration: HeadlessElementConfig) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     const id = self.open_ids.items[self.open_ids.items.len - 1];
@@ -432,11 +429,7 @@ pub fn configureElement(self: *Ui, declaration: HeadlessElementDeclaration) !voi
     try self.handleStateSetup(full);
 }
 
-/// Create a new element with the given declaration.
-/// * Must be followed by a call to `Ui.closeElement`.
-/// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside the passed declaration; use `Ui.beginElement` and `Ui.configureElement` instead.
-/// * See also `Ui.elem`.
-pub fn beginElement(self: *Ui, declaration: ElementDeclaration) !void {
+fn _beginElement(self: *Ui, declaration: ElementConfig) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     try self.open_ids.append(self.gpa, declaration.id);
@@ -447,10 +440,7 @@ pub fn beginElement(self: *Ui, declaration: ElementDeclaration) !void {
     try self.handleStateSetup(declaration);
 }
 
-/// Close the current element opened with `Ui.beginElement` or `Ui.openElement`.
-/// * Note that if you opened with `Ui.openElement`, you should also call `Ui.configureElement` before this function.
-/// * See also `Ui.elem`.
-pub fn endElement(self: *Ui) void {
+fn _endElement(self: *Ui) void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     _ = self.open_ids.pop().?;
@@ -458,20 +448,14 @@ pub fn endElement(self: *Ui) void {
     clay.closeElement();
 }
 
-/// Create a new element with the given declaration, and immediately close it.
-/// * Note that functions like `Ui.hovered` and `Ui.scrollOffset` will not work inside this declaration; use `Ui.beginElement`, `Ui.configureElement` and `Ui.closeElement` instead.
-pub fn elem(self: *Ui, declaration: ElementDeclaration) !void {
+fn _elem(self: *Ui, declaration: ElementConfig) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
-    try self.beginElement(declaration);
-    self.endElement();
+    try self._beginElement(declaration);
+    self._endElement();
 }
 
-/// Create a new text element with the given string and configuration.
-/// * This element type cannot have children, so there is no need to call `Ui.closeElement`.
-/// * This is not intended to work with `Ui.hovered` or `Ui.scrollOffset`; text elements should remain "dumb".
-/// * This cannot be a top-level element.
-pub fn text(self: *Ui, str: []const u8, config: TextElementConfig) !void {
+fn _text(self: *Ui, str: []const u8, config: TextConfig) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
     std.debug.assert(self.open_ids.items.len > 0);
 
@@ -638,7 +622,7 @@ pub fn beginMenu(self: *Ui, id: ElementId, config: MenuConfig) !bool {
         }
     }
 
-    try self.beginElement(.{
+    try self._beginElement(.{
         .id = id,
         .layout = .{
             .sizing = .{ .w = .fit, .h = .fit },
@@ -674,7 +658,7 @@ pub fn beginMenu(self: *Ui, id: ElementId, config: MenuConfig) !bool {
 
 pub fn endMenu(self: *Ui) void {
     const menu_id = self.open_ids.items[self.open_ids.items.len - 1];
-    self.endElement();
+    self._endElement();
 
     // If this menu was just opened, automatically highlight its first item for better keyboard UX.
     if (self.menu_state.just_opened_menu_id == menu_id.id) {
@@ -704,7 +688,7 @@ pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemCon
     const level = self.menu_state.stack.items.len - 1;
     const is_highlighted = self.menu_state.highlighted_path.items.len > level and self.menu_state.highlighted_path.items[level].id == id.id;
 
-    try self.beginElement(.{
+    try self._beginElement(.{
         .id = id,
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fixed(config.height) },
@@ -715,7 +699,7 @@ pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemCon
         .corner_radius = config.corner_radius,
         .state = .flags(.{ .activate = true, .hover = true, .click = true }),
     });
-    defer self.endElement();
+    defer self._endElement();
 
     if (self.hovered()) {
         self.menu_state.setHighlighted(self.gpa, level, id);
@@ -736,7 +720,7 @@ pub fn menuItem(self: *Ui, id: ElementId, label: []const u8, config: MenuItemCon
         }
     }
 
-    try self.text(label, .{
+    try self._text(label, .{
         .font_id = config.font_id,
         .font_size = config.font_size,
         .color = if (is_highlighted) config.text_color_highlighted else config.text_color,
@@ -774,7 +758,7 @@ pub fn subMenu(self: *Ui, self_id: ElementId, label: []const u8, child_menu_id: 
         }
     }
 
-    try self.beginElement(.{
+    try self._beginElement(.{
         .id = self_id,
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fixed(config.height) },
@@ -787,7 +771,7 @@ pub fn subMenu(self: *Ui, self_id: ElementId, label: []const u8, child_menu_id: 
         .corner_radius = config.corner_radius,
         .state = .flags(.{ .activate = true, .hover = true }),
     });
-    defer self.endElement();
+    defer self._endElement();
 
     if (self.hovered()) {
         self.menu_state.setHighlighted(self.gpa, level, self_id);
@@ -817,13 +801,13 @@ pub fn subMenu(self: *Ui, self_id: ElementId, label: []const u8, child_menu_id: 
     }
 
     const text_color = if (is_highlighted or is_child_open) config.text_color_highlighted else config.text_color;
-    try self.text(label, .{
+    try self._text(label, .{
         .font_id = config.font_id,
         .font_size = config.font_size,
         .color = text_color,
     });
-    try self.elem(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } }); // Spacer
-    try self.text(">", .{
+    try self._elem(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } }); // Spacer
+    try self._text(">", .{
         .font_id = config.font_id,
         .font_size = config.font_size,
         .color = text_color,
@@ -862,7 +846,7 @@ pub fn menuNavigable(self: *Ui) !void {
 }
 
 pub fn menuSeparator(self: *Ui) !void {
-    try self.elem(.{
+    try self._elem(.{
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fixed(1) },
             .padding = .{ .top = 4, .bottom = 4 },
@@ -1320,7 +1304,7 @@ pub const AspectRatioElementConfig = f32;
 pub const ImageElementConfig = ?AssetCache.ImageId;
 pub const CustomElementConfig = ?*anyopaque;
 
-pub const TextElementConfig = struct {
+pub const TextConfig = struct {
     /// The RGBA color of the font to render, conventionally specified as 0-255.
     color: Color = .{ .r = 0, .g = 0, .b = 0, .a = 1.0 },
     /// Identifies the font to use.
@@ -1338,7 +1322,7 @@ pub const TextElementConfig = struct {
     /// A pointer that will be transparently passed through to the resulting render command.
     user_data: ?*anyopaque = null,
 
-    fn toClay(self: TextElementConfig) clay.TextElementConfig {
+    fn toClay(self: TextConfig) clay.TextElementConfig {
         return clay.TextElementConfig{
             .color = colorToClay(self.color),
             .font_id = self.font_id,
@@ -1415,7 +1399,7 @@ pub const ClipElementConfig = struct {
     }
 };
 
-pub const HeadlessElementDeclaration = struct {
+pub const HeadlessElementConfig = struct {
     /// Controls various settings that affect the size and position of an element, as well as the sizes and positions of any child elements.
     layout: LayoutConfig = .{},
     /// Controls the background color of the resulting element.
@@ -1440,12 +1424,12 @@ pub const HeadlessElementDeclaration = struct {
     /// A pointer that will be transparently passed through to resulting render command
     state: ElementState = .none,
 
-    fn attachHead(value: *const HeadlessElementDeclaration, head: ElementId) ElementDeclaration {
-        var out: ElementDeclaration = undefined;
+    fn attachHead(value: *const HeadlessElementConfig, head: ElementId) ElementConfig {
+        var out: ElementConfig = undefined;
 
         out.id = head;
 
-        inline for (comptime std.meta.fieldNames(HeadlessElementDeclaration)) |field| {
+        inline for (comptime std.meta.fieldNames(HeadlessElementConfig)) |field| {
             @field(out, field) = @field(value, field);
         }
 
@@ -1598,7 +1582,7 @@ pub const Theme = struct {
             names: [MAX_BINDINGS][]const u8 = [1][]const u8{""} ** Set.MAX_BINDINGS,
             bindings: [MAX_BINDINGS]Binding = [1]Binding{.{}} ** Set.MAX_BINDINGS,
 
-            pub const ELEM_DECL_BIND_SET = Binding.Set.custom(HeadlessElementDeclaration, .{
+            pub const ELEM_DECL_BIND_SET = Binding.Set.custom(HeadlessElementConfig, .{
                 "background_color",
                 .{ "border_color", "border.color" },
                 .{ "border_width", "border.width" },
@@ -1609,7 +1593,7 @@ pub const Theme = struct {
                 .{ "child_direction", "layout.direction" },
             });
 
-            pub const TEXT_CONF_BIND_SET = Binding.Set.custom(TextElementConfig, .{
+            pub const TEXT_CONF_BIND_SET = Binding.Set.custom(TextConfig, .{
                 .{ "text_color", "color" },
                 "font_id",
                 "letter_spacing",
@@ -1631,9 +1615,9 @@ pub const Theme = struct {
 
             pub inline fn create(comptime T: type) Set {
                 comptime {
-                    if (T == TextElementConfig) return TEXT_CONF_BIND_SET;
-                    if (T == HeadlessElementDeclaration) return ELEM_DECL_BIND_SET;
-                    std.debug.assert(T != ElementDeclaration);
+                    if (T == TextConfig) return TEXT_CONF_BIND_SET;
+                    if (T == HeadlessElementConfig) return ELEM_DECL_BIND_SET;
+                    std.debug.assert(T != ElementConfig);
 
                     const fields = std.meta.fieldNames(T);
 
@@ -1713,12 +1697,12 @@ pub fn applyTheme(self: *Ui, binding_set: *const Theme.Binding.Set, kind: Theme.
     return self.applyThemeState(binding_set, kind, self.getActionState(), out);
 }
 
-pub fn openSection(self: *Ui, id: ElementId) !void {
-    try self.openElement(id);
+pub fn openElement(self: *Ui, id: ElementId) !void {
+    try self._openElement(id);
 }
 
-pub fn configureSection(self: *Ui, decl: SectionDeclaration) !void {
-    var config = HeadlessElementDeclaration{};
+pub fn configureElement(self: *Ui, decl: ElementDeclaration) !void {
+    var config = HeadlessElementConfig{};
 
     try self.applyThemeState(
         &Theme.Binding.Set.ELEM_DECL_BIND_SET,
@@ -1727,36 +1711,52 @@ pub fn configureSection(self: *Ui, decl: SectionDeclaration) !void {
         &config,
     );
 
-    config.aspect_ratio = decl.aspect_ratio;
-    config.image = decl.image;
-    config.floating = decl.floating;
-    config.type = decl.type;
-    config.clip = decl.clip;
-    config.state = .custom(decl.event_flags, decl.userdata);
-    if (decl.sizing) |x| config.layout.sizing = x;
-    if (decl.padding) |x| config.layout.padding = x;
-    if (decl.child_gap) |x| config.layout.child_gap = x;
-    if (decl.child_alignment) |x| config.layout.child_alignment = x;
-    if (decl.direction) |x| config.layout.direction = x;
-    if (decl.background_color) |x| config.background_color = x;
-    if (decl.corner_radius) |x| config.corner_radius = x;
-    if (decl.border_width) |x| config.border.width = x;
-    if (decl.border_color) |x| config.border.color = x;
+    decl.apply(&config);
 
-    try self.configureElement(config);
+    try self._configureElement(config);
 }
 
-pub fn beginSection(self: *Ui, id: ElementId, decl: SectionDeclaration) !void {
-    try self.openElement(id);
+pub fn beginElement(self: *Ui, id: ElementId, decl: ElementDeclaration) !void {
+    try self._openElement(id);
+    try self.configureElement(decl);
+}
+
+pub fn endElement(self: *Ui) void {
+    return self._endElement();
+}
+
+pub fn openSection(self: *Ui, id: ElementId) !void {
+    try self._openElement(id);
+}
+
+pub fn configureSection(self: *Ui, decl: ElementDeclaration) !void {
+    var config = HeadlessElementConfig{};
+
+    decl.apply(&config);
+
+    const SectionTheme = struct {
+        child_gap: u16 = 0,
+        const BINDING_SET = Theme.Binding.Set.create(@This());
+    };
+
+    var section_theme = SectionTheme{};
+    try self.applyTheme(&SectionTheme.BINDING_SET, if (decl.type == .content) .content else .widget, &section_theme);
+    config.layout.child_gap = section_theme.child_gap;
+
+    try self._configureElement(config);
+}
+
+pub fn beginSection(self: *Ui, id: ElementId, decl: ElementDeclaration) !void {
+    try self._openElement(id);
     try self.configureSection(decl);
 }
 
 pub fn endSection(self: *Ui) void {
-    return self.endElement();
+    self._endElement();
 }
 
-pub fn textSection(self: *Ui, content: []const u8, decl: TextDeclaration) !void {
-    var config = TextElementConfig{};
+pub fn text(self: *Ui, content: []const u8, decl: TextDeclaration) !void {
+    var config = TextConfig{};
 
     const parent_id: ElementId = if (self.open_ids.items.len > 1)
         self.open_ids.items[self.open_ids.items.len - 2]
@@ -1766,16 +1766,9 @@ pub fn textSection(self: *Ui, content: []const u8, decl: TextDeclaration) !void 
 
     try self.applyTheme(&Theme.Binding.Set.TEXT_CONF_BIND_SET, if (parent_info.widget) .widget else .content, &config);
 
-    config.user_data = decl.user_data;
-    if (decl.color) |x| config.color = x;
-    if (decl.font_id) |x| config.font_id = x;
-    if (decl.font_size) |x| config.font_size = x;
-    if (decl.letter_spacing) |x| config.letter_spacing = x;
-    if (decl.line_height) |x| config.line_height = x;
-    if (decl.wrap_mode) |x| config.wrap_mode = x;
-    if (decl.alignment) |x| config.alignment = x;
+    decl.apply(&config);
 
-    return self.text(content, config);
+    return self._text(content, config);
 }
 
 pub fn getOrCreateWidget(self: *Ui, comptime T: type, id: ElementId) !struct { *T, bool } {
@@ -1802,13 +1795,12 @@ pub fn getOrCreateWidget(self: *Ui, comptime T: type, id: ElementId) !struct { *
     }
 }
 
-pub const SectionDeclaration = struct {
+pub const ElementDeclaration = struct {
     sizing: ?Sizing = null,
     padding: ?Padding = null,
     child_gap: ?u16 = null,
     child_alignment: ?ChildAlignment = null,
     direction: ?LayoutDirection = null,
-    image: ImageElementConfig = null,
     background_color: ?Color = null,
     corner_radius: ?CornerRadius = null,
     border_width: ?BorderWidth = null,
@@ -1820,6 +1812,26 @@ pub const SectionDeclaration = struct {
     clip: ClipElementConfig = .{},
     event_flags: ElementState.Flags = .{},
     userdata: ?*anyopaque = null,
+    image: ImageElementConfig = null,
+
+    pub fn apply(decl: *const ElementDeclaration, config: *HeadlessElementConfig) void {
+        config.aspect_ratio = decl.aspect_ratio;
+        config.image = decl.image;
+        config.floating = decl.floating;
+        config.type = decl.type;
+        config.clip = decl.clip;
+        config.state = .custom(decl.event_flags, decl.userdata);
+
+        if (decl.sizing) |x| config.layout.sizing = x;
+        if (decl.padding) |x| config.layout.padding = x;
+        if (decl.child_gap) |x| config.layout.child_gap = x;
+        if (decl.child_alignment) |x| config.layout.child_alignment = x;
+        if (decl.direction) |x| config.layout.direction = x;
+        if (decl.background_color) |x| config.background_color = x;
+        if (decl.corner_radius) |x| config.corner_radius = x;
+        if (decl.border_width) |x| config.border.width = x;
+        if (decl.border_color) |x| config.border.color = x;
+    }
 };
 
 pub const TextDeclaration = struct {
@@ -1832,6 +1844,18 @@ pub const TextDeclaration = struct {
     alignment: ?TextAlignment = null,
     state: ?ActionState = null,
     user_data: ?*anyopaque = null,
+
+    pub fn apply(decl: *const TextDeclaration, config: *TextConfig) void {
+        config.user_data = decl.user_data;
+
+        if (decl.color) |x| config.color = x;
+        if (decl.font_id) |x| config.font_id = x;
+        if (decl.font_size) |x| config.font_size = x;
+        if (decl.letter_spacing) |x| config.letter_spacing = x;
+        if (decl.line_height) |x| config.line_height = x;
+        if (decl.wrap_mode) |x| config.wrap_mode = x;
+        if (decl.alignment) |x| config.alignment = x;
+    }
 };
 
 pub const ElementType = enum {
@@ -1840,7 +1864,7 @@ pub const ElementType = enum {
     layout_widget,
 };
 
-pub const ElementDeclaration = struct {
+pub const ElementConfig = struct {
     id: ElementId = .{},
 
     /// Controls various settings that affect the size and position of an element, as well as the sizes and positions of any child elements.
@@ -1868,7 +1892,7 @@ pub const ElementDeclaration = struct {
     /// Controls settings related to element borders, and will generate BORDER render command
     border: BorderElementConfig = .{},
 
-    fn toClay(self: ElementDeclaration) clay.ElementDeclaration {
+    fn toClay(self: ElementConfig) clay.ElementDeclaration {
         return clay.ElementDeclaration{
             .id = self.id,
             .layout = self.layout,
@@ -1968,7 +1992,7 @@ pub fn clayColorToBatchColor(c: clay.Color) Batch2D.Color {
 
 // --- Backend implementation --- //
 
-fn handleStateSetup(self: *Ui, declaration: ElementDeclaration) !void {
+fn handleStateSetup(self: *Ui, declaration: ElementConfig) !void {
     // Capture element info for this frame.
     const parent_id: ?ElementId = if (self.open_ids.items.len > 1)
         self.open_ids.items[self.open_ids.items.len - 2]

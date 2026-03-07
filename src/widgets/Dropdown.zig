@@ -59,24 +59,24 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
 
     if (is_new) self.highlighted_index = null;
 
-    try ui.beginSection(id, .{
+    try ui.beginElement(id, .{
         .sizing = .{ .w = .grow, .h = .fit },
         .child_alignment = .center,
         .type = .layout_widget,
         .event_flags = .{ .activate = true, .focus = true, .keyboard = true },
     });
-    defer ui.endSection();
+    defer ui.endElement();
 
     try ui.menuNavigable();
 
     var theme = Theme{};
     try ui.applyTheme(&Theme.BINDING_SET, .widget, &theme);
 
-    try ui.textSection(options[selected.*], .{ .alignment = .center });
+    try ui.text(options[selected.*], .{ .alignment = .center });
 
     if (self.highlighted_index) |hi| {
         const panel_id = try panelId(ui, id);
-        try ui.beginSection(panel_id, .{
+        try ui.beginElement(panel_id, .{
             .state = .standard,
             .sizing = .{ .w = .grow, .h = .fit },
             .padding = .all(0),
@@ -90,12 +90,12 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
             },
             .type = .layout_widget,
         });
-        defer ui.endSection();
+        defer ui.endElement();
 
         for (options, 0..) |field_name, i| {
             const option_id = try optionId(ui, id, field_name);
 
-            try ui.beginSection(option_id, .{
+            try ui.beginElement(option_id, .{
                 .sizing = .{ .w = .grow, .h = .fit },
                 .child_alignment = .center,
                 .event_flags = .{ .activate = true },
@@ -109,9 +109,9 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
                 else
                     .all(0),
             });
-            defer ui.endSection();
+            defer ui.endElement();
 
-            try ui.textSection(field_name, .{
+            try ui.text(field_name, .{
                 .alignment = .center,
                 .state = if (hi == i) .focus else null,
             });

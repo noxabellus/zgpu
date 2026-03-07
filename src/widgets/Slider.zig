@@ -186,12 +186,12 @@ pub fn slider(comptime T: type, ui: *Ui, id: Ui.ElementId, value: *T, config: St
         self.key_repeat = .{ .timer = try .start() };
     }
 
-    try ui.openSection(id);
-    defer ui.endSection();
+    try ui.openElement(id);
+    defer ui.endElement();
 
     try ui.applyTheme(&Theme.BINDING_SET, .widget, &self.theme);
 
-    try ui.configureSection(.{
+    try ui.configureElement(.{
         .sizing = .{ .w = .grow, .h = .fixed(self.theme.slider_handle_size) },
         .border_width = .all(0),
         .type = .render_widget,

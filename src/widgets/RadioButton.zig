@@ -98,12 +98,12 @@ pub fn radioButton(ui: *Ui, id: Ui.ElementId, selected: *usize, value: usize) !b
     self.value = value;
     self.theme = .{};
 
-    try ui.openSection(id);
-    defer ui.endSection();
+    try ui.openElement(id);
+    defer ui.endElement();
 
     try ui.applyTheme(&Theme.BINDING_SET, .widget, &self.theme);
 
-    try ui.configureSection(.{
+    try ui.configureElement(.{
         .sizing = self.theme.radio_size,
         .type = .render_widget,
         .event_flags = .{

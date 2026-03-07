@@ -404,12 +404,13 @@ pub fn main() !void {
     defer theme.deinit();
 
     try theme.setAll(.content, .standard, .{
-        .background_color = COLOR_BROWN,
+        .background_color = COLOR_GREYBROWN,
         .border_color = COLOR_PHOSPHOR,
         .text_color = COLOR_PHOSPHOR,
         .padding = Ui.Padding.all(10),
         .border_width = Ui.BorderWidth.all(1),
         .corner_radius = Ui.CornerRadius.all(8),
+        .child_gap = @as(u16, 10),
     });
 
     try theme.setAll(.widget, .standard, .{
@@ -506,140 +507,59 @@ pub fn main() !void {
             }
 
             {
-                try ui.beginElement(.{
-                    .id = .fromSlice("OuterContainer"),
-                    .layout = .{
-                        .sizing = .{
-                            .w = .fit,
-                            .h = .grow,
-                        },
-                        .direction = .top_to_bottom,
-                        .child_alignment = .center,
-                        .padding = .all(10),
-                    },
+                try ui.beginSection(.fromSlice("OuterContainer"), .{
+                    .sizing = .{ .w = .fit, .h = .grow },
+                    .direction = .top_to_bottom,
+                    .child_alignment = .center,
+                    .padding = .all(10),
                 });
-                defer ui.endElement();
+                defer ui.endSection();
 
                 {
                     try ui.openElement(.fromSlice("MenuContainer"));
                     defer ui.endElement();
 
                     try ui.configureElement(.{
-                        .layout = .{
-                            .sizing = .{
-                                .w = .fit,
-                                .h = .fitMinMax(.{ .min = 0, .max = @floatFromInt(h - 20) }),
-                            },
-                            .direction = .top_to_bottom,
-                            .child_alignment = .{
-                                .x = .center,
-                                .y = .top,
-                            },
-                            .child_gap = 10,
-                            .padding = .{
-                                .top = 11,
-                                .right = 13,
-                                .bottom = 16,
-                                .left = 19,
-                            },
-                        },
-                        .background_color = COLOR_GREYBROWN,
-                        .corner_radius = .all(10),
-                        .clip = .{
-                            .child_offset = ui.scrollOffset(),
-                            .vertical = true,
-                        },
-                        .border = .{
-                            .color = COLOR_PHOSPHOR,
-                            .width = .{
-                                .top = 1,
-                                .right = 3,
-                                .bottom = 6,
-                                .left = 9,
-                            },
-                        },
+                        .sizing = .{ .w = .fit, .h = .fitMinMax(.{ .min = 0, .max = @floatFromInt(h - 20) }) },
+                        .direction = .top_to_bottom,
+                        .child_alignment = .{ .x = .center, .y = .top },
+                        .clip = .{ .child_offset = ui.scrollOffset(), .vertical = true },
                     });
 
                     {
-                        try ui.beginElement(.{
-                            .id = .fromSlice("ButtonRow"),
-                            .layout = .{
-                                .sizing = .{
-                                    .w = .grow,
-                                    .h = .fit,
-                                },
-                                .direction = .left_to_right,
-                                .child_alignment = .{
-                                    .x = .left,
-                                    .y = .center,
-                                },
-                                .child_gap = 10,
-                            },
+                        try ui.beginSection(.fromSlice("ButtonRow"), .{
+                            .sizing = .{ .w = .grow, .h = .fit },
+                            .direction = .left_to_right,
+                            .child_alignment = .{ .x = .left, .y = .center },
                         });
-                        defer ui.endElement();
+                        defer ui.endSection();
 
                         {
-                            try ui.openElement(.fromSlice("LoadButton"));
+                            try ui.beginElement(.fromSlice("LoadButton"), .{
+                                .sizing = .{ .w = .fit, .h = .fit },
+                                .child_alignment = .center,
+                                .type = .layout_widget,
+                                .event_flags = .{ .click = true, .focus = true, .activate = true },
+                            });
                             defer ui.endElement();
 
-                            try ui.configureElement(.{
-                                .layout = .{
-                                    .sizing = .{
-                                        .w = .fit,
-                                        .h = .fit,
-                                    },
-                                    .child_alignment = .center,
-                                    .padding = .axes(10, 5),
-                                },
-                                .background_color = if (ui.active()) COLOR_PHOSPHOR else if (ui.hovered()) COLOR_TAN else if (ui.focused()) COLOR_TAN else COLOR_BROWN,
-                                .border = .{
-                                    .width = .all(1),
-                                    .color = COLOR_PHOSPHOR,
-                                },
-                                .corner_radius = .all(5),
-                                .state = .flags(.{
-                                    .click = true,
-                                    .focus = true,
-                                    .activate = true,
-                                }),
-                            });
+                            try ui.text("Load Model", .{});
 
                             if (ui.getEvent(.fromSlice("LoadButton"), .activate_end)) |_| {
                                 try nfd.openDialogAsync("glb,gltf", ".", &demo.path_to_load);
                             }
-
-                            try ui.text("Load Model", .{
-                                .font_id = FONT_ID_BODY,
-                                .font_size = 16,
-                                .color = if (!ui.active()) COLOR_PHOSPHOR else COLOR_GREYBROWN,
-                            });
                         }
 
                         {
-                            try ui.openElement(.fromSlice("UnloadButton"));
+                            try ui.beginElement(.fromSlice("UnloadButton"), .{
+                                .sizing = .{ .w = .fit, .h = .fit },
+                                .child_alignment = .center,
+                                .type = if (demo.model != null) .layout_widget else .content,
+                                .event_flags = if (demo.model != null) .{ .click = true, .focus = true, .activate = true } else .{},
+                            });
                             defer ui.endElement();
 
-                            try ui.configureElement(.{
-                                .layout = .{
-                                    .sizing = .{
-                                        .w = .fit,
-                                        .h = .fit,
-                                    },
-                                    .child_alignment = .center,
-                                    .padding = .axes(10, 5),
-                                },
-                                .background_color = if (demo.model != null) if (ui.active()) COLOR_RED_HOVER else if (ui.hovered()) COLOR_RED else if (ui.focused()) COLOR_RED else COLOR_BROWN else COLOR_TAN,
-                                .border = .{
-                                    .width = .all(1),
-                                    .color = if (demo.model != null) COLOR_PHOSPHOR else COLOR_BROWN,
-                                },
-                                .corner_radius = .all(5),
-                                .state = if (demo.model != null) .flags(.{
-                                    .click = true,
-                                    .focus = true,
-                                    .activate = true,
-                                }) else .flags(.{}),
-                            });
+                            try ui.text("Unload Model", .{});
 
                             if (ui.getEvent(.fromSlice("UnloadButton"), .activate_end)) |_| {
                                 if (demo.model) |*m| m.deinit();
@@ -649,50 +569,17 @@ pub fn main() !void {
                                 demo.anim_state.clearMatrices();
                                 try demo.anim_state.sync(&demo.app.gpu);
                             }
-
-                            try ui.text("Unload Model", .{
-                                .font_id = FONT_ID_BODY,
-                                .font_size = 16,
-                                .color = if (demo.model != null) if (!ui.active()) COLOR_PHOSPHOR else COLOR_GREYBROWN else COLOR_BROWN,
-                            });
                         }
                     }
 
                     if (demo.model) |*model| {
                         if (model.animations.len > 0) {
-                            {
-                                try ui.openElement(.fromSlice("TitleText"));
-                                defer ui.endElement();
+                            try ui.text("Animation", .{
+                                .font_id = FONT_ID_TITLE,
+                                .font_size = 32,
+                            });
 
-                                try ui.configureElement(.{
-                                    .layout = .{
-                                        .sizing = .fit,
-                                    },
-                                });
-
-                                try ui.text("Animation", .{
-                                    .font_id = FONT_ID_TITLE,
-                                    .font_size = 32,
-                                    .color = COLOR_PHOSPHOR,
-                                });
-                            }
-
-                            {
-                                try ui.openElement(.fromSlice("NameText"));
-                                defer ui.endElement();
-
-                                try ui.configureElement(.{
-                                    .layout = .{
-                                        .sizing = .fit,
-                                    },
-                                });
-
-                                try ui.text(model.animations[demo.anim_state.index].name orelse "[unnamed]", .{
-                                    .font_id = FONT_ID_BODY,
-                                    .font_size = 16,
-                                    .color = COLOR_PHOSPHOR,
-                                });
-                            }
+                            try ui.text(model.animations[demo.anim_state.index].name orelse "[unnamed]", .{});
 
                             if (try widgets.slider(u32, ui, .fromSlice("animIndexSlider"), &anim_index_slider, .{
                                 .min = 0,
@@ -704,22 +591,10 @@ pub fn main() !void {
                     }
 
                     {
-                        { // Title
-                            try ui.openElement(.fromSlice("DebugTitleText"));
-                            defer ui.endElement();
-
-                            try ui.configureElement(.{
-                                .layout = .{
-                                    .sizing = .fit,
-                                },
-                            });
-
-                            try ui.text("Debug Options", .{
-                                .font_id = FONT_ID_TITLE,
-                                .font_size = 32,
-                                .color = COLOR_PHOSPHOR,
-                            });
-                        }
+                        try ui.text("Debug Options", .{
+                            .font_id = FONT_ID_TITLE,
+                            .font_size = 32,
+                        });
 
                         // Random text input
                         if (try widgets.textInput(
@@ -733,231 +608,114 @@ pub fn main() !void {
                         }
 
                         { // Fps Overlay
-                            try ui.beginElement(.{
-                                .id = .fromSlice("DebugFPSOverlayControlSection"),
-                                .layout = .{
-                                    .sizing = .fit,
-                                    .direction = .left_to_right,
-                                    .child_alignment = .center,
-                                    .child_gap = 5,
-                                },
+                            try ui.beginSection(.fromSlice("DebugFPSOverlayControlSection"), .{
+                                .sizing = .fit,
+                                .direction = .left_to_right,
+                                .child_alignment = .center,
                             });
-                            defer ui.endElement();
+                            defer ui.endSection();
 
-                            {
-                                try ui.beginElement(.{
-                                    .id = .fromSlice("FPSOverlayLabel"),
-                                    .layout = .{
-                                        .sizing = .fit,
-                                    },
-                                });
-                                defer ui.endElement();
+                            try ui.text("Show FPS Overlay", .{});
 
-                                try ui.text("Show FPS Overlay", .{
-                                    .font_id = FONT_ID_BODY,
-                                    .font_size = 16,
-                                    .color = COLOR_PHOSPHOR,
-                                });
-                            }
-
-                            {
-                                // try ui.openElement(.fromSlice("fpsOverlayToggle"));
-                                // defer ui.endElement();
-
-                                // try ui.configureElement(.{
-                                //     .layout = .{
-                                //         .sizing = .{ .w = .fixed(20), .h = .fixed(20) },
-                                //     },
-                                //     .type = true,
-                                //     .state = .flags(.{
-                                //         .activate = true,
-                                //         .focus = true,
-                                //     }),
-                                // });
-
-                                _ = try widgets.checkbox(ui, .fromSlice("fpsOverlayToggle"), &draw_fps);
-
-                                // _ = try widgets.checkbox(ui, .{
-                                //     .value = &draw_fps,
-                                //     .box_color = if (ui.focused()) COLOR_TAN else COLOR_BROWN,
-                                //     .check_color = COLOR_PHOSPHOR,
-                                //     .size = 16.0,
-                                // });
-                            }
+                            _ = try widgets.checkbox(ui, .fromSlice("fpsOverlayToggle"), &draw_fps);
                         }
 
                         { // Light brightness
-                            try ui.beginElement(.{
-                                .id = .fromSlice("SliderRow"),
-                                .layout = .{
-                                    .sizing = .{
-                                        .w = .grow,
-                                        .h = .fit,
-                                    },
-                                    .direction = .left_to_right,
-                                    .child_alignment = .{
-                                        .x = .left,
-                                        .y = .center,
-                                    },
-                                    .child_gap = 10,
-                                },
+                            try ui.beginSection(.fromSlice("SliderRow"), .{
+                                .sizing = .{ .w = .grow, .h = .fit },
+                                .direction = .left_to_right,
+                                .child_alignment = .{ .x = .left, .y = .center },
                             });
-                            defer ui.endElement();
+                            defer ui.endSection();
 
-                            {
-                                try ui.openElement(.fromSlice("BrightnessText"));
-                                defer ui.endElement();
+                            try ui.text("Light", .{});
 
-                                try ui.configureElement(.{
-                                    .layout = .{
-                                        .sizing = .fit,
-                                    },
-                                });
+                            var buf: [4]u8 = undefined;
+                            try ui.text(try std.fmt.bufPrint(&buf, "{d:0.2}", .{demo.light.config.brightness}), .{ .font_id = FONT_ID_MONO });
 
-                                var buf: [128]u8 = undefined;
-                                try ui.text(try std.fmt.bufPrint(&buf, "Light {d:0.2}", .{demo.light.config.brightness}), .{
-                                    .font_id = FONT_ID_BODY,
-                                    .font_size = 16,
-                                    .color = COLOR_PHOSPHOR,
-                                });
-                            }
-
-                            _ = try widgets.slider(f32, ui, .fromSlice("lightBrightnessSlider"), &demo.light.config.brightness, .{
-                                .min = 0.0,
-                                .max = 3.0,
-                            });
+                            _ = try widgets.slider(f32, ui, .fromSlice("lightBrightnessSlider"), &demo.light.config.brightness, .{ .min = 0.0, .max = 3.0 });
                         }
 
                         { // Buffer Debug
                             {
-                                try ui.beginElement(.{
-                                    .id = .fromSlice("DropdownRow"),
-                                    .layout = .{
-                                        .sizing = .{
-                                            .w = .grow,
-                                            .h = .fit,
-                                        },
-                                        .direction = .left_to_right,
-                                        .child_alignment = .{
-                                            .x = .left,
-                                            .y = .center,
-                                        },
-                                        .child_gap = 10,
-                                    },
+                                try ui.beginSection(.fromSlice("DropdownRow"), .{
+                                    .sizing = .{ .w = .grow, .h = .fit },
+                                    .direction = .left_to_right,
+                                    .child_alignment = .{ .x = .left, .y = .center },
                                 });
-                                defer ui.endElement();
+                                defer ui.endSection();
 
-                                {
-                                    try ui.openElement(.fromSlice("BufferDebugModeDropdownLabel"));
-                                    defer ui.endElement();
-
-                                    try ui.configureElement(.{
-                                        .layout = .{
-                                            .sizing = .fit,
-                                        },
-                                    });
-
-                                    try ui.text("Buffer Debug Mode", .{
-                                        .font_id = FONT_ID_BODY,
-                                        .font_size = 16,
-                                        .color = COLOR_PHOSPHOR,
-                                    });
-                                }
+                                try ui.text("Buffer Debug Mode", .{});
 
                                 _ = try widgets.enumDropdown(BufferDebugMode, ui, .fromSlice("BufferDebugModeDropdown"), &buffer_debug_mode);
                             }
 
                             {
-                                try ui.beginElement(.{
-                                    .id = .fromSlice("RadioRow"),
-                                    .layout = .{
-                                        .sizing = .{
-                                            .w = .grow,
-                                            .h = .fit,
-                                        },
-                                        .direction = .left_to_right,
-                                        .child_alignment = .{
-                                            .x = .left,
-                                            .y = .center,
-                                        },
-                                        .child_gap = 10,
-                                    },
+                                try ui.beginSection(.fromSlice("RadioRow"), .{
+                                    .sizing = .{ .w = .grow, .h = .fit },
+                                    .direction = .top_to_bottom,
+                                    .child_alignment = .{ .x = .left, .y = .center },
                                 });
-                                defer ui.endElement();
+                                defer ui.endSection();
 
                                 inline for (comptime std.meta.fieldNames(BufferDebugMode)) |mode_name| {
+                                    try ui.beginSection(.fromSlice("RadiowSubRow_" ++ mode_name), .{
+                                        .sizing = .{ .w = .grow, .h = .fit },
+                                        .direction = .left_to_right,
+                                        .child_alignment = .{ .x = .left, .y = .center },
+                                    });
+                                    defer ui.endSection();
+
                                     _ = try widgets.enumRadioButton(BufferDebugMode, ui, .fromSlice(mode_name ++ "_radio"), &buffer_debug_mode, @field(BufferDebugMode, mode_name));
+
+                                    try ui.text(mode_name, .{});
                                 }
                             }
 
-                            _ = try widgets.enumSlider(BufferDebugMode, ui, .fromSlice("buffer_debug_slider"), &buffer_debug_mode);
+                            {
+                                try ui.beginSection(.fromSlice("EnumSliderRow"), .{
+                                    .sizing = .{ .w = .grow, .h = .fit },
+                                    .direction = .left_to_right,
+                                    .child_alignment = .{ .x = .left, .y = .center },
+                                });
+                                defer ui.endSection();
+
+                                try ui.text(@tagName(buffer_debug_mode), .{});
+
+                                _ = try widgets.enumSlider(BufferDebugMode, ui, .fromSlice("buffer_debug_slider"), &buffer_debug_mode);
+                            }
 
                             switch (buffer_debug_mode) {
                                 .None => {},
 
                                 .Framebuffer => {
-                                    try ui.openElement(.fromSlice("PictureInPictureTest"));
-                                    defer ui.endElement();
-
-                                    try ui.configureElement(.{
-                                        .layout = .{
-                                            .sizing = .{
-                                                .w = .fixed(300),
-                                                .h = .fixed(300 / screen_ratio),
-                                            },
-                                        },
-                                        .corner_radius = .all(10),
-                                        .image = IMAGE_ID_PIP,
+                                    try widgets.image(ui, .fromSlice("PictureInPictureTest"), .{
+                                        .image_id = IMAGE_ID_PIP,
+                                        .aspect_ratio = screen_ratio,
                                     });
                                 },
 
                                 .@"Picking Position" => {
-                                    try ui.openElement(.fromSlice("ShaderTest1"));
-                                    defer ui.endElement();
-
-                                    try ui.configureElement(.{
-                                        .layout = .{
-                                            .sizing = .{
-                                                .w = .fixed(300),
-                                                .h = .fixed(300 / screen_ratio),
-                                            },
-                                        },
-                                        .corner_radius = .all(10),
-                                        .type = .render_widget,
-                                    });
-
-                                    try widgets.shaderRect(ui, .{
+                                    try widgets.shaderRect(ui, .fromSlice("ShaderTest1"), .{
                                         .shader = pwp_shader,
                                         .texture_bindings = &.{
                                             .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
                                         },
                                         .textures = &.{demo.picking.view.?},
                                         .uniforms = mouse_uniforms,
+                                        .sizing = .{ .w = .fixed(300), .h = .fixed(300 / screen_ratio) },
                                     });
                                 },
 
                                 .@"Picking Id" => {
-                                    try ui.openElement(.fromSlice("ShaderTest2"));
-                                    defer ui.endElement();
-
-                                    try ui.configureElement(.{
-                                        .layout = .{
-                                            .sizing = .{
-                                                .w = .fixed(300),
-                                                .h = .fixed(300 / screen_ratio),
-                                            },
-                                        },
-                                        .corner_radius = .all(10),
-                                        .type = .render_widget,
-                                    });
-
-                                    try widgets.shaderRect(ui, .{
+                                    try widgets.shaderRect(ui, .fromSlice("ShaderTest2"), .{
                                         .shader = pid_shader,
                                         .texture_bindings = &.{
                                             .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
                                         },
                                         .textures = &.{demo.picking.view.?},
                                         .uniforms = mouse_uniforms,
+                                        .sizing = .{ .w = .fixed(300), .h = .fixed(300 / screen_ratio) },
                                     });
                                 },
                             }
@@ -994,13 +752,9 @@ pub fn main() !void {
 
                 // Embedded Widget Test
                 {
-                    try ui.beginElement(.{
-                        .id = .fromSlice("MenuSliderContainer"),
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .fit },
-                            .padding = .all(4),
-                            .direction = .top_to_bottom,
-                        },
+                    try ui.beginElement(.fromSlice("MenuSliderContainer"), .{
+                        .sizing = .{ .w = .grow, .h = .fit },
+                        .direction = .top_to_bottom,
                     });
                     defer ui.endElement();
 
