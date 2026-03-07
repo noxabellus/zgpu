@@ -473,8 +473,13 @@ pub fn render(self: *TextInput, ui: *Ui, command: Ui.RenderCommand) !void {
     }
 }
 
+pub const Config = struct {
+    sizing: ?Ui.Sizing = null,
+    disabled: bool = false,
+};
+
 /// Configure an open element as a text input widget, applying mutative state to the passed-in config text buffer.
-pub fn textInput(ui: *Ui, id: Ui.ElementId, allocator: std.mem.Allocator, text: *std.ArrayList(u8), sizing: Ui.Sizing) !bool {
+pub fn textInput(ui: *Ui, id: Ui.ElementId, allocator: std.mem.Allocator, text: *std.ArrayList(u8), config: Config) !bool {
     const self, const new = try ui.getOrCreateWidget(TextInput, id);
 
     if (new) {
@@ -508,12 +513,13 @@ pub fn textInput(ui: *Ui, id: Ui.ElementId, allocator: std.mem.Allocator, text: 
     defer ui.endElement();
 
     try ui.configureElement(.{
-        .sizing = sizing,
+        .sizing = config.sizing,
         .clip = .{
             .vertical = true,
             .child_offset = ui.scrollOffset(),
         },
         .type = .render_widget,
+        .state = if (config.disabled) .disabled else null,
         .event_flags = .{
             .click = true,
             .focus = true,
@@ -524,9 +530,11 @@ pub fn textInput(ui: *Ui, id: Ui.ElementId, allocator: std.mem.Allocator, text: 
 
     try ui.applyTheme(&Theme.BINDING_SET, .widget, &self.theme);
 
-    try ui.menuNavigable();
-
     try ui.text(self.text.items, .{});
+
+    if (ui.disabled()) return false;
+
+    try ui.menuNavigable();
 
     var changed = false;
 

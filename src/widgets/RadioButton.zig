@@ -65,7 +65,11 @@ pub fn render(self: *RadioButton, ui: *Ui, command: Ui.RenderCommand) !void {
     }
 }
 
-pub fn enumRadioButton(comptime T: type, ui: *Ui, id: Ui.ElementId, selected: *T, value: T) !bool {
+pub const Config = struct {
+    disabled: bool = false,
+};
+
+pub fn enumRadioButton(comptime T: type, ui: *Ui, id: Ui.ElementId, selected: *T, value: T, config: Config) !bool {
     const state, _ = try ui.getOrCreateSharedWidgetState(struct {
         selected: usize,
         value: usize,
@@ -80,7 +84,7 @@ pub fn enumRadioButton(comptime T: type, ui: *Ui, id: Ui.ElementId, selected: *T
         } else unreachable,
     };
 
-    if (try radioButton(ui, id, &state.selected, state.value)) {
+    if (try radioButton(ui, id, &state.selected, state.value, config)) {
         inline for (comptime std.meta.fieldNames(T), 0..) |field_name, i| {
             if (i == state.selected) {
                 selected.* = @field(T, field_name);
@@ -92,7 +96,7 @@ pub fn enumRadioButton(comptime T: type, ui: *Ui, id: Ui.ElementId, selected: *T
     return false;
 }
 
-pub fn radioButton(ui: *Ui, id: Ui.ElementId, selected: *usize, value: usize) !bool {
+pub fn radioButton(ui: *Ui, id: Ui.ElementId, selected: *usize, value: usize, config: Config) !bool {
     const self, _ = try ui.getOrCreateWidget(RadioButton, id);
     self.selected = selected;
     self.value = value;
@@ -101,11 +105,13 @@ pub fn radioButton(ui: *Ui, id: Ui.ElementId, selected: *usize, value: usize) !b
     try ui.openElement(id);
     defer ui.endElement();
 
-    try ui.applyTheme(&Theme.BINDING_SET, .widget, &self.theme);
+    const state = if (config.disabled) Ui.ActionState.disabled else null;
+    try ui.applyThemeState(&Theme.BINDING_SET, .widget, state orelse ui.getActionState(), &self.theme);
 
     try ui.configureElement(.{
         .sizing = self.theme.radio_size,
         .type = .render_widget,
+        .state = state,
         .event_flags = .{
             .activate = true,
             .focus = true,
@@ -113,6 +119,8 @@ pub fn radioButton(ui: *Ui, id: Ui.ElementId, selected: *usize, value: usize) !b
     });
 
     try ui.menuNavigable();
+
+    if (ui.disabled()) return false;
 
     if (ui.getEvent(id, .activate_end)) |_| {
         // Update the shared state to this button's value.

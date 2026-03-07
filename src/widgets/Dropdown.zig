@@ -35,14 +35,18 @@ fn selectValue(self: *Dropdown, ui: *Ui, selected: *usize, value: usize) !bool {
     return changed;
 }
 
-pub fn enumDropdown(comptime T: type, ui: *Ui, id: Ui.ElementId, selected: *T) !bool {
+pub const Config = struct {
+    disabled: bool = false,
+};
+
+pub fn enumDropdown(comptime T: type, ui: *Ui, id: Ui.ElementId, selected: *T, config: Config) !bool {
     const state, _ = try ui.getOrCreateSharedWidgetState(usize, id);
 
     state.* = inline for (comptime std.meta.fieldNames(T), 0..) |field_name, i| {
         if (@field(T, field_name) == selected.*) break i;
     } else unreachable;
 
-    if (try dropdown(ui, id, state, std.meta.fieldNames(T))) {
+    if (try dropdown(ui, id, state, std.meta.fieldNames(T), config)) {
         inline for (comptime std.meta.fieldNames(T), 0..) |field_name, i| {
             if (i == state.*) {
                 selected.* = @field(T, field_name);
@@ -54,7 +58,7 @@ pub fn enumDropdown(comptime T: type, ui: *Ui, id: Ui.ElementId, selected: *T) !
     return false;
 }
 
-pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []const u8) !bool {
+pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []const u8, config: Config) !bool {
     const self, const is_new = try ui.getOrCreateWidget(Dropdown, id);
 
     if (is_new) self.highlighted_index = null;
@@ -63,16 +67,22 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
         .sizing = .{ .w = .grow, .h = .fit },
         .child_alignment = .center,
         .type = .layout_widget,
+        .state = if (config.disabled) .disabled else null,
         .event_flags = .{ .activate = true, .focus = true, .keyboard = true },
     });
     defer ui.endElement();
-
-    try ui.menuNavigable();
 
     var theme = Theme{};
     try ui.applyTheme(&Theme.BINDING_SET, .widget, &theme);
 
     try ui.text(options[selected.*], .{ .alignment = .center });
+
+    if (ui.disabled()) {
+        self.highlighted_index = null;
+        return false;
+    }
+
+    try ui.menuNavigable();
 
     if (self.highlighted_index) |hi| {
         const panel_id = try panelId(ui, id);

@@ -27,6 +27,7 @@ pub fn State(comptime T: type) type {
             min: T = if (T_info == .int and T_info.int.signedness == .signed) -50 else 0,
             max: T = if (T_info == .float) 1.0 else if (T_info.int.signedness == .signed) 50 else 100,
             step: T = if (T_info == .float) 0.01 else 1,
+            disabled: bool = false,
         };
 
         fn performKeyAction(self: *@This(), key: BindingState.Key) !bool {
@@ -157,14 +158,14 @@ pub const Theme = struct {
     pub const BINDING_SET = Ui.Theme.Binding.Set.create(Theme);
 };
 
-pub fn enumSlider(comptime T: type, ui: *Ui, id: Ui.ElementId, value: *T) !bool {
+pub fn enumSlider(comptime T: type, ui: *Ui, id: Ui.ElementId, value: *T, config: struct { disabled: bool = false }) !bool {
     const state, _ = try ui.getOrCreateSharedWidgetState(usize, id);
 
     state.* = inline for (comptime std.meta.fieldNames(T), 0..) |field_name, i| {
         if (@field(T, field_name) == value.*) break i;
     } else unreachable;
 
-    if (try slider(usize, ui, id, state, .{ .min = 0, .max = std.meta.fieldNames(T).len - 1 })) {
+    if (try slider(usize, ui, id, state, .{ .min = 0, .max = std.meta.fieldNames(T).len - 1, .disabled = config.disabled })) {
         inline for (comptime std.meta.fieldNames(T), 0..) |field_name, i| {
             if (i == state.*) {
                 value.* = @field(T, field_name);
@@ -189,12 +190,14 @@ pub fn slider(comptime T: type, ui: *Ui, id: Ui.ElementId, value: *T, config: St
     try ui.openElement(id);
     defer ui.endElement();
 
-    try ui.applyTheme(&Theme.BINDING_SET, .widget, &self.theme);
+    const state = if (config.disabled) Ui.ActionState.disabled else null;
+    try ui.applyThemeState(&Theme.BINDING_SET, .widget, state orelse ui.getActionState(), &self.theme);
 
     try ui.configureElement(.{
         .sizing = .{ .w = .grow, .h = .fixed(self.theme.slider_handle_size) },
         .border_width = .all(0),
         .type = .render_widget,
+        .state = state,
         .event_flags = .{
             .click = true,
             .drag = true,
@@ -204,6 +207,8 @@ pub fn slider(comptime T: type, ui: *Ui, id: Ui.ElementId, value: *T, config: St
     });
 
     try ui.menuNavigable();
+
+    if (ui.disabled()) return false;
 
     var changed = false;
     if (ui.getEvent(id, .mouse_down)) |event| {

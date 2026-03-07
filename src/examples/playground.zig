@@ -388,9 +388,6 @@ pub fn main() !void {
     });
     defer readback_buffer.release();
 
-    const startup_ms = debug.start(&timer);
-    log.info("startup completed in {d} ms", .{startup_ms});
-
     var camera_captured_mouse = false;
 
     const BufferDebugMode = enum { None, Framebuffer, @"Picking Position", @"Picking Id" };
@@ -407,7 +404,7 @@ pub fn main() !void {
         .background_color = COLOR_GREYBROWN,
         .border_color = COLOR_PHOSPHOR,
         .text_color = COLOR_PHOSPHOR,
-        .font_id = FONT_ID_MONO,
+        .font_id = FONT_ID_BODY,
         .font_size = @as(u16, 16),
 
         .padding = Ui.Padding.all(10),
@@ -429,6 +426,15 @@ pub fn main() !void {
     try theme.setAll(.widget, .active, .{
         .background_color = COLOR_TAN,
     });
+
+    try theme.setAll(.content, .disabled, .{
+        .background_color = COLOR_TAN,
+        .text_color = COLOR_BROWN,
+        .border_color = COLOR_BROWN,
+    });
+
+    const startup_ms = debug.start(&timer);
+    log.info("startup completed in {d} ms", .{startup_ms});
 
     var last_frame_time = std.time.milliTimestamp();
     main_loop: while (app.beginFrame()) {
@@ -537,11 +543,11 @@ pub fn main() !void {
                         });
                         defer ui.endSection();
 
-                        if (try widgets.button(ui, .fromSlice("LoadButton"), "Load Model")) {
+                        if (try widgets.button(ui, .fromSlice("LoadButton"), "Load Model", .{})) {
                             try nfd.openDialogAsync("glb,gltf", ".", &demo.path_to_load);
                         }
 
-                        if (try widgets.button(ui, .fromSlice("UnloadButton"), "Unload Model")) {
+                        if (try widgets.button(ui, .fromSlice("UnloadButton"), "Unload Model", .{ .disabled = demo.model == null })) {
                             if (demo.model) |*m| m.deinit();
                             demo.model = null;
 
@@ -581,7 +587,7 @@ pub fn main() !void {
                             .fromSlice("TextInputTest"),
                             app.generalAllocator(),
                             &text_buffer,
-                            .{ .w = .fixed(300), .h = .fixed(16 * 6) },
+                            .{ .sizing = .{ .w = .fixed(300), .h = .fixed(16 * 6) } },
                         )) {
                             std.debug.print("Text input changed:\n{s}\n", .{text_buffer.items});
                         }
@@ -596,7 +602,7 @@ pub fn main() !void {
 
                             try ui.text("Show FPS Overlay", .{});
 
-                            _ = try widgets.checkbox(ui, .fromSlice("fpsOverlayToggle"), &draw_fps);
+                            _ = try widgets.checkbox(ui, .fromSlice("fpsOverlayToggle"), &draw_fps, .{});
                         }
 
                         { // Light brightness
@@ -626,7 +632,7 @@ pub fn main() !void {
 
                                 try ui.text("Buffer Debug Mode", .{});
 
-                                _ = try widgets.enumDropdown(BufferDebugMode, ui, .fromSlice("BufferDebugModeDropdown"), &buffer_debug_mode);
+                                _ = try widgets.enumDropdown(BufferDebugMode, ui, .fromSlice("BufferDebugModeDropdown"), &buffer_debug_mode, .{});
                             }
 
                             {
@@ -645,7 +651,7 @@ pub fn main() !void {
                                     });
                                     defer ui.endSection();
 
-                                    _ = try widgets.enumRadioButton(BufferDebugMode, ui, .fromSlice(mode_name ++ "_radio"), &buffer_debug_mode, @field(BufferDebugMode, mode_name));
+                                    _ = try widgets.enumRadioButton(BufferDebugMode, ui, .fromSlice(mode_name ++ "_radio"), &buffer_debug_mode, @field(BufferDebugMode, mode_name), .{});
 
                                     try ui.text(mode_name, .{});
                                 }
@@ -661,7 +667,7 @@ pub fn main() !void {
 
                                 try ui.text(@tagName(buffer_debug_mode), .{});
 
-                                _ = try widgets.enumSlider(BufferDebugMode, ui, .fromSlice("buffer_debug_slider"), &buffer_debug_mode);
+                                _ = try widgets.enumSlider(BufferDebugMode, ui, .fromSlice("buffer_debug_slider"), &buffer_debug_mode, .{});
                             }
 
                             switch (buffer_debug_mode) {

@@ -150,6 +150,7 @@ menu_item_to_submenu_map: std.AutoHashMapUnmanaged(u32, ElementId) = .empty,
 
 // --- Interaction State ---
 focus_scope_stack: std.ArrayList(ElementId) = .empty,
+disabled_stack: std.ArrayList(bool) = .empty,
 
 // Stores information about every element declared in the current frame.
 frame_element_info: std.AutoHashMapUnmanaged(u32, FrameElementInfo) = .empty,
@@ -267,6 +268,7 @@ pub fn deinit(self: *Ui) void {
     self.last_scroll_states.deinit(self.gpa);
     self.focus_scope_stack.deinit(self.gpa);
     self.frame_element_info.deinit(self.gpa);
+    self.disabled_stack.deinit(self.gpa);
     self.menu_state.deinit(self.gpa);
     self.menu_item_to_submenu_map.deinit(self.gpa);
 
@@ -295,6 +297,7 @@ pub fn beginLayout(self: *Ui, allow_mouse: bool, dimensions: vec2, delta_ms: f32
     self.reverse_navigable_elements.clearRetainingCapacity();
     self.open_ids.clearRetainingCapacity();
     self.frame_element_info.clearRetainingCapacity();
+    self.disabled_stack.clearRetainingCapacity();
     self.menu_state.hovered_submenu_candidate = null;
     // This map is declarative and needs to be rebuilt each frame.
     self.menu_item_to_submenu_map.clearRetainingCapacity();
@@ -512,6 +515,12 @@ pub fn activated(self: *Ui, id: ElementId) bool {
     return self.last_state.activeIdValue() == id.id;
 }
 
+/// Returns true if the current UI scope is disabled.
+pub fn disabled(self: *Ui) bool {
+    if (self.disabled_stack.items.len == 0) return false;
+    return self.disabled_stack.items[self.disabled_stack.items.len - 1];
+}
+
 /// Get the currently active element's ID, or null if there is no active element.
 pub fn activeId(self: *Ui) ?ElementId {
     return self.state.activeId();
@@ -542,6 +551,15 @@ pub fn pushFocusScope(self: *Ui, id: ElementId) !void {
 /// Pops the top element ID from the focus scope stack.
 pub fn popFocusScope(self: *Ui) void {
     _ = self.focus_scope_stack.pop();
+}
+
+/// Pushes a disabled state to a stack.
+pub fn pushDisabled(self: *Ui, is_disabled: bool) !void {
+    try self.disabled_stack.append(self.gpa, is_disabled);
+}
+
+pub fn popDisabled(self: *Ui) void {
+    _ = self.disabled_stack.pop();
 }
 
 // --- Menu Structures ---
@@ -1464,8 +1482,7 @@ pub const ActionState = enum(u8) {
 };
 
 pub fn getActionState(self: *Ui) ActionState {
-    // TODO: support disabling
-    return if (self.active()) .active else if (self.hovered()) .hover else if (self.focused()) .focus else .standard;
+    return if (self.disabled()) .disabled else if (self.active()) .active else if (self.hovered()) .hover else if (self.focused()) .focus else .standard;
 }
 
 pub const Theme = struct {
@@ -1713,6 +1730,12 @@ pub fn configureElement(self: *Ui, decl: ElementDeclaration) !void {
         &config,
     );
 
+    if (decl.state == .disabled) {
+        try self.pushDisabled(true);
+    } else {
+        try self.pushDisabled(self.disabled());
+    }
+
     decl.apply(&config);
 
     try self._configureElement(config);
@@ -1724,7 +1747,8 @@ pub fn beginElement(self: *Ui, id: ElementId, decl: ElementDeclaration) !void {
 }
 
 pub fn endElement(self: *Ui) void {
-    return self._endElement();
+    self._endElement();
+    self.popDisabled();
 }
 
 pub fn openSection(self: *Ui, id: ElementId) !void {
@@ -1742,8 +1766,19 @@ pub fn configureSection(self: *Ui, decl: ElementDeclaration) !void {
     };
 
     var section_theme = SectionTheme{};
-    try self.applyTheme(&SectionTheme.BINDING_SET, if (decl.type == .content) .content else .widget, &section_theme);
+    try self.applyThemeState(
+        &SectionTheme.BINDING_SET,
+        if (decl.type == .content) .content else .widget,
+        if (decl.state) |st| st else self.getActionState(),
+        &section_theme,
+    );
     config.layout.child_gap = section_theme.child_gap;
+
+    if (decl.state == .disabled) {
+        try self.pushDisabled(true);
+    } else {
+        try self.pushDisabled(self.disabled());
+    }
 
     try self._configureElement(config);
 }
@@ -1755,6 +1790,7 @@ pub fn beginSection(self: *Ui, id: ElementId, decl: ElementDeclaration) !void {
 
 pub fn endSection(self: *Ui) void {
     self._endElement();
+    self.popDisabled();
 }
 
 pub fn text(self: *Ui, content: []const u8, decl: TextDeclaration) !void {
@@ -1822,7 +1858,7 @@ pub const ElementDeclaration = struct {
         config.floating = decl.floating;
         config.type = decl.type;
         config.clip = decl.clip;
-        config.state = .custom(decl.event_flags, decl.userdata);
+        config.state = .custom(if (decl.state != .disabled) decl.event_flags else .{}, decl.userdata);
 
         if (decl.sizing) |x| config.layout.sizing = x;
         if (decl.padding) |x| config.layout.padding = x;

@@ -89,24 +89,33 @@ pub fn render(self: *Checkbox, ui: *Ui, command: Ui.RenderCommand) !void {
     }
 }
 
+pub const Config = struct {
+    disabled: bool = false,
+};
+
 /// Configure an open element as a checkbox widget for boolean values.
-pub fn checkbox(ui: *Ui, id: Ui.ElementId, value: *bool) !bool {
+pub fn checkbox(ui: *Ui, id: Ui.ElementId, value: *bool, config: Config) !bool {
     try ui.openElement(id);
     defer ui.endElement();
 
     const self, _ = try ui.getOrCreateWidget(Checkbox, id);
     self.value = value;
     self.theme = .{};
-    try ui.applyTheme(&Theme.BINDING_SET, .widget, &self.theme);
+
+    const state = if (config.disabled) Ui.ActionState.disabled else null;
+    try ui.applyThemeState(&Theme.BINDING_SET, .widget, state orelse ui.getActionState(), &self.theme);
 
     try ui.configureElement(.{
         .sizing = self.theme.checkbox_size,
         .type = .render_widget,
+        .state = state,
         .event_flags = .{
             .activate = true,
             .focus = true,
         },
     });
+
+    if (ui.disabled()) return false;
 
     try ui.menuNavigable();
 
