@@ -25,13 +25,11 @@ pub const Mark = enum {
 pub const Theme = struct {
     checkbox_size: Ui.Sizing = .{ .w = .fixed(16), .h = .fixed(16) },
     checkbox_mark_color: Ui.Color = .black,
-    checkbox_mark_ratio: f32 = 0.9,
+    checkbox_mark_ratio: f32 = 0.5,
     checkbox_mark: Mark = .check,
-};
 
-pub fn deinit(self: *Checkbox, ui: *Ui) void {
-    ui.gpa.destroy(self);
-}
+    pub const BINDING_SET = Ui.Theme.Binding.Set.create(Theme);
+};
 
 /// The rendering function for the checkbox, called by the UI system.
 pub fn render(self: *Checkbox, ui: *Ui, command: Ui.RenderCommand) !void {
@@ -74,21 +72,15 @@ pub fn render(self: *Checkbox, ui: *Ui, command: Ui.RenderCommand) !void {
 
             .block => {
                 const padding = (1.0 - self.theme.checkbox_mark_ratio) * 0.5;
-                const mark_bb = Ui.BoundingBox{
-                    .x = bb.x + bb.width * padding,
-                    .y = bb.y + bb.height * padding,
-                    .width = bb.width * self.theme.checkbox_mark_ratio,
-                    .height = bb.height * self.theme.checkbox_mark_ratio,
-                };
 
                 try ui.renderer.drawRoundedRect(
-                    .{ mark_bb.x, mark_bb.y },
-                    .{ mark_bb.width, mark_bb.height },
+                    .{ bb.x + bb.width * padding, bb.y + bb.height * padding },
+                    .{ bb.width * self.theme.checkbox_mark_ratio, bb.height * self.theme.checkbox_mark_ratio },
                     .{
-                        .top_left = command.render_data.rectangle.corner_radius.top_left,
-                        .top_right = command.render_data.rectangle.corner_radius.top_right,
-                        .bottom_left = command.render_data.rectangle.corner_radius.bottom_left,
-                        .bottom_right = command.render_data.rectangle.corner_radius.bottom_right,
+                        .top_left = command.render_data.rectangle.corner_radius.top_left * self.theme.checkbox_mark_ratio,
+                        .top_right = command.render_data.rectangle.corner_radius.top_right * self.theme.checkbox_mark_ratio,
+                        .bottom_left = command.render_data.rectangle.corner_radius.bottom_left * self.theme.checkbox_mark_ratio,
+                        .bottom_right = command.render_data.rectangle.corner_radius.bottom_right * self.theme.checkbox_mark_ratio,
                     },
                     self.theme.checkbox_mark_color,
                 );
@@ -96,8 +88,6 @@ pub fn render(self: *Checkbox, ui: *Ui, command: Ui.RenderCommand) !void {
         }
     }
 }
-
-const BINDING_SET = Ui.Theme.Binding.Set.create(Theme);
 
 /// Configure an open element as a checkbox widget for boolean values.
 pub fn checkbox(ui: *Ui, id: Ui.ElementId, value: *bool) !bool {
@@ -107,7 +97,7 @@ pub fn checkbox(ui: *Ui, id: Ui.ElementId, value: *bool) !bool {
     const self, _ = try ui.getOrCreateWidget(Checkbox, id);
     self.value = value;
     self.theme = .{};
-    try ui.applyTheme(&BINDING_SET, .widget, &self.theme);
+    try ui.applyTheme(&Theme.BINDING_SET, .widget, &self.theme);
 
     try ui.configureSection(.{
         .sizing = self.theme.checkbox_size,

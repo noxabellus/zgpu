@@ -12,22 +12,12 @@ test {
     std.testing.refAllDecls(@This());
 }
 
-value: *usize,
-options: []const []const u8,
 highlighted_index: ?usize,
-theme: Theme,
 
 pub const Theme = struct {
     corner_radius: Ui.CornerRadius = .{},
+    pub const BINDING_SET = Ui.Theme.Binding.Set.create(Theme);
 };
-
-pub fn deinit(self: *Dropdown, ui: *Ui) void {
-    ui.gpa.destroy(self);
-}
-
-pub fn render(_: *Dropdown, _: *Ui, _: Ui.RenderCommand) !void {
-    // This widget is rendered entirely via its `declare` method.
-}
 
 fn panelId(ui: *Ui, id: Ui.ElementId) !Ui.ElementId {
     return Ui.ElementId.fromSlice(try std.fmt.allocPrint(ui.frame_arena, "{s}_dropdown_panel", .{id.string_id.toSlice()}));
@@ -37,22 +27,24 @@ fn optionId(ui: *Ui, id: Ui.ElementId, name: []const u8) !Ui.ElementId {
     return Ui.ElementId.fromSlice(try std.fmt.allocPrint(ui.frame_arena, "{s}_option_{s}", .{ id.string_id.toSlice(), name }));
 }
 
-fn selectValue(self: *Dropdown, ui: *Ui, value: usize) !bool {
+fn selectValue(self: *Dropdown, ui: *Ui, selected: *usize, value: usize) !bool {
     ui.popFocusScope();
-    const changed = self.value.* != value;
-    self.value.* = value;
+    const changed = selected.* != value;
+    selected.* = value;
     self.highlighted_index = null;
     return changed;
 }
 
-pub fn enumDropdown(ui: *Ui, id: Ui.ElementId, comptime T: type, selected: *T) !bool {
-    var state: usize = inline for (comptime std.meta.fieldNames(T), 0..) |field_name, i| {
+pub fn enumDropdown(comptime T: type, ui: *Ui, id: Ui.ElementId, selected: *T) !bool {
+    const state, _ = try ui.getOrCreateSharedWidgetState(usize, id);
+
+    state.* = inline for (comptime std.meta.fieldNames(T), 0..) |field_name, i| {
         if (@field(T, field_name) == selected.*) break i;
     } else unreachable;
 
-    if (try dropdown(ui, id, &state, std.meta.fieldNames(T))) {
+    if (try dropdown(ui, id, state, std.meta.fieldNames(T))) {
         inline for (comptime std.meta.fieldNames(T), 0..) |field_name, i| {
-            if (i == state) {
+            if (i == state.*) {
                 selected.* = @field(T, field_name);
                 return true;
             }
@@ -62,14 +54,9 @@ pub fn enumDropdown(ui: *Ui, id: Ui.ElementId, comptime T: type, selected: *T) !
     return false;
 }
 
-pub const THEME_BINDING_SET = Ui.Theme.Binding.Set.create(Theme);
-
 pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []const u8) !bool {
     const self, const is_new = try ui.getOrCreateWidget(Dropdown, id);
 
-    self.value = selected;
-    self.options = options;
-    self.theme = .{};
     if (is_new) self.highlighted_index = null;
 
     try ui.beginSection(id, .{
@@ -80,9 +67,10 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
     });
     defer ui.endSection();
 
-    try ui.applyTheme(&THEME_BINDING_SET, .widget, &self.theme);
+    var theme = Theme{};
+    try ui.applyTheme(&Theme.BINDING_SET, .widget, &theme);
 
-    try ui.textSection(options[self.value.*], .{ .alignment = .center });
+    try ui.textSection(options[selected.*], .{ .alignment = .center });
 
     if (self.highlighted_index) |hi| {
         const panel_id = try panelId(ui, id);
@@ -113,9 +101,9 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
                 .border_width = .all(0),
                 .type = .layout_widget,
                 .corner_radius = if (i == 0)
-                    Ui.CornerRadius{ .top_left = self.theme.corner_radius.top_left, .top_right = self.theme.corner_radius.top_right }
+                    Ui.CornerRadius{ .top_left = theme.corner_radius.top_left, .top_right = theme.corner_radius.top_right }
                 else if (i == options.len - 1)
-                    Ui.CornerRadius{ .bottom_left = self.theme.corner_radius.bottom_left, .bottom_right = self.theme.corner_radius.bottom_right }
+                    Ui.CornerRadius{ .bottom_left = theme.corner_radius.bottom_left, .bottom_right = theme.corner_radius.bottom_right }
                 else
                     .all(0),
             });
@@ -127,7 +115,7 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
             });
 
             if (ui.getEvent(option_id, .activate_end)) |_| {
-                return self.selectValue(ui, i);
+                return self.selectValue(ui, selected, i);
             }
         }
     }
@@ -135,13 +123,13 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
     if (ui.getEvent(id, .activate_end)) |_| {
         if (self.highlighted_index) |hi| {
             // If dropdown is open, activation selects the highlighted item.
-            return self.selectValue(ui, hi);
+            return self.selectValue(ui, selected, hi);
         } else {
             // If dropdown is closed, activation opens it.
             try ui.pushFocusScope(id);
 
             // When opening, set highlight to the current selection
-            self.highlighted_index = self.value.*;
+            self.highlighted_index = selected.*;
         }
     }
 
@@ -154,7 +142,7 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
                     try ui.pushFocusScope(id);
 
                     // When opening, set highlight to the current selection
-                    self.highlighted_index = self.value.*;
+                    self.highlighted_index = selected.*;
                 },
                 else => {},
             }
@@ -179,7 +167,7 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
             },
             .space => {
                 // Space is a common activation key, handle it directly for convenience.
-                return self.selectValue(ui, self.highlighted_index.?);
+                return self.selectValue(ui, selected, self.highlighted_index.?);
             },
             // .enter is handled by the 'activate_end' event.
             // .escape is handled by the 'scoped_focus_close' event.

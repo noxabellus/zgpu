@@ -412,7 +412,9 @@ pub fn main() !void {
 
     try theme.setAll(.widget, .standard, .{
         .background_color = COLOR_BROWN,
+        .checkbox_mark = Ui.Widget.Checkbox.Mark.block,
         .checkbox_mark_color = COLOR_PHOSPHOR,
+        .radio_mark_color = COLOR_PHOSPHOR,
     });
 
     try theme.setAll(.widget, .active, .{
@@ -933,7 +935,7 @@ pub fn main() !void {
                                     });
                                 }
 
-                                if (try widgets.enumDropdown(ui, .fromSlice("BufferDebugModeDropdown"), BufferDebugMode, &buffer_debug_mode)) std.debug.print("dropdown_changek\n", .{});
+                                _ = try widgets.enumDropdown(BufferDebugMode, ui, .fromSlice("BufferDebugModeDropdown"), &buffer_debug_mode);
                             }
 
                             {
@@ -955,35 +957,7 @@ pub fn main() !void {
                                 defer ui.endElement();
 
                                 inline for (comptime std.meta.fieldNames(BufferDebugMode)) |mode_name| {
-                                    try ui.beginElement(.{
-                                        .id = .localID(mode_name),
-                                        .layout = .{
-                                            .sizing = .{
-                                                .w = .fixed(16),
-                                                .h = .fixed(16),
-                                            },
-                                        },
-                                        .border = .{
-                                            .color = COLOR_PHOSPHOR,
-                                            .width = .all(1),
-                                        },
-                                        .corner_radius = .all(8),
-                                        .type = .render_widget,
-                                        .state = .flags(.{
-                                            .activate = true,
-                                            .focus = true,
-                                        }),
-                                    });
-                                    defer ui.endElement();
-
-                                    _ = try widgets.radioButton(ui, BufferDebugMode, .{
-                                        .group_id = .fromSlice("BufferDebugModeRadioGroup"),
-                                        .value = @field(BufferDebugMode, mode_name),
-                                        .state = &buffer_debug_mode,
-                                        .circle_color = if (ui.focused() or ui.hovered()) COLOR_TAN else COLOR_BROWN,
-                                        .dot_color = COLOR_PHOSPHOR,
-                                        .size = 16.0,
-                                    });
+                                    _ = try widgets.enumRadioButton(BufferDebugMode, ui, .fromSlice(mode_name ++ "_radio"), &buffer_debug_mode, @field(BufferDebugMode, mode_name));
                                 }
                             }
 

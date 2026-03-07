@@ -30,6 +30,7 @@ pub const widgets = struct {
     pub const dropdown = Widget.Dropdown.dropdown;
     pub const enumDropdown = Widget.Dropdown.enumDropdown;
     pub const radioButton = Widget.RadioButton.radioButton;
+    pub const enumRadioButton = Widget.RadioButton.enumRadioButton;
     pub const shaderRect = Widget.ShaderRect.shaderRect;
     pub const slider = Widget.Slider.slider;
     pub const textInput = Widget.TextInput.textInput;
@@ -37,7 +38,7 @@ pub const widgets = struct {
 
 pub const Widget = struct {
     user_data: *anyopaque,
-    render: *const fn (*anyopaque, *Ui, RenderCommand) anyerror!void,
+    render: ?*const fn (*anyopaque, *Ui, RenderCommand) anyerror!void,
     deinit: *const fn (*anyopaque, *Ui) void,
     seen_this_frame: bool,
 
@@ -939,27 +940,27 @@ pub fn setSharedWidgetState(self: *Ui, group_id: ElementId, comptime T: type, st
     }
 }
 
-pub fn getOrPutSharedWidgetState(self: *Ui, comptime T: type, group_id: ElementId, default_value: T) !*T {
+pub fn getOrCreateSharedWidgetState(self: *Ui, comptime T: type, group_id: ElementId) !struct { *T, bool } {
     const key = group_id.id;
 
     const gop = try self.shared_widget_states.getOrPut(self.gpa, key);
 
     if (!gop.found_existing) {
         const ptr = try self.gpa.create(T);
-        ptr.* = default_value;
 
         gop.value_ptr.* = SharedWidgetState{
             .data = ptr,
             .deinit = @ptrCast(&struct {
                 pub fn destructor(state_ptr: *T, ui: *Ui) void {
                     ui.gpa.destroy(state_ptr);
+                    if (comptime std.meta.hasMethod(T, "deinit")) state_ptr.deinit(ui);
                 }
             }.destructor),
             .state_type = @typeName(T),
             .seen_this_frame = true,
         };
 
-        return ptr;
+        return .{ ptr, true };
     } else {
         gop.value_ptr.seen_this_frame = true;
 
@@ -967,8 +968,14 @@ pub fn getOrPutSharedWidgetState(self: *Ui, comptime T: type, group_id: ElementI
             return error.SharedStateWrongType;
         }
 
-        return @ptrCast(@alignCast(gop.value_ptr.data));
+        return .{ @ptrCast(@alignCast(gop.value_ptr.data)), false };
     }
+}
+
+pub fn getOrPutSharedWidgetState(self: *Ui, comptime T: type, group_id: ElementId, default_value: T) !*T {
+    const ptr, const new = try self.getOrCreateSharedWidgetState(T, group_id);
+    if (new) ptr.* = default_value;
+    return ptr;
 }
 
 // --- Structures ---
@@ -1763,8 +1770,13 @@ pub fn getOrCreateWidget(self: *Ui, comptime T: type, id: ElementId) !struct { *
         const ptr = try self.gpa.create(T);
         gop.value_ptr.* = Ui.Widget{
             .user_data = ptr,
-            .render = @ptrCast(&T.render),
-            .deinit = @ptrCast(&T.deinit),
+            .render = if (comptime std.meta.hasMethod(T, "render")) @ptrCast(&T.render) else null,
+            .deinit = @ptrCast(&struct {
+                pub fn deinit(x: *T, y: *Ui) void {
+                    defer y.gpa.destroy(x);
+                    if (comptime std.meta.hasMethod(T, "deinit")) x.deinit(y);
+                }
+            }.deinit),
             .seen_this_frame = true,
         };
 
@@ -3151,7 +3163,12 @@ fn draw(self: *Ui) !void {
                     continue;
                 };
 
-                try widget.render(widget.user_data, self, cmd);
+                const f = widget.render orelse {
+                    log.warn("Widget state with id {x} has no render function", .{cmd.id});
+                    continue;
+                };
+
+                try f(widget.user_data, self, cmd);
             },
         }
     }
