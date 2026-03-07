@@ -1615,6 +1615,7 @@ pub const Theme = struct {
             pub const TEXT_CONF_BIND_SET = Binding.Set.custom(TextConfig, .{
                 .{ "text_color", "color" },
                 "font_id",
+                "font_size",
                 "letter_spacing",
                 "line_height",
                 .{ "text_wrap_mode", "wrap_mode" },

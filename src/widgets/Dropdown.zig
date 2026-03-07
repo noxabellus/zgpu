@@ -86,9 +86,10 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
 
     if (self.highlighted_index) |hi| {
         const panel_id = try panelId(ui, id);
+        const base_bounds = ui.getElementBounds(id) orelse Ui.BoundingBox{ .x = 0, .y = 0, .width = 0, .height = 0 };
         try ui.beginElement(panel_id, .{
             .state = .standard,
-            .sizing = .{ .w = .grow, .h = .fit },
+            .sizing = .{ .w = .fitMinMax(.{ .min = base_bounds.width }), .h = .fit },
             .padding = .all(0),
             .child_gap = 0,
             .direction = .top_to_bottom,

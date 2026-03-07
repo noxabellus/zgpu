@@ -274,9 +274,9 @@ pub fn main() !void {
     var ui = try Ui.init(app.permanentAllocator(), app.frameAllocator(), b2d, &asset_cache, &bindings);
     defer ui.deinit();
 
-    FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/quicksand/semibold.ttf", .linear);
-    FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/calistoga/regular.ttf", .linear);
-    FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/dejavu/sans-mono.ttf", .linear);
+    FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/pixels/Habbo.ttf", .nearest);
+    FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/pixels/ModernDOS9x16.ttf", .nearest);
+    FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/pixels/PublicPixel.ttf", .nearest);
 
     IMAGE_ID_PIP = try b2d.createDynamicTexture(app.gpu.config.width, app.gpu.config.height);
 
