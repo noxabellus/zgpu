@@ -82,7 +82,10 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
         try ui.beginElement(panel_id, .{
             .state = .standard,
             .sizing = .{ .w = .fitMinMax(.{ .min = base_bounds.width }), .h = .fit },
-            .padding = .all(0),
+            .padding_left = 0,
+            .padding_right = 0,
+            .padding_top = 0,
+            .padding_bottom = 0,
             .child_gap = 0,
             .direction = .top_to_bottom,
             .floating = .{
@@ -103,7 +106,11 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
                 .child_alignment = .center,
                 .event_flags = .{ .activate = true },
                 .state = if (hi == i) .focus else null,
-                .border_width = .all(0),
+                .border_left = 0,
+                .border_right = 0,
+                .border_bottom = 0,
+                .border_between_children = 0,
+                .border_top = 0,
                 .type = .layout_widget,
             });
             defer ui.endElement();

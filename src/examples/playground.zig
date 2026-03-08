@@ -404,12 +404,26 @@ pub fn main() !void {
         .background_color = COLOR_GREYBROWN,
         .border_color = COLOR_PHOSPHOR,
         .text_color = COLOR_PHOSPHOR,
+
         .font_id = FONT_ID_BODY,
         .font_size = @as(u16, 16),
 
-        .padding = Ui.Padding.all(10),
-        .border_width = Ui.BorderWidth.all(1),
-        .corner_radius = Ui.CornerRadius.all(8),
+        .padding_left = @as(u16, 10),
+        .padding_right = @as(u16, 10),
+        .padding_top = @as(u16, 10),
+        .padding_bottom = @as(u16, 10),
+
+        .border_left = @as(u16, 1),
+        .border_right = @as(u16, 1),
+        .border_top = @as(u16, 1),
+        .border_bottom = @as(u16, 1),
+        .border_between_children = @as(u16, 0),
+
+        .radius_top_left = @as(f32, 8),
+        .radius_top_right = @as(f32, 8),
+        .radius_bottom_left = @as(f32, 8),
+        .radius_bottom_right = @as(f32, 8),
+
         .child_gap = @as(u16, 10),
     });
 
@@ -421,10 +435,19 @@ pub fn main() !void {
         .slider_handle_color = COLOR_PHOSPHOR,
         .text_selection_color = COLOR_PHOSPHOR.withAlpha(0.1),
         .text_caret_color = COLOR_PHOSPHOR,
+
+        .scrollbar_track_color = COLOR_BROWN,
+        .scrollbar_thumb_color = COLOR_GREYBROWN,
+        .scrollbar_border_color = COLOR_BROWN,
+        .scrollbar_border_size = @as(u16, 1),
     });
 
     try theme.setAll(.widget, .active, .{
         .background_color = COLOR_TAN,
+    });
+
+    try theme.setAll(.widget, .hover, .{
+        .scrollbar_thumb_color = COLOR_TAN,
     });
 
     try theme.setAll(.content, .disabled, .{
@@ -513,19 +536,33 @@ pub fn main() !void {
                     .sizing = .{ .w = .fit, .h = .grow },
                     .direction = .top_to_bottom,
                     .child_alignment = .center,
-                    .padding = .all(10),
+                    .padding_left = 10,
+                    .padding_right = 10,
+                    .padding_top = 10,
+                    .padding_bottom = 10,
                 });
                 defer ui.endSection();
 
                 {
-                    try ui.openElement(.fromSlice("MenuContainer"));
-                    defer ui.endElement();
-
-                    try ui.configureElement(.{
-                        .sizing = .{ .w = .fit, .h = .fitMinMax(.{ .min = 0, .max = @floatFromInt(h - 20) }) },
+                    try widgets.beginScrollArea(ui, .fromSlice("MenuContainer"), .{
+                        .sizing = .{ .w = .fitMinMax(.{ .min = 0, .max = 350 }), .h = .fitMinMax(.{ .min = 0, .max = @floatFromInt(@divFloor(h, 2)) }) },
                         .direction = .top_to_bottom,
-                        .child_alignment = .{ .x = .center, .y = .top },
-                        .clip = .{ .child_offset = ui.scrollOffset(), .vertical = true },
+                        .child_alignment = .{ .x = .left, .y = .top },
+                        .vertical = true,
+                        .horizontal = true,
+                    });
+                    defer widgets.endScrollArea(ui, .fromSlice("MenuContainer"));
+
+                    try widgets.scrollbar(ui, .fromSlice("MenuContainerExtraScrollbarV"), .{
+                        .target_id = widgets.getScrollAreaClipId(.fromSlice("MenuContainer")),
+                        .offset = .{ 8 + 10 + 8 + 10 + 10, 0 },
+                        .axis = .vertical,
+                    });
+
+                    try widgets.scrollbar(ui, .fromSlice("MenuContainerExtraScrollbarH"), .{
+                        .target_id = widgets.getScrollAreaClipId(.fromSlice("MenuContainer")),
+                        .offset = .{ 0, 8 + 10 + 8 + 10 + 10 },
+                        .axis = .horizontal,
                     });
 
                     {
@@ -669,6 +706,7 @@ pub fn main() !void {
                                 .Framebuffer => {
                                     try widgets.image(ui, .fromSlice("PictureInPictureTest"), .{
                                         .image_id = IMAGE_ID_PIP,
+                                        .sizing = .{ .w = .fixed(600) },
                                         .aspect_ratio = screen_ratio,
                                     });
                                 },
@@ -681,7 +719,7 @@ pub fn main() !void {
                                         },
                                         .textures = &.{demo.picking.view.?},
                                         .uniforms = mouse_uniforms,
-                                        .sizing = .{ .w = .fixed(300), .h = .fixed(300 / screen_ratio) },
+                                        .sizing = .{ .w = .fixed(600), .h = .fixed(600 / screen_ratio) },
                                     });
                                 },
 
@@ -693,7 +731,7 @@ pub fn main() !void {
                                         },
                                         .textures = &.{demo.picking.view.?},
                                         .uniforms = mouse_uniforms,
-                                        .sizing = .{ .w = .fixed(300), .h = .fixed(300 / screen_ratio) },
+                                        .sizing = .{ .w = .fixed(600), .h = .fixed(600 / screen_ratio) },
                                     });
                                 },
                             }

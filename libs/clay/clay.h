@@ -2827,6 +2827,7 @@ void Clay__CalculateFinalLayout(void) {
                                     .vertical = elementConfig->config.clipElementConfig->vertical,
                                 }
                             };
+                            shouldRender = true;
                             break;
                         }
                         case CLAY__ELEMENT_CONFIG_TYPE_IMAGE: {

@@ -21,7 +21,7 @@ test {
 
 const FrameElementInfo = struct {
     widget: bool,
-    state: ElementState,
+    state: ElementStateFlags,
     parent_id: ?ElementId,
 };
 
@@ -41,6 +41,10 @@ pub const widgets = struct {
     pub const endMenuEmbeddedLayout = Widget.Menu.endEmbeddedLayout;
     pub const radioButton = Widget.RadioButton.radioButton;
     pub const enumRadioButton = Widget.RadioButton.enumRadioButton;
+    pub const beginScrollArea = Widget.ScrollArea.begin;
+    pub const endScrollArea = Widget.ScrollArea.end;
+    pub const getScrollAreaClipId = Widget.ScrollArea.getClipId;
+    pub const scrollbar = Widget.Scrollbar.scrollbar;
     pub const shaderRect = Widget.ShaderRect.shaderRect;
     pub const slider = Widget.Slider.slider;
     pub const enumSlider = Widget.Slider.enumSlider;
@@ -59,6 +63,8 @@ pub const Widget = struct {
     pub const Image = @import("widgets/Image.zig");
     pub const Menu = @import("widgets/Menu.zig");
     pub const RadioButton = @import("widgets/RadioButton.zig");
+    pub const ScrollArea = @import("widgets/ScrollArea.zig");
+    pub const Scrollbar = @import("widgets/Scrollbar.zig");
     pub const ShaderRect = @import("widgets/ShaderRect.zig");
     pub const Slider = @import("widgets/Slider.zig");
     pub const TextInput = @import("widgets/TextInput.zig");
@@ -130,18 +136,18 @@ theme_stack: std.ArrayList(*const Theme) = .empty,
 theme_match_levels: std.StringHashMapUnmanaged(Theme.MatchLevels) = .empty,
 
 // A stack of all elements currently under the mouse, populated during layout. The last element is the top-most.
-hovered_element_stack: std.ArrayList(StateElement) = .empty,
+hovered_element_stack: std.ArrayList(StateProperty) = .empty,
 // Map from navigation index to element ID for quick lookup during keyboard navigation
-navigable_elements: std.AutoHashMapUnmanaged(u32, struct { id: ElementId, state: ElementState }) = .empty,
+navigable_elements: std.AutoHashMapUnmanaged(u32, struct { id: ElementId, state: ElementStateFlags }) = .empty,
 // Map from ElementId.id to navigation index for reverse lookup during event generation
 reverse_navigable_elements: std.AutoHashMapUnmanaged(u32, u32) = .empty,
 // Stack of currently open element's user-provided stable IDs
 open_ids: std.ArrayList(ElementId) = .empty,
 
 // Scroll states for the current frame
-current_scroll_states: std.AutoHashMapUnmanaged(u32, ScrollState) = .empty,
+current_scroll_states: std.AutoHashMapUnmanaged(u32, ScrollProperty) = .empty,
 // Scroll states from the last frame
-last_scroll_states: std.AutoHashMapUnmanaged(u32, ScrollState) = .empty,
+last_scroll_states: std.AutoHashMapUnmanaged(u32, ScrollProperty) = .empty,
 
 // States for rich-interaction widgets
 widget_states: std.AutoHashMapUnmanaged(u32, Widget) = .empty,
@@ -162,8 +168,8 @@ disabled_stack: std.ArrayList(bool) = .empty,
 // Stores information about every element declared in the current frame.
 frame_element_info: std.AutoHashMapUnmanaged(u32, FrameElementInfo) = .empty,
 
-state: State = .{},
-last_state: State = .{},
+state: ElementState = .{},
+last_state: ElementState = .{},
 wheel_delta: vec2 = .{ 0, 0 },
 char_input: []const BindingState.Char = &.{},
 
@@ -723,13 +729,35 @@ pub fn getElementBounds(self: *Ui, id: ElementId) ?BoundingBox {
     return if (data.found) data.bounding_box else null;
 }
 
+pub const ScrollContainerData = struct {
+    /// Pointer to the internal scroll position (mutable)
+    /// Modifying this will change the actual scroll position
+    scroll_position: *clay.Vector2, // NOTE: clay.Vector2 has a different alignment than vec2, so we can't pointer cast safely
+    /// Bounding box of the scroll container
+    scroll_container_dimensions: vec2,
+    /// Dimensions of the inner content, including parent padding
+    content_dimensions: vec2,
+    /// Original scroll config
+    config: ClipElementConfig,
+};
+
+pub fn getElementScrollData(self: *Ui, id: ElementId) ?ScrollContainerData {
+    std.debug.assert(clay.getCurrentContext() == self.clay_context);
+
+    const data = clay.getScrollContainerData(id);
+    return if (data.found) .{
+        .scroll_position = data.scroll_position,
+        .scroll_container_dimensions = vec2FromDims(data.scroll_container_dimensions),
+        .content_dimensions = vec2FromDims(data.content_dimensions),
+        .config = .fromClay(data.config),
+    } else null;
+}
+
 pub fn pushEvent(self: *Ui, id: ElementId, data: Event.Data, user_data: ?*anyopaque) !void {
     std.debug.assert(clay.getCurrentContext() == self.clay_context);
 
     // NOTE: we do not check if element_data was found here,
-    // because this allows dispatching arbitrary events for non-existent elements,
-    // which is useful for shared-state widgets like radio groups:
-    // dispatching on the id of the group instead of the element allows for easier event handling on the user side.
+    // because this allows dispatching arbitrary events for non-existent elements.
     // The bounding box will be {0,0,0,0} in this case.
     const element_data = clay.getElementData(id);
 
@@ -898,48 +926,48 @@ pub const Event = struct {
     };
 };
 
-pub const State = struct {
-    hovered: ?StateElement = null,
-    active_id: ?StateElement = null,
-    focused_id: ?StateElement = null,
+pub const ElementState = struct {
+    hovered: ?StateProperty = null,
+    active_id: ?StateProperty = null,
+    focused_id: ?StateProperty = null,
 
-    pub fn hoveredId(self: State) ?ElementId {
+    pub fn hoveredId(self: ElementState) ?ElementId {
         return (self.hovered orelse return null).id;
     }
 
-    pub fn activeId(self: State) ?ElementId {
+    pub fn activeId(self: ElementState) ?ElementId {
         return (self.active_id orelse return null).id;
     }
 
-    pub fn focusedId(self: State) ?ElementId {
+    pub fn focusedId(self: ElementState) ?ElementId {
         return (self.focused_id orelse return null).id;
     }
 
-    pub fn hoveredIdValue(self: State) ?u32 {
+    pub fn hoveredIdValue(self: ElementState) ?u32 {
         return (self.hovered orelse return null).id.id;
     }
 
-    pub fn activeIdValue(self: State) ?u32 {
+    pub fn activeIdValue(self: ElementState) ?u32 {
         return (self.active_id orelse return null).id.id;
     }
 
-    pub fn focusedIdValue(self: State) ?u32 {
+    pub fn focusedIdValue(self: ElementState) ?u32 {
         return (self.focused_id orelse return null).id.id;
     }
 };
 
-pub const StateElement = struct {
+pub const StateProperty = struct {
     id: ElementId,
     bounding_box: BoundingBox,
-    state: ElementState,
+    state: ElementStateFlags,
 };
 
-pub const ScrollState = struct {
+pub const ScrollProperty = struct {
     offset: vec2,
-    elem_state: StateElement,
+    elem_state: StateProperty,
 };
 
-pub const ElementState = packed struct(usize) {
+pub const ElementStateFlags = packed struct(usize) {
     event_flags: Flags,
     user_data: u48 = 0,
 
@@ -1004,31 +1032,31 @@ pub const ElementState = packed struct(usize) {
         }
     };
 
-    pub const none = ElementState{ .event_flags = .none };
-    pub const hoverFlag = ElementState{ .event_flags = .hoverFlag };
-    pub const wheelFlag = ElementState{ .event_flags = .wheelFlag };
-    pub const clickFlag = ElementState{ .event_flags = .clickFlag };
-    pub const dragFlag = ElementState{ .event_flags = .dragFlag };
-    pub const focusFlag = ElementState{ .event_flags = .focusFlag };
-    pub const activateFlag = ElementState{ .event_flags = .activateFlag };
-    pub const textFlag = ElementState{ .event_flags = .textFlag };
-    pub const keyboardFlag = ElementState{ .event_flags = .keyboardFlag };
-    pub const scrollFlag = ElementState{ .event_flags = .scrollFlag };
-    pub const changeFlag = ElementState{ .event_flags = .changeFlag };
-    pub const all = ElementState{ .event_flags = .all };
+    pub const none = ElementStateFlags{ .event_flags = .none };
+    pub const hoverFlag = ElementStateFlags{ .event_flags = .hoverFlag };
+    pub const wheelFlag = ElementStateFlags{ .event_flags = .wheelFlag };
+    pub const clickFlag = ElementStateFlags{ .event_flags = .clickFlag };
+    pub const dragFlag = ElementStateFlags{ .event_flags = .dragFlag };
+    pub const focusFlag = ElementStateFlags{ .event_flags = .focusFlag };
+    pub const activateFlag = ElementStateFlags{ .event_flags = .activateFlag };
+    pub const textFlag = ElementStateFlags{ .event_flags = .textFlag };
+    pub const keyboardFlag = ElementStateFlags{ .event_flags = .keyboardFlag };
+    pub const scrollFlag = ElementStateFlags{ .event_flags = .scrollFlag };
+    pub const changeFlag = ElementStateFlags{ .event_flags = .changeFlag };
+    pub const all = ElementStateFlags{ .event_flags = .all };
 
-    pub fn flags(f: Flags) ElementState {
-        return ElementState{ .event_flags = f };
+    pub fn flags(f: Flags) ElementStateFlags {
+        return ElementStateFlags{ .event_flags = f };
     }
 
-    pub fn custom(f: Flags, user_data: ?*anyopaque) ElementState {
-        return ElementState{
+    pub fn custom(f: Flags, user_data: ?*anyopaque) ElementStateFlags {
+        return ElementStateFlags{
             .event_flags = f,
             .user_data = @intCast(@intFromPtr(user_data)),
         };
     }
 
-    fn fromClay(data: ?*anyopaque) ElementState {
+    fn fromClay(data: ?*anyopaque) ElementStateFlags {
         if (data) |ptr| {
             return @bitCast(@as(usize, @intFromPtr(ptr)));
         } else {
@@ -1036,20 +1064,20 @@ pub const ElementState = packed struct(usize) {
         }
     }
 
-    fn toClay(self: ElementState) ?*anyopaque {
+    fn toClay(self: ElementStateFlags) ?*anyopaque {
         // This converts directly to the nullable pointer so there's no risk from the runtime safety check here.
         return @ptrFromInt(@as(usize, @bitCast(self)));
     }
 
-    pub fn takesInput(self: ElementState) bool {
+    pub fn takesInput(self: ElementStateFlags) bool {
         return self.event_flags.takesInput();
     }
 
-    pub fn usesMouse(self: ElementState) bool {
+    pub fn usesMouse(self: ElementStateFlags) bool {
         return self.event_flags.usesMouse();
     }
 
-    pub fn getUserData(self: ElementState) ?*anyopaque {
+    pub fn getUserData(self: ElementStateFlags) ?*anyopaque {
         // This converts directly to the nullable pointer so there's no risk from the runtime safety check here.
         return @ptrFromInt(self.user_data);
     }
@@ -1171,6 +1199,14 @@ pub const ClipElementConfig = struct {
     // Offsets the x,y positions of all child elements.
     child_offset: vec2 = .{ 0, 0 },
 
+    fn fromClay(in: clay.ClipElementConfig) ClipElementConfig {
+        return ClipElementConfig{
+            .horizontal = in.horizontal,
+            .vertical = in.vertical,
+            .child_offset = vec2FromClay(in.child_offset),
+        };
+    }
+
     fn toClay(self: ClipElementConfig) clay.ClipElementConfig {
         return clay.ClipElementConfig{
             .horizontal = self.horizontal,
@@ -1203,7 +1239,7 @@ pub const HeadlessElementConfig = struct {
     /// Controls settings related to element borders, and will generate BORDER render command
     border: BorderElementConfig = .{},
     /// A pointer that will be transparently passed through to resulting render command
-    state: ElementState = .none,
+    state: ElementStateFlags = .none,
 
     fn attachHead(value: *const HeadlessElementConfig, head: ElementId) ElementConfig {
         var out: ElementConfig = undefined;
@@ -1365,9 +1401,19 @@ pub const Theme = struct {
             pub const ELEM_DECL_BIND_SET = Binding.Set.custom(HeadlessElementConfig, .{
                 "background_color",
                 .{ "border_color", "border.color" },
-                .{ "border_width", "border.width" },
-                "corner_radius",
-                .{ "padding", "layout.padding" },
+                .{ "border_left", "border.width.left" },
+                .{ "border_right", "border.width.right" },
+                .{ "border_top", "border.width.top" },
+                .{ "border_bottom", "border.width.bottom" },
+                .{ "border_between_children", "border.width.between_children" },
+                .{ "radius_top_left", "corner_radius.top_left" },
+                .{ "radius_top_right", "corner_radius.top_right" },
+                .{ "radius_bottom_left", "corner_radius.bottom_left" },
+                .{ "radius_bottom_right", "corner_radius.bottom_right" },
+                .{ "padding_left", "layout.padding.left" },
+                .{ "padding_right", "layout.padding.right" },
+                .{ "padding_top", "layout.padding.top" },
+                .{ "padding_bottom", "layout.padding.bottom" },
                 .{ "child_gap", "layout.child_gap" },
                 .{ "child_alignment", "layout.child_alignment" },
                 .{ "child_direction", "layout.direction" },
@@ -1571,6 +1617,11 @@ pub fn text(self: *Ui, content: []const u8, decl: TextDeclaration) !void {
     return self._text(content, config);
 }
 
+pub fn getWidget(self: *Ui, comptime T: type, id: ElementId) ?*T {
+    const widget = self.widget_states.get(id.id) orelse return null;
+    return @ptrCast(@alignCast(widget.user_data));
+}
+
 pub fn getOrCreateWidget(self: *Ui, comptime T: type, id: ElementId) !struct { *T, bool } {
     const gop = try self.widget_states.getOrPut(self.gpa, id.id);
     if (!gop.found_existing) {
@@ -1597,20 +1648,30 @@ pub fn getOrCreateWidget(self: *Ui, comptime T: type, id: ElementId) !struct { *
 
 pub const ElementDeclaration = struct {
     sizing: ?Sizing = null,
-    padding: ?Padding = null,
+    padding_left: ?u16 = null,
+    padding_right: ?u16 = null,
+    padding_top: ?u16 = null,
+    padding_bottom: ?u16 = null,
     child_gap: ?u16 = null,
     child_alignment: ?ChildAlignment = null,
     direction: ?LayoutDirection = null,
     background_color: ?Color = null,
-    corner_radius: ?CornerRadius = null,
-    border_width: ?BorderWidth = null,
+    radius_top_left: ?f32 = null,
+    radius_top_right: ?f32 = null,
+    radius_bottom_left: ?f32 = null,
+    radius_bottom_right: ?f32 = null,
+    border_left: ?u16 = null,
+    border_right: ?u16 = null,
+    border_top: ?u16 = null,
+    border_bottom: ?u16 = null,
+    border_between_children: ?u16 = null,
     border_color: ?Color = null,
     state: ?ActionState = null,
     floating: FloatingElementConfig = .{},
     aspect_ratio: AspectRatioElementConfig = 0,
     type: ElementType = .content,
     clip: ClipElementConfig = .{},
-    event_flags: ElementState.Flags = .{},
+    event_flags: ElementStateFlags.Flags = .{},
     userdata: ?*anyopaque = null,
     image: ImageElementConfig = null,
 
@@ -1623,13 +1684,23 @@ pub const ElementDeclaration = struct {
         config.state = .custom(if (decl.state != .disabled) decl.event_flags else .{}, decl.userdata);
 
         if (decl.sizing) |x| config.layout.sizing = x;
-        if (decl.padding) |x| config.layout.padding = x;
+        if (decl.padding_left) |x| config.layout.padding.left = x;
+        if (decl.padding_right) |x| config.layout.padding.right = x;
+        if (decl.padding_top) |x| config.layout.padding.top = x;
+        if (decl.padding_bottom) |x| config.layout.padding.bottom = x;
         if (decl.child_gap) |x| config.layout.child_gap = x;
         if (decl.child_alignment) |x| config.layout.child_alignment = x;
         if (decl.direction) |x| config.layout.direction = x;
         if (decl.background_color) |x| config.background_color = x;
-        if (decl.corner_radius) |x| config.corner_radius = x;
-        if (decl.border_width) |x| config.border.width = x;
+        if (decl.radius_top_left) |x| config.corner_radius.top_left = x;
+        if (decl.radius_top_right) |x| config.corner_radius.top_right = x;
+        if (decl.radius_bottom_left) |x| config.corner_radius.bottom_left = x;
+        if (decl.radius_bottom_right) |x| config.corner_radius.bottom_right = x;
+        if (decl.border_left) |x| config.border.width.left = x;
+        if (decl.border_right) |x| config.border.width.right = x;
+        if (decl.border_top) |x| config.border.width.top = x;
+        if (decl.border_bottom) |x| config.border.width.bottom = x;
+        if (decl.border_between_children) |x| config.border.width.between_children = x;
         if (decl.border_color) |x| config.border.color = x;
     }
 };
@@ -1681,7 +1752,7 @@ pub const ElementConfig = struct {
     /// Controls whether an element should clip its contents and allow scrolling rather than expanding to contain them.
     clip: ClipElementConfig = .{},
     /// A pointer that will be transparently passed through to resulting render command
-    state: ElementState = .none,
+    state: ElementStateFlags = .none,
 
     /// Controls the background color of the resulting element.
     /// By convention specified as 0-255, but interpretation is up to the renderer.
@@ -1829,11 +1900,14 @@ fn handleStateSetup(self: *Ui, declaration: ElementConfig) !void {
         const offset = declaration.clip.child_offset;
         const scrolled_data = clay.getElementData(declaration.id);
         if (scrolled_data.found) {
-            try self.current_scroll_states.put(self.gpa, declaration.id.id, .{ .offset = offset, .elem_state = .{
-                .id = declaration.id,
-                .bounding_box = scrolled_data.bounding_box,
-                .state = declaration.state,
-            } });
+            try self.current_scroll_states.put(self.gpa, declaration.id.id, .{
+                .offset = offset,
+                .elem_state = .{
+                    .id = declaration.id,
+                    .bounding_box = scrolled_data.bounding_box,
+                    .state = declaration.state,
+                },
+            });
         }
     }
 }
@@ -2206,7 +2280,7 @@ fn generateEvents(self: *Ui) !void {
 
     // Handle focus changes on mouse press
     if (primary_mouse_action == .pressed) {
-        var new_focus_target: ?StateElement = null;
+        var new_focus_target: ?StateProperty = null;
 
         // 1. Search the hovered stack for a focusable element
         for (self.hovered_element_stack.items, 0..) |_, i| {
@@ -2602,6 +2676,8 @@ fn draw(self: *Ui) !void {
         return;
     };
 
+    var scissor_count: usize = 0;
+
     for (render_commands) |cmd| {
         const bb = cmd.bounding_box;
         const pos = vec2{ bb.x, bb.y };
@@ -2671,8 +2747,18 @@ fn draw(self: *Ui) !void {
                     .bottom_left = data.corner_radius.bottom_left,
                 }, null, tint);
             },
-            .scissor_start => try self.renderer.scissorStart(pos, size),
-            .scissor_end => try self.renderer.scissorEnd(),
+            .scissor_start => {
+                try self.renderer.scissorStart(pos, size);
+                scissor_count += 1;
+            },
+            .scissor_end => {
+                if (scissor_count == 0) {
+                    log.err("Received dangling scissorEnd command from clay", .{});
+                    continue;
+                }
+                scissor_count -= 1;
+                try self.renderer.scissorEnd();
+            },
             .custom => {
                 const widget = self.widget_states.get(cmd.id) orelse {
                     log.warn("No widget state found for custom render command with id {x}", .{cmd.id});

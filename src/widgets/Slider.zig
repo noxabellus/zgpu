@@ -90,12 +90,7 @@ pub fn State(comptime T: type) type {
             try ui.renderer.drawRoundedRect(
                 .{ bb.x, track_y },
                 .{ bb.width, self.theme.slider_track_size },
-                .{
-                    .bottom_left = self.theme.slider_track_radius.bottom_left,
-                    .bottom_right = self.theme.slider_track_radius.bottom_right,
-                    .top_left = self.theme.slider_track_radius.top_left,
-                    .top_right = self.theme.slider_track_radius.top_right,
-                },
+                .all(self.theme.slider_track_radius),
                 .{
                     .r = track_color[0],
                     .g = track_color[1],
@@ -107,17 +102,12 @@ pub fn State(comptime T: type) type {
             try ui.renderer.drawRoundedRectLine(
                 .{ bb.x, track_y },
                 .{ bb.width, self.theme.slider_track_size },
+                .all(self.theme.slider_track_radius),
                 .{
-                    .bottom_left = self.theme.slider_track_radius.bottom_left,
-                    .bottom_right = self.theme.slider_track_radius.bottom_right,
-                    .top_left = self.theme.slider_track_radius.top_left,
-                    .top_right = self.theme.slider_track_radius.top_right,
-                },
-                .{
-                    .bottom = @floatFromInt(self.theme.border_width.bottom),
-                    .left = @floatFromInt(self.theme.border_width.left),
-                    .right = @floatFromInt(self.theme.border_width.right),
-                    .top = @floatFromInt(self.theme.border_width.top),
+                    .bottom = @floatFromInt(self.theme.border_bottom),
+                    .left = @floatFromInt(self.theme.border_left),
+                    .right = @floatFromInt(self.theme.border_right),
+                    .top = @floatFromInt(self.theme.border_top),
                 },
                 self.theme.border_color,
             );
@@ -152,8 +142,11 @@ pub const Theme = struct {
     slider_handle_color: Ui.Color = Ui.Color.init(100, 100, 100, 255),
     slider_handle_size: f32 = 16.0,
     slider_track_size: f32 = 8.0,
-    slider_track_radius: Ui.CornerRadius = .all(4),
-    border_width: Ui.BorderWidth = .all(0),
+    slider_track_radius: f32 = 4.0,
+    border_left: u16 = 0,
+    border_right: u16 = 0,
+    border_top: u16 = 0,
+    border_bottom: u16 = 0,
     border_color: Ui.Color = .black,
 
     pub const BINDING_SET = Ui.Theme.Binding.Set.create(Theme);
@@ -196,7 +189,11 @@ pub fn slider(comptime T: type, ui: *Ui, id: Ui.ElementId, value: *T, config: St
 
     try ui.configureElement(.{
         .sizing = .{ .w = .grow, .h = .fixed(self.theme.slider_handle_size) },
-        .border_width = .all(0),
+        .border_left = 0,
+        .border_right = 0,
+        .border_bottom = 0,
+        .border_between_children = 0,
+        .border_top = 0,
         .type = .render_widget,
         .state = state,
         .event_flags = .{
