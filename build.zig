@@ -77,7 +77,6 @@ pub fn build(b: *std.Build) void {
 
     const stb_dep = b.dependency("stb", .{});
     const glfw_dep = b.dependency("glfw", .{});
-    const clay_dep = b.dependency("clay", .{});
     const nfd_dep = b.dependency("nfd", .{});
 
     // --- WGPU Module ---
@@ -159,7 +158,7 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&clay_test.step);
     test_step.dependOn(&b.addRunArtifact(clay_test).step);
 
-    clay_mod.addIncludePath(clay_dep.path("."));
+    clay_mod.addIncludePath(b.path("libs/clay"));
     clay_mod.addCSourceFile(.{
         .file = b.path("libs/clay/clay.c"),
         .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
