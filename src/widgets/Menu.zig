@@ -17,9 +17,6 @@ test {
 // --- Theme ---
 
 pub const Theme = struct {
-    menu_item_font_id: Ui.FontId = 0,
-    menu_item_font_size: u16 = 14,
-
     menu_separator_color: Ui.Color = Ui.Color.fromLinearU8(200, 200, 200, 255),
     menu_separator_height: f32 = 1.0,
 
@@ -356,10 +353,7 @@ pub fn item(ui: *Ui, id: Ui.ElementId, label: []const u8, config: Config) !bool 
         .event_flags = .{ .activate = true, .hover = true, .click = true },
         .type = .layout_widget,
     });
-    try ui.text(label, .{
-        .font_id = theme.menu_item_font_id,
-        .font_size = theme.menu_item_font_size,
-    });
+    try ui.text(label, .{});
 
     if (ui.getEvent(id, .activate_end)) |_| {
         ui.closeAllOverlays();
@@ -429,10 +423,7 @@ pub fn subMenu(ui: *Ui, self_id: Ui.ElementId, label: []const u8, child_menu_id:
     });
 
     const str = try std.fmt.allocPrint(ui.frame_arena, "{s} >", .{label});
-    try ui.text(str, .{
-        .font_id = theme.menu_item_font_id,
-        .font_size = theme.menu_item_font_size,
-    });
+    try ui.text(str, .{});
 
     if (ui.hovered() and !config.disabled) {
         if (!is_child_open) {

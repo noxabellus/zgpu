@@ -784,7 +784,7 @@ pub fn main() !void {
                         .view = demo.gltf_color.view,
                         .load_op = .clear,
                         .store_op = .store,
-                        .clear_value = Gpu.Color{ .r = 0.1, .g = 0.2, .b = 0.3, .a = 1 },
+                        .clear_value = Gpu.Color{ .r = 0.1, .g = 0.1, .b = 0.1, .a = 1 },
                     }},
                     .depth_stencil_attachment = &Gpu.RenderPassDepthStencilAttachment{
                         .view = demo.gltf_depth.view,
@@ -897,8 +897,8 @@ pub fn main() !void {
             {
                 const proj = linalg.mat4_ortho(0, @floatFromInt(w), @floatFromInt(h), 0, -1, 1);
                 b2d.beginFrame(proj, w, h);
-                try ui.render();
                 if (draw_fps) try debug.drawFpsChart(b2d, .{ 0, 0 });
+                try ui.render();
                 try b2d.endFrame();
 
                 const render_pass = try encoder.beginRenderPass(&Gpu.RenderPassDescriptor{
