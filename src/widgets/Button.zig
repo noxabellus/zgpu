@@ -20,7 +20,7 @@ pub fn button(ui: *Ui, id: Ui.ElementId, text: []const u8, config: Config) !bool
 
     if (ui.disabled()) return false;
 
-    try ui.menuNavigable();
+    try Ui.widgets.menuNavigable(ui);
 
     if (ui.getEvent(id, .activate_end)) |_| {
         return true;

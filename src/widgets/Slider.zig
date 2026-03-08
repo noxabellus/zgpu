@@ -31,11 +31,12 @@ pub fn State(comptime T: type) type {
         };
 
         fn performKeyAction(self: *@This(), key: BindingState.Key) !bool {
+            log.info("Slider.performKeyAction: {s}", .{@tagName(key)});
             var new_value = self.value.*;
 
             if (comptime @typeInfo(T) == .float) {
                 switch (key) {
-                    .left, .down => if (new_value > self.config.max) {
+                    .left, .down => if (new_value > self.config.min) {
                         new_value -= self.config.step;
                     },
                     .right, .up => if (new_value < self.config.max) {
@@ -45,7 +46,7 @@ pub fn State(comptime T: type) type {
                 }
             } else {
                 switch (key) {
-                    .left, .down => if (new_value > self.config.max) {
+                    .left, .down => if (new_value > self.config.min) {
                         new_value = new_value -| self.config.step;
                     },
                     .right, .up => if (new_value < self.config.max) {
@@ -206,7 +207,7 @@ pub fn slider(comptime T: type, ui: *Ui, id: Ui.ElementId, value: *T, config: St
         },
     });
 
-    try ui.menuNavigable();
+    try Ui.widgets.menuNavigable(ui);
 
     if (ui.disabled()) return false;
 

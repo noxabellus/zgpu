@@ -117,7 +117,7 @@ pub fn checkbox(ui: *Ui, id: Ui.ElementId, value: *bool, config: Config) !bool {
 
     if (ui.disabled()) return false;
 
-    try ui.menuNavigable();
+    try Ui.widgets.menuNavigable(ui);
 
     if (ui.getEvent(id, .activate_end)) |_| {
         self.value.* = !self.value.*;

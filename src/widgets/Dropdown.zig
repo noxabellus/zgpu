@@ -14,11 +14,6 @@ test {
 
 highlighted_index: ?usize,
 
-pub const Theme = struct {
-    corner_radius: Ui.CornerRadius = .{},
-    pub const BINDING_SET = Ui.Theme.Binding.Set.create(Theme);
-};
-
 fn panelId(ui: *Ui, id: Ui.ElementId) !Ui.ElementId {
     return Ui.ElementId.fromSlice(try std.fmt.allocPrint(ui.frame_arena, "{s}_dropdown_panel", .{id.string_id.toSlice()}));
 }
@@ -72,9 +67,6 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
     });
     defer ui.endElement();
 
-    var theme = Theme{};
-    try ui.applyTheme(&Theme.BINDING_SET, .widget, &theme);
-
     try ui.text(options[selected.*], .{ .alignment = .center });
 
     if (ui.disabled()) {
@@ -82,7 +74,7 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
         return false;
     }
 
-    try ui.menuNavigable();
+    try Ui.widgets.menuNavigable(ui);
 
     if (self.highlighted_index) |hi| {
         const panel_id = try panelId(ui, id);
@@ -113,12 +105,6 @@ pub fn dropdown(ui: *Ui, id: Ui.ElementId, selected: *usize, options: []const []
                 .state = if (hi == i) .focus else null,
                 .border_width = .all(0),
                 .type = .layout_widget,
-                .corner_radius = if (i == 0)
-                    Ui.CornerRadius{ .top_left = theme.corner_radius.top_left, .top_right = theme.corner_radius.top_right }
-                else if (i == options.len - 1)
-                    Ui.CornerRadius{ .bottom_left = theme.corner_radius.bottom_left, .bottom_right = theme.corner_radius.bottom_right }
-                else
-                    .all(0),
             });
             defer ui.endElement();
 

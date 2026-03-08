@@ -118,7 +118,7 @@ pub fn radioButton(ui: *Ui, id: Ui.ElementId, selected: *usize, value: usize, co
         },
     });
 
-    try ui.menuNavigable();
+    try Ui.widgets.menuNavigable(ui);
 
     if (ui.disabled()) return false;
 

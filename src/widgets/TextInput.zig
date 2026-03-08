@@ -534,7 +534,7 @@ pub fn textInput(ui: *Ui, id: Ui.ElementId, allocator: std.mem.Allocator, text: 
 
     if (ui.disabled()) return false;
 
-    try ui.menuNavigable();
+    try Ui.widgets.menuNavigable(ui);
 
     var changed = false;
 
