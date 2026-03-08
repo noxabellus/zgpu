@@ -550,7 +550,7 @@ pub fn main() !void {
 
                 {
                     try widgets.beginScrollArea(ui, .fromSlice("MenuContainer"), .{
-                        .sizing = .{ .w = .fitMinMax(.{ .min = 0, .max = 340 }), .h = .fitMinMax(.{ .min = 0, .max = @floatFromInt(h - 20) }) },
+                        .sizing = .{ .w = .fitMinMax(.{ .min = 0, .max = 320 + 10 + 10 + 8 }), .h = .fitMinMax(.{ .min = 0, .max = @floatFromInt(h - 20) }) },
                         .direction = .top_to_bottom,
                         .vertical = true,
                         .horizontal = true,
@@ -564,17 +564,17 @@ pub fn main() !void {
                         });
                         defer ui.endSection();
 
-                        try widgets.scrollbar(ui, .fromSlice("MenuContainerExtraScrollbarV"), .{
-                            .target_id = widgets.getScrollAreaClipId(.fromSlice("MenuContainer")),
-                            .offset = .{ 8 + 10 + 8 + 10 + 10, 0 },
-                            .axis = .vertical,
-                        });
+                        // try widgets.scrollbar(ui, .fromSlice("MenuContainerExtraScrollbarV"), .{
+                        //     .target_id = widgets.getScrollAreaClipId(.fromSlice("MenuContainer")),
+                        //     .offset = .{ 8 + 10 + 8 + 10 + 10, 0 },
+                        //     .axis = .vertical,
+                        // });
 
-                        try widgets.scrollbar(ui, .fromSlice("MenuContainerExtraScrollbarH"), .{
-                            .target_id = widgets.getScrollAreaClipId(.fromSlice("MenuContainer")),
-                            .offset = .{ 0, 8 + 10 + 8 + 10 + 10 },
-                            .axis = .horizontal,
-                        });
+                        // try widgets.scrollbar(ui, .fromSlice("MenuContainerExtraScrollbarH"), .{
+                        //     .target_id = widgets.getScrollAreaClipId(.fromSlice("MenuContainer")),
+                        //     .offset = .{ 0, 8 + 10 + 8 + 10 + 10 },
+                        //     .axis = .horizontal,
+                        // });
 
                         {
                             try ui.beginSection(.fromSlice("ButtonRow"), .{
@@ -673,38 +673,38 @@ pub fn main() !void {
                                     _ = try widgets.enumDropdown(BufferDebugMode, ui, .fromSlice("BufferDebugModeDropdown"), &buffer_debug_mode, .{});
                                 }
 
-                                {
-                                    try ui.beginSection(.fromSlice("RadioRow"), .{
-                                        .sizing = .{ .w = .grow, .h = .fit },
-                                        .direction = .top_to_bottom,
-                                        .child_alignment = .{ .x = .left, .y = .center },
-                                    });
-                                    defer ui.endSection();
+                                // {
+                                //     try ui.beginSection(.fromSlice("RadioRow"), .{
+                                //         .sizing = .{ .w = .grow, .h = .fit },
+                                //         .direction = .top_to_bottom,
+                                //         .child_alignment = .{ .x = .left, .y = .center },
+                                //     });
+                                //     defer ui.endSection();
 
-                                    inline for (comptime std.meta.fieldNames(BufferDebugMode)) |mode_name| {
-                                        try ui.beginSection(.fromSlice("RadiowSubRow_" ++ mode_name), .{
-                                            .sizing = .{ .w = .grow, .h = .fit },
-                                            .child_alignment = .{ .x = .left, .y = .center },
-                                        });
-                                        defer ui.endSection();
+                                //     inline for (comptime std.meta.fieldNames(BufferDebugMode)) |mode_name| {
+                                //         try ui.beginSection(.fromSlice("RadiowSubRow_" ++ mode_name), .{
+                                //             .sizing = .{ .w = .grow, .h = .fit },
+                                //             .child_alignment = .{ .x = .left, .y = .center },
+                                //         });
+                                //         defer ui.endSection();
 
-                                        _ = try widgets.enumRadioButton(BufferDebugMode, ui, .fromSlice(mode_name ++ "_radio"), &buffer_debug_mode, @field(BufferDebugMode, mode_name), .{});
+                                //         _ = try widgets.enumRadioButton(BufferDebugMode, ui, .fromSlice(mode_name ++ "_radio"), &buffer_debug_mode, @field(BufferDebugMode, mode_name), .{});
 
-                                        try ui.text(mode_name, .{});
-                                    }
-                                }
+                                //         try ui.text(mode_name, .{});
+                                //     }
+                                // }
 
-                                {
-                                    try ui.beginSection(.fromSlice("EnumSliderRow"), .{
-                                        .sizing = .{ .w = .grow, .h = .fit },
-                                        .child_alignment = .{ .x = .left, .y = .center },
-                                    });
-                                    defer ui.endSection();
+                                // {
+                                //     try ui.beginSection(.fromSlice("EnumSliderRow"), .{
+                                //         .sizing = .{ .w = .grow, .h = .fit },
+                                //         .child_alignment = .{ .x = .left, .y = .center },
+                                //     });
+                                //     defer ui.endSection();
 
-                                    try ui.text(@tagName(buffer_debug_mode), .{});
+                                //     try ui.text(@tagName(buffer_debug_mode), .{});
 
-                                    _ = try widgets.enumSlider(BufferDebugMode, ui, .fromSlice("buffer_debug_slider"), &buffer_debug_mode, .{});
-                                }
+                                //     _ = try widgets.enumSlider(BufferDebugMode, ui, .fromSlice("buffer_debug_slider"), &buffer_debug_mode, .{});
+                                // }
                             }
                         }
                     }
@@ -715,7 +715,7 @@ pub fn main() !void {
                         .Framebuffer => {
                             try widgets.image(ui, .fromSlice("PictureInPictureTest"), .{
                                 .image_id = IMAGE_ID_PIP,
-                                .sizing = .{ .w = .fixed(400) },
+                                .sizing = .{ .w = .fixed(300) },
                                 .aspect_ratio = screen_ratio,
                             });
                         },
@@ -728,7 +728,7 @@ pub fn main() !void {
                                 },
                                 .textures = &.{demo.picking.view.?},
                                 .uniforms = mouse_uniforms,
-                                .sizing = .{ .w = .fixed(400) },
+                                .sizing = .{ .w = .fixed(300) },
                                 .aspect_ratio = screen_ratio,
                             });
                         },
@@ -741,7 +741,7 @@ pub fn main() !void {
                                 },
                                 .textures = &.{demo.picking.view.?},
                                 .uniforms = mouse_uniforms,
-                                .sizing = .{ .w = .fixed(400) },
+                                .sizing = .{ .w = .fixed(300) },
                                 .aspect_ratio = screen_ratio,
                             });
                         },

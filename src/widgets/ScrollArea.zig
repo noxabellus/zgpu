@@ -19,6 +19,8 @@ const CLIP_MASK: u32 = 0x11111111;
 const VBAR_MASK: u32 = 0x22222222;
 const HBAR_MASK: u32 = 0x33333333;
 
+const SCROLL_TOLERANCE: f32 = 1.0;
+
 pub const Config = struct {
     sizing: Ui.Sizing = .{ .w = .grow, .h = .grow },
     direction: Ui.LayoutDirection = .left_to_right,
@@ -171,7 +173,7 @@ fn _end(ui: *Ui, id: Ui.ElementId) !void {
     // Render Horizontal Scrollbar (if needed) at the bottom of the left column
     if (self.config.horizontal) {
         if (scroll_data_opt) |scroll_data| {
-            if (scroll_data.content_dimensions[0] > scroll_data.scroll_container_dimensions[0]) {
+            if (scroll_data.content_dimensions[0] - scroll_data.scroll_container_dimensions[0] > SCROLL_TOLERANCE) {
                 hbar_visible = true;
                 try self.doHorizontalScrollbar(ui, scroll_data);
             }
@@ -184,7 +186,7 @@ fn _end(ui: *Ui, id: Ui.ElementId) !void {
     // Render Vertical Scrollbar (if needed) on the right side of the outer container
     if (self.config.vertical) {
         if (scroll_data_opt) |scroll_data| {
-            if (scroll_data.content_dimensions[1] > scroll_data.scroll_container_dimensions[1]) {
+            if (scroll_data.content_dimensions[1] - scroll_data.scroll_container_dimensions[1] > SCROLL_TOLERANCE) {
                 try self.doVerticalScrollbar(ui, scroll_data, hbar_visible);
             }
         }

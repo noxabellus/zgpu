@@ -15,6 +15,8 @@ test {
     std.testing.refAllDecls(@This());
 }
 
+const SCROLL_TOLERANCE: f32 = 1.0;
+
 pub const Axis = enum { vertical, horizontal };
 
 pub const Config = struct {
@@ -128,7 +130,7 @@ pub fn scrollbar(ui: *Ui, id: Ui.ElementId, config: Config) !void {
         scroll_data.scroll_container_dimensions[0];
 
     // Do not draw or process logic if the content fits entirely in the viewport
-    if (content_size <= viewport_size) {
+    if (content_size - viewport_size < SCROLL_TOLERANCE) {
         return;
     }
 
