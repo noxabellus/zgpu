@@ -163,7 +163,7 @@ pub fn main() !void {
 
     var timer = try std.time.Timer.start();
 
-    const app = try Application.init("zgpu picking example");
+    const app = try Application.init("zgpu");
     defer app.deinit();
 
     // Init Asset Cache

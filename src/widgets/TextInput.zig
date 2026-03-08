@@ -530,160 +530,160 @@ pub fn textInput(ui: *Ui, id: Ui.ElementId, allocator: std.mem.Allocator, text: 
 
     try ui.applyTheme(&Theme.BINDING_SET, .widget, &self.theme);
 
-    try ui.text(self.text.items, .{});
-
-    if (ui.disabled()) return false;
-
-    try Ui.widgets.menuNavigable(ui);
-
     var changed = false;
+    if (!ui.disabled()) {
+        try Ui.widgets.menuNavigable(ui);
 
-    if (ui.getEvent(self.id, .mouse_down)) |event| {
-        const mouse_down_data = event.data.mouse_down;
-        const location = vec2{
-            mouse_down_data.mouse_position[0] - event.info.bounding_box.x,
-            mouse_down_data.mouse_position[1] - event.info.bounding_box.y,
-        };
-        try self.spatial_actions.append(ui.gpa, .{ .mouse_down = .{ .location = location, .modifiers = mouse_down_data.modifiers } });
-    }
-
-    if (ui.getEvent(self.id, .mouse_up)) |_| {
-        try self.spatial_actions.append(ui.gpa, .mouse_up);
-    }
-
-    if (ui.getEvent(self.id, .drag)) |event| {
-        const drag_data = event.data.drag;
-        const location = vec2{
-            drag_data.mouse_position[0] - event.info.bounding_box.x,
-            drag_data.mouse_position[1] - event.info.bounding_box.y,
-        };
-        try self.spatial_actions.append(ui.gpa, .{ .drag = .{ .location = location, .modifiers = drag_data.modifiers } });
-    }
-
-    // Double clicking operates on pure string content mapping (not spatial layouts), so we handle it immediately.
-    if (ui.getEvent(self.id, .double_clicked)) |_| {
-        if (self.carets.items.len > 0) {
-            const caret = &self.carets.items[self.carets.items.len - 1];
-            caret.start = findPrevWordBreak(self.text.items, caret.end);
-            caret.end = findNextWordBreak(self.text.items, caret.end);
-            try sortAndMergeCarets(&self.carets);
+        if (ui.getEvent(self.id, .mouse_down)) |event| {
+            const mouse_down_data = event.data.mouse_down;
+            const location = vec2{
+                mouse_down_data.mouse_position[0] - event.info.bounding_box.x,
+                mouse_down_data.mouse_position[1] - event.info.bounding_box.y,
+            };
+            try self.spatial_actions.append(ui.gpa, .{ .mouse_down = .{ .location = location, .modifiers = mouse_down_data.modifiers } });
         }
-    }
 
-    if (ui.getEvent(self.id, .text)) |event| {
-        const text_data = event.data.text;
+        if (ui.getEvent(self.id, .mouse_up)) |_| {
+            try self.spatial_actions.append(ui.gpa, .mouse_up);
+        }
 
-        switch (text_data) {
-            .command => |cmd| switch (cmd.action) {
-                // Layout-dependent actions are queued up to process inside render()
-                .move_up => try self.spatial_actions.append(ui.gpa, .{ .move_up = cmd.modifiers }),
-                .move_down => try self.spatial_actions.append(ui.gpa, .{ .move_down = cmd.modifiers }),
-                .home => try self.spatial_actions.append(ui.gpa, .{ .home = cmd.modifiers }),
-                .end => try self.spatial_actions.append(ui.gpa, .{ .end = cmd.modifiers }),
+        if (ui.getEvent(self.id, .drag)) |event| {
+            const drag_data = event.data.drag;
+            const location = vec2{
+                drag_data.mouse_position[0] - event.info.bounding_box.x,
+                drag_data.mouse_position[1] - event.info.bounding_box.y,
+            };
+            try self.spatial_actions.append(ui.gpa, .{ .drag = .{ .location = location, .modifiers = drag_data.modifiers } });
+        }
 
-                // Text/string manipulation actions are evaluated immediately
-                .copy => copy_action: {
-                    try sortAndMergeCarets(&self.carets);
-                    var has_selection = false;
-                    for (self.carets.items) |c| {
-                        if (c.hasSelection()) {
-                            has_selection = true;
-                        }
-                    }
-                    if (!has_selection) break :copy_action;
+        // Double clicking operates on pure string content mapping (not spatial layouts), so we handle it immediately.
+        if (ui.getEvent(self.id, .double_clicked)) |_| {
+            if (self.carets.items.len > 0) {
+                const caret = &self.carets.items[self.carets.items.len - 1];
+                caret.start = findPrevWordBreak(self.text.items, caret.end);
+                caret.end = findNextWordBreak(self.text.items, caret.end);
+                try sortAndMergeCarets(&self.carets);
+            }
+        }
 
-                    var clipboard_list = std.ArrayList(u8).empty;
-                    var first = true;
-                    for (self.carets.items) |caret| {
-                        if (!caret.hasSelection()) continue;
-                        if (!first) try clipboard_list.append(ui.frame_arena, '\n');
-                        first = false;
+        if (ui.getEvent(self.id, .text)) |event| {
+            const text_data = event.data.text;
 
-                        const selection = self.text.items[caret.min()..caret.max()];
-                        try clipboard_list.appendSlice(ui.frame_arena, selection);
-                    }
+            switch (text_data) {
+                .command => |cmd| switch (cmd.action) {
+                    // Layout-dependent actions are queued up to process inside render()
+                    .move_up => try self.spatial_actions.append(ui.gpa, .{ .move_up = cmd.modifiers }),
+                    .move_down => try self.spatial_actions.append(ui.gpa, .{ .move_down = cmd.modifiers }),
+                    .home => try self.spatial_actions.append(ui.gpa, .{ .home = cmd.modifiers }),
+                    .end => try self.spatial_actions.append(ui.gpa, .{ .end = cmd.modifiers }),
 
-                    try ui.bindings.setClipboard(clipboard_list.items);
-                },
-                .paste => {
-                    const clipboard = ui.bindings.getClipboard();
-                    try self.applyTextModification(ui, .insert, clipboard);
-                    changed = true;
-                },
-                .delete => {
-                    if (cmd.modifiers.ctrl) {
-                        for (self.carets.items) |*caret| {
-                            if (!caret.hasSelection()) {
-                                caret.end = findNextWordBreak(self.text.items, caret.end);
+                    // Text/string manipulation actions are evaluated immediately
+                    .copy => copy_action: {
+                        try sortAndMergeCarets(&self.carets);
+                        var has_selection = false;
+                        for (self.carets.items) |c| {
+                            if (c.hasSelection()) {
+                                has_selection = true;
                             }
                         }
-                    }
-                    try self.applyTextModification(ui, .delete, "");
-                    changed = true;
-                },
-                .backspace => {
-                    if (cmd.modifiers.ctrl) {
+                        if (!has_selection) break :copy_action;
+
+                        var clipboard_list = std.ArrayList(u8).empty;
+                        var first = true;
+                        for (self.carets.items) |caret| {
+                            if (!caret.hasSelection()) continue;
+                            if (!first) try clipboard_list.append(ui.frame_arena, '\n');
+                            first = false;
+
+                            const selection = self.text.items[caret.min()..caret.max()];
+                            try clipboard_list.appendSlice(ui.frame_arena, selection);
+                        }
+
+                        try ui.bindings.setClipboard(clipboard_list.items);
+                    },
+                    .paste => {
+                        const clipboard = ui.bindings.getClipboard();
+                        try self.applyTextModification(ui, .insert, clipboard);
+                        changed = true;
+                    },
+                    .delete => {
+                        if (cmd.modifiers.ctrl) {
+                            for (self.carets.items) |*caret| {
+                                if (!caret.hasSelection()) {
+                                    caret.end = findNextWordBreak(self.text.items, caret.end);
+                                }
+                            }
+                        }
+                        try self.applyTextModification(ui, .delete, "");
+                        changed = true;
+                    },
+                    .backspace => {
+                        if (cmd.modifiers.ctrl) {
+                            for (self.carets.items) |*caret| {
+                                if (!caret.hasSelection()) {
+                                    caret.end = findPrevWordBreak(self.text.items, caret.end);
+                                }
+                            }
+                        }
+                        try self.applyTextModification(ui, .backspace, "");
+                        changed = true;
+                    },
+                    .newline => {
+                        try self.applyTextModification(ui, .insert, "\n");
+                        changed = true;
+                    },
+                    .select_all => {
+                        self.carets.clearRetainingCapacity();
+                        try self.carets.append(ui.gpa, .{ .start = 0, .end = @intCast(self.text.items.len) });
+                    },
+                    .move_left => {
                         for (self.carets.items) |*caret| {
-                            if (!caret.hasSelection()) {
+                            if (caret.hasSelection() and !cmd.modifiers.shift) {
+                                caret.end = caret.min();
+                            } else if (cmd.modifiers.ctrl) {
                                 caret.end = findPrevWordBreak(self.text.items, caret.end);
+                            } else if (caret.end > 0) {
+                                var new_pos = caret.end - 1;
+                                while (new_pos > 0 and (self.text.items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos -= 1) {}
+                                caret.end = new_pos;
                             }
+                            if (!cmd.modifiers.shift) caret.start = caret.end;
                         }
+                        try sortAndMergeCarets(&self.carets);
+                    },
+                    .move_right => {
+                        for (self.carets.items) |*caret| {
+                            if (caret.hasSelection() and !cmd.modifiers.shift) {
+                                caret.end = caret.max();
+                            } else if (cmd.modifiers.ctrl) {
+                                caret.end = findNextWordBreak(self.text.items, caret.end);
+                            } else if (caret.end < self.text.items.len) {
+                                var new_pos = caret.end + 1;
+                                while (new_pos < self.text.items.len and (self.text.items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos += 1) {}
+                                caret.end = new_pos;
+                            }
+                            if (!cmd.modifiers.shift) caret.start = caret.end;
+                        }
+                        try sortAndMergeCarets(&self.carets);
+                    },
+                },
+                .chars => |chars| {
+                    var buffer = std.ArrayList(u8).empty;
+                    for (chars) |char_cmd| {
+                        const width = try std.unicode.utf8CodepointSequenceLength(char_cmd.codepoint);
+                        const buf = try ui.frame_arena.alloc(u8, width);
+                        _ = try std.unicode.utf8Encode(char_cmd.codepoint, buf);
+                        try buffer.appendSlice(ui.frame_arena, buf);
                     }
-                    try self.applyTextModification(ui, .backspace, "");
+                    try self.applyTextModification(ui, .insert, buffer.items);
                     changed = true;
                 },
-                .newline => {
-                    try self.applyTextModification(ui, .insert, "\n");
-                    changed = true;
-                },
-                .select_all => {
-                    self.carets.clearRetainingCapacity();
-                    try self.carets.append(ui.gpa, .{ .start = 0, .end = @intCast(self.text.items.len) });
-                },
-                .move_left => {
-                    for (self.carets.items) |*caret| {
-                        if (caret.hasSelection() and !cmd.modifiers.shift) {
-                            caret.end = caret.min();
-                        } else if (cmd.modifiers.ctrl) {
-                            caret.end = findPrevWordBreak(self.text.items, caret.end);
-                        } else if (caret.end > 0) {
-                            var new_pos = caret.end - 1;
-                            while (new_pos > 0 and (self.text.items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos -= 1) {}
-                            caret.end = new_pos;
-                        }
-                        if (!cmd.modifiers.shift) caret.start = caret.end;
-                    }
-                    try sortAndMergeCarets(&self.carets);
-                },
-                .move_right => {
-                    for (self.carets.items) |*caret| {
-                        if (caret.hasSelection() and !cmd.modifiers.shift) {
-                            caret.end = caret.max();
-                        } else if (cmd.modifiers.ctrl) {
-                            caret.end = findNextWordBreak(self.text.items, caret.end);
-                        } else if (caret.end < self.text.items.len) {
-                            var new_pos = caret.end + 1;
-                            while (new_pos < self.text.items.len and (self.text.items[new_pos] & 0b1100_0000) == 0b1000_0000) : (new_pos += 1) {}
-                            caret.end = new_pos;
-                        }
-                        if (!cmd.modifiers.shift) caret.start = caret.end;
-                    }
-                    try sortAndMergeCarets(&self.carets);
-                },
-            },
-            .chars => |chars| {
-                var buffer = std.ArrayList(u8).empty;
-                for (chars) |char_cmd| {
-                    const width = try std.unicode.utf8CodepointSequenceLength(char_cmd.codepoint);
-                    const buf = try ui.frame_arena.alloc(u8, width);
-                    _ = try std.unicode.utf8Encode(char_cmd.codepoint, buf);
-                    try buffer.appendSlice(ui.frame_arena, buf);
-                }
-                try self.applyTextModification(ui, .insert, buffer.items);
-                changed = true;
-            },
+            }
         }
     }
+
+    // this must happen after event processing to prevent layout issues due to changing the underlying text after submitting the text element
+    try ui.text(self.text.items, .{});
 
     return changed;
 }
