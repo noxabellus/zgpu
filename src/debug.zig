@@ -67,7 +67,6 @@ pub fn drawFpsChart(renderer: *Batch2D, chart_pos: vec2) !void {
         x += bar_width;
     }
 
-    //  string: []const u8, font_id: AssetCache.FontId, font_size: AssetCache.FontSize, line_spacing_override: ?u16, pos: Vec2, tint: Color
     try renderer.formatText(
         "FPS: {d:.2} Frame:{d:.2}ms Avg: {d:.2}ms Min: {d:.2}ms Max: {d:.2}ms",
         0,

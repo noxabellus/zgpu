@@ -508,7 +508,7 @@ pub fn main() !void {
 
             try ui.pushTheme(&theme);
 
-            {
+            { // main window
                 try ui.beginSection(.fromSlice("OuterContainer"), .{
                     .sizing = .{ .w = .fit, .h = .grow },
                     .direction = .top_to_bottom,
@@ -702,80 +702,61 @@ pub fn main() !void {
                 }
             }
 
-            if (bindings.getAction(.open_context_menu) == .released) {
-                log.info("Right click released, opening context menu.", .{});
-                ui.openOverlay(.fromSlice("ContextMenuRoot"), null, null, mouse_pos);
-            }
+            { // menus
+                try ui.pushTheme(&theme);
+                defer _ = ui.popTheme();
 
-            // Root Context Menu
-            if (try widgets.beginMenu(ui, .fromSlice("ContextMenuRoot"))) {
-                defer widgets.endMenu(ui);
-
-                // To retain your specific font styling for these items, push a local theme override.
-                // (Allocating on the frame_arena is perfect for ephemeral frame-local themes!)
-                var mono_theme = Ui.Theme.init(ui.frame_arena);
-                try mono_theme.setAll(.widget, .standard, .{
-                    .menu_item_font_id = FONT_ID_MONO,
-                    .menu_item_font_size = @as(u16, 12),
-                });
-                try mono_theme.setAll(.widget, .focus, .{
-                    .menu_item_font_id = FONT_ID_MONO,
-                    .menu_item_font_size = @as(u16, 12),
-                });
-                try ui.pushTheme(&mono_theme);
-
-                if (try widgets.menuItem(ui, .fromSlice("CopyMenuItem"), "Copy", .{})) {
-                    std.debug.print("ContextMenu - Copy\n", .{});
-                }
-                if (try widgets.menuItem(ui, .fromSlice("PasteMenuItem"), "Paste", .{})) {
-                    std.debug.print("ContextMenu - Paste\n", .{});
+                if (bindings.getAction(.open_context_menu) == .released) {
+                    log.info("Right click released, opening context menu.", .{});
+                    ui.openOverlay(.fromSlice("ContextMenuRoot"), null, null, mouse_pos);
                 }
 
-                _ = ui.popTheme(); // Revert back to the global menu theme
+                // Root Context Menu
+                if (try widgets.beginMenu(ui, .fromSlice("ContextMenuRoot"))) {
+                    defer widgets.endMenu(ui);
 
-                // Separators now require an ID
-                try widgets.menuSeparator(ui, .fromSlice("ContextMenuSep1"));
+                    if (try widgets.menuItem(ui, .fromSlice("CopyMenuItem"), "Copy", .{})) {
+                        std.debug.print("ContextMenu - Copy\n", .{});
+                    }
+                    if (try widgets.menuItem(ui, .fromSlice("PasteMenuItem"), "Paste", .{})) {
+                        std.debug.print("ContextMenu - Paste\n", .{});
+                    }
 
-                // Submenu Trigger
-                _ = try widgets.subMenu(ui, .fromSlice("MoreOptionsMenuItem"), "More Options...", .fromSlice("SubMenu1"), .{});
+                    _ = ui.popTheme(); // Revert back to the global menu theme
 
-                try widgets.menuSeparator(ui, .fromSlice("ContextMenuSep2"));
+                    try widgets.menuSeparator(ui, .fromSlice("ContextMenuSep1"));
 
-                // Embedded Widget Test
-                {
-                    try widgets.beginMenuEmbeddedLayout(ui, .fromSlice("MenuSliderContainer"), .{});
-                    defer widgets.endMenuEmbeddedLayout(ui);
+                    _ = try widgets.subMenu(ui, .fromSlice("MoreOptionsMenuItem"), "More Options...", .fromSlice("SubMenu1"), .{});
 
-                    // Native UI elements still take inline layout/text configs where appropriate
-                    try ui.text("Opacity", .{ .font_id = FONT_ID_MONO, .font_size = 12 });
+                    try widgets.menuSeparator(ui, .fromSlice("ContextMenuSep2"));
 
-                    _ = try widgets.slider(f32, ui, .fromSlice("MenuSlider"), &dummy_slider_value, .{});
+                    // Embedded Widget Test
+                    {
+                        try widgets.beginMenuEmbeddedLayout(ui, .fromSlice("MenuSliderContainer"), .{});
+                        defer widgets.endMenuEmbeddedLayout(ui);
+
+                        try ui.text("Opacity", .{});
+
+                        if (try widgets.slider(f32, ui, .fromSlice("MenuSlider"), &dummy_slider_value, .{})) std.debug.print("dummy_slider_value: {d:0.2}\n", .{dummy_slider_value});
+                    }
                 }
-            }
 
-            // First Level Submenu
-            if (try widgets.beginMenu(ui, .fromSlice("SubMenu1"))) {
-                defer widgets.endMenu(ui);
+                // First Level Submenu
+                if (try widgets.beginMenu(ui, .fromSlice("SubMenu1"))) {
+                    defer widgets.endMenu(ui);
 
-                _ = try widgets.menuItem(ui, .fromSlice("OptionAMenuItem"), "Option A", .{});
-                _ = try widgets.menuItem(ui, .fromSlice("OptionBMenuItem"), "Option B", .{});
+                    if (try widgets.menuItem(ui, .fromSlice("OptionAMenuItem"), "Option A", .{})) std.debug.print("OptionAMenuItem\n", .{});
+                    if (try widgets.menuItem(ui, .fromSlice("OptionBMenuItem"), "Option B", .{})) std.debug.print("OptionBMenuItem\n", .{});
 
-                _ = try widgets.subMenu(ui, .fromSlice("EvenDeeperMenuItem"), "Even Deeper...", .fromSlice("SubMenu2"), .{});
-            }
+                    _ = try widgets.subMenu(ui, .fromSlice("EvenDeeperMenuItem"), "Even Deeper...", .fromSlice("SubMenu2"), .{});
+                }
 
-            // Second Level Submenu
-            if (try widgets.beginMenu(ui, .fromSlice("SubMenu2"))) {
-                defer widgets.endMenu(ui);
+                // Second Level Submenu
+                if (try widgets.beginMenu(ui, .fromSlice("SubMenu2"))) {
+                    defer widgets.endMenu(ui);
 
-                // Pushing a quick theme to make this item huge, just like the old config!
-                var big_theme = Ui.Theme.init(ui.frame_arena);
-                try big_theme.setAll(.widget, .standard, .{ .menu_item_font_size = @as(u16, 32) });
-                try big_theme.setAll(.widget, .focus, .{ .menu_item_font_size = @as(u16, 32) });
-                try ui.pushTheme(&big_theme);
-
-                _ = try widgets.menuItem(ui, .fromSlice("FinalOptionMenuItem"), "Final Option!", .{});
-
-                _ = ui.popTheme();
+                    if (try widgets.menuItem(ui, .fromSlice("FinalOptionMenuItem"), "Final Option!", .{})) std.debug.print("FinalOptionMenuItem\n", .{});
+                }
             }
         }
 
