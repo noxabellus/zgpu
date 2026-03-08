@@ -39,7 +39,6 @@ pub const Theme = struct {
     pub const BINDING_SET = Ui.Theme.Binding.Set.create(Theme);
 };
 
-id: Ui.ElementId,
 target_id: Ui.ElementId,
 axis: Axis,
 theme: Theme,
@@ -78,32 +77,6 @@ pub fn render(self: *@This(), ui: *Ui, command: Ui.RenderCommand) !void {
     const scroll_ratio = std.math.clamp(-current_scroll / max_scroll, 0.0, 1.0);
 
     const thumb_offset = scroll_ratio * track_scrollable;
-
-    if (ui.getEvent(self.id, .wheel)) |event| {
-        log.info("Scrollbar wheel: {any}, position: {any}", .{ event.data.wheel, scroll_data.scroll_position });
-        // Note: Clay applies an internal multiplier to wheel deltas based on time/config. This works well enough for now.
-        const scroll_speed = 10.0;
-
-        switch (self.axis) {
-            .horizontal => {
-                const delta = if (event.data.wheel.delta[1] != 0.0) event.data.wheel.delta[1] else event.data.wheel.delta[0];
-                log.info("delta: {d:0.2}", .{delta});
-                var new_scroll = scroll_data.scroll_position.x + (delta * scroll_speed);
-                new_scroll = std.math.clamp(new_scroll, -max_scroll, 0);
-                scroll_data.scroll_position.x = new_scroll;
-                log.info("Scrollbar position: {any}", .{scroll_data.scroll_position});
-            },
-
-            .vertical => {
-                const delta = if (event.data.wheel.delta[0] != 0.0) event.data.wheel.delta[0] else event.data.wheel.delta[1];
-                log.info("delta: {d:0.2}", .{delta});
-                var new_scroll = scroll_data.scroll_position.y + (delta * scroll_speed);
-                new_scroll = std.math.clamp(new_scroll, -max_scroll, 0);
-                scroll_data.scroll_position.y = new_scroll;
-                log.info("Scrollbar position: {any}", .{scroll_data.scroll_position});
-            },
-        }
-    }
 
     // Cache the thumb rect for hit-testing in the next frame
     if (self.axis == .vertical) {
@@ -159,8 +132,9 @@ pub fn scrollbar(ui: *Ui, id: Ui.ElementId, config: Config) !void {
         return;
     }
 
+    const max_scroll = content_size - viewport_size;
+
     const self, const new = try ui.getOrCreateWidget(Scrollbar, id);
-    self.id = id;
     self.target_id = config.target_id;
     self.axis = config.axis;
     self.theme = .{};
@@ -212,6 +186,28 @@ pub fn scrollbar(ui: *Ui, id: Ui.ElementId, config: Config) !void {
 
     if (config.disabled) return;
 
+    if (ui.getEvent(id, .wheel)) |event| {
+        // Note: Clay applies an internal multiplier to wheel deltas based on time/config. This works well enough for now.
+        const scroll_speed = 10.0;
+
+        switch (self.axis) {
+            .horizontal => {
+                const delta = if (event.data.wheel.delta[1] != 0.0) event.data.wheel.delta[1] else event.data.wheel.delta[0];
+                var new_scroll = scroll_data.scroll_position.x + (delta * scroll_speed);
+                new_scroll = std.math.clamp(new_scroll, -max_scroll, 0);
+                scroll_data.scroll_position.x = new_scroll;
+                log.info("Scrollbar poition: {any}", .{scroll_data.scroll_position});
+            },
+
+            .vertical => {
+                const delta = if (event.data.wheel.delta[0] != 0.0) event.data.wheel.delta[0] else event.data.wheel.delta[1];
+                var new_scroll = scroll_data.scroll_position.y + (delta * scroll_speed);
+                new_scroll = std.math.clamp(new_scroll, -max_scroll, 0);
+                scroll_data.scroll_position.y = new_scroll;
+            },
+        }
+    }
+
     if (ui.getEvent(id, .mouse_down)) |event| {
         const mouse_pos = event.data.mouse_down.mouse_position;
 
@@ -220,7 +216,6 @@ pub fn scrollbar(ui: *Ui, id: Ui.ElementId, config: Config) !void {
             const track_start = if (config.axis == .vertical) event.info.bounding_box.y else event.info.bounding_box.x;
             const track_size = if (config.axis == .vertical) event.info.bounding_box.height else event.info.bounding_box.width;
 
-            const max_scroll = content_size - viewport_size;
             const thumb_size = @max(self.theme.scrollbar_min_thumb_size, (viewport_size / content_size) * track_size);
             const track_scrollable = track_size - thumb_size;
 
@@ -244,7 +239,6 @@ pub fn scrollbar(ui: *Ui, id: Ui.ElementId, config: Config) !void {
     }
 
     if (ui.getEvent(id, .drag)) |event| {
-        const max_scroll = content_size - viewport_size;
         const track_size = if (config.axis == .vertical) event.info.bounding_box.height else event.info.bounding_box.width;
         const thumb_size = @max(self.theme.scrollbar_min_thumb_size, (viewport_size / content_size) * track_size);
         const track_scrollable = track_size - thumb_size;

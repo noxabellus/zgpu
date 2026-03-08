@@ -429,10 +429,15 @@ pub fn main() !void {
 
     try theme.setAll(.widget, .standard, .{
         .background_color = COLOR_BROWN,
+
         .checkbox_mark = Ui.Widget.Checkbox.Mark.block,
+        .checkbox_radius = @as(f32, 3),
         .checkbox_mark_color = COLOR_PHOSPHOR,
+
         .radio_mark_color = COLOR_PHOSPHOR,
+
         .slider_handle_color = COLOR_PHOSPHOR,
+
         .text_selection_color = COLOR_PHOSPHOR.withAlpha(0.1),
         .text_caret_color = COLOR_PHOSPHOR,
 
@@ -545,197 +550,201 @@ pub fn main() !void {
 
                 {
                     try widgets.beginScrollArea(ui, .fromSlice("MenuContainer"), .{
-                        .sizing = .{ .w = .fitMinMax(.{ .min = 0, .max = 350 }), .h = .fitMinMax(.{ .min = 0, .max = @floatFromInt(@divFloor(h, 2)) }) },
+                        .sizing = .{ .w = .fitMinMax(.{ .min = 0, .max = 340 }), .h = .fitMinMax(.{ .min = 0, .max = @floatFromInt(h - 20) }) },
                         .direction = .top_to_bottom,
-                        .child_alignment = .{ .x = .left, .y = .top },
                         .vertical = true,
                         .horizontal = true,
                     });
                     defer widgets.endScrollArea(ui, .fromSlice("MenuContainer"));
 
-                    try widgets.scrollbar(ui, .fromSlice("MenuContainerExtraScrollbarV"), .{
-                        .target_id = widgets.getScrollAreaClipId(.fromSlice("MenuContainer")),
-                        .offset = .{ 8 + 10 + 8 + 10 + 10, 0 },
-                        .axis = .vertical,
-                    });
-
-                    try widgets.scrollbar(ui, .fromSlice("MenuContainerExtraScrollbarH"), .{
-                        .target_id = widgets.getScrollAreaClipId(.fromSlice("MenuContainer")),
-                        .offset = .{ 0, 8 + 10 + 8 + 10 + 10 },
-                        .axis = .horizontal,
-                    });
-
                     {
-                        try ui.beginSection(.fromSlice("ButtonRow"), .{
-                            .sizing = .{ .w = .grow, .h = .fit },
-                            .direction = .left_to_right,
-                            .child_alignment = .{ .x = .left, .y = .center },
+                        try ui.beginSection(.fromSlice("MenuBody"), .{
+                            .sizing = .{ .w = .growMinMax(.{ .min = 0, .max = 300 }), .h = .fit },
+                            .direction = .top_to_bottom,
                         });
                         defer ui.endSection();
 
-                        if (try widgets.button(ui, .fromSlice("LoadButton"), "Load Model", .{})) {
-                            try nfd.openDialogAsync("glb,gltf", ".", &demo.path_to_load);
-                        }
-
-                        if (try widgets.button(ui, .fromSlice("UnloadButton"), "Unload Model", .{ .disabled = demo.model == null })) {
-                            if (demo.model) |*m| m.deinit();
-                            demo.model = null;
-
-                            demo.anim_state.clearCache();
-                            demo.anim_state.clearMatrices();
-                            try demo.anim_state.sync(&demo.app.gpu);
-                        }
-                    }
-
-                    if (demo.model) |*model| {
-                        if (model.animations.len > 0) {
-                            try ui.text("Animation", .{
-                                .font_id = FONT_ID_TITLE,
-                                .font_size = 32,
-                            });
-
-                            try ui.text(model.animations[demo.anim_state.index].name orelse "[unnamed]", .{});
-
-                            if (try widgets.slider(u32, ui, .fromSlice("animIndexSlider"), &anim_index_slider, .{
-                                .min = 0,
-                                .max = if (demo.model != null and demo.model.?.animations.len > 0) @intCast(demo.model.?.animations.len - 1) else 0,
-                            })) {
-                                demo.anim_state.setIndex(anim_index_slider);
-                            }
-                        }
-                    }
-
-                    {
-                        try ui.text("Debug Options", .{
-                            .font_id = FONT_ID_TITLE,
-                            .font_size = 32,
+                        try widgets.scrollbar(ui, .fromSlice("MenuContainerExtraScrollbarV"), .{
+                            .target_id = widgets.getScrollAreaClipId(.fromSlice("MenuContainer")),
+                            .offset = .{ 8 + 10 + 8 + 10 + 10, 0 },
+                            .axis = .vertical,
                         });
 
-                        // Random text input
-                        if (try widgets.textInput(
-                            ui,
-                            .fromSlice("TextInputTest"),
-                            app.generalAllocator(),
-                            &text_buffer,
-                            .{ .sizing = .{ .w = .fixed(300), .h = .fixed(16 * 6) } },
-                        )) {
-                            std.debug.print("Text input changed:\n{s}\n", .{text_buffer.items});
-                        }
+                        try widgets.scrollbar(ui, .fromSlice("MenuContainerExtraScrollbarH"), .{
+                            .target_id = widgets.getScrollAreaClipId(.fromSlice("MenuContainer")),
+                            .offset = .{ 0, 8 + 10 + 8 + 10 + 10 },
+                            .axis = .horizontal,
+                        });
 
-                        { // Fps Overlay
-                            try ui.beginSection(.fromSlice("DebugFPSOverlayControlSection"), .{
-                                .sizing = .fit,
-                                .direction = .left_to_right,
-                                .child_alignment = .center,
-                            });
-                            defer ui.endSection();
-
-                            try ui.text("Show FPS Overlay", .{});
-
-                            _ = try widgets.checkbox(ui, .fromSlice("fpsOverlayToggle"), &draw_fps, .{});
-                        }
-
-                        { // Light brightness
-                            try ui.beginSection(.fromSlice("SliderRow"), .{
+                        {
+                            try ui.beginSection(.fromSlice("ButtonRow"), .{
                                 .sizing = .{ .w = .grow, .h = .fit },
                                 .direction = .left_to_right,
                                 .child_alignment = .{ .x = .left, .y = .center },
                             });
                             defer ui.endSection();
 
-                            try ui.text("Light", .{});
-
-                            var buf: [4]u8 = undefined;
-                            try ui.text(try std.fmt.bufPrint(&buf, "{d:0.2}", .{demo.light.config.brightness}), .{ .font_id = FONT_ID_MONO });
-
-                            _ = try widgets.slider(f32, ui, .fromSlice("lightBrightnessSlider"), &demo.light.config.brightness, .{ .min = 0.0, .max = 3.0 });
-                        }
-
-                        { // Buffer Debug
-                            {
-                                try ui.beginSection(.fromSlice("DropdownRow"), .{
-                                    .sizing = .{ .w = .grow, .h = .fit },
-                                    .direction = .left_to_right,
-                                    .child_alignment = .{ .x = .left, .y = .center },
-                                });
-                                defer ui.endSection();
-
-                                try ui.text("Buffer Debug Mode", .{});
-
-                                _ = try widgets.enumDropdown(BufferDebugMode, ui, .fromSlice("BufferDebugModeDropdown"), &buffer_debug_mode, .{});
+                            if (try widgets.button(ui, .fromSlice("LoadButton"), "Load Model", .{})) {
+                                try nfd.openDialogAsync("glb,gltf", ".", &demo.path_to_load);
                             }
 
-                            {
-                                try ui.beginSection(.fromSlice("RadioRow"), .{
+                            if (try widgets.button(ui, .fromSlice("UnloadButton"), "Unload Model", .{ .disabled = demo.model == null })) {
+                                if (demo.model) |*m| m.deinit();
+                                demo.model = null;
+
+                                demo.anim_state.clearCache();
+                                demo.anim_state.clearMatrices();
+                                try demo.anim_state.sync(&demo.app.gpu);
+                            }
+                        }
+
+                        if (demo.model) |*model| {
+                            if (model.animations.len > 0) {
+                                try ui.text("Animation", .{
+                                    .font_id = FONT_ID_TITLE,
+                                    .font_size = 32,
+                                });
+
+                                try ui.text(model.animations[demo.anim_state.index].name orelse "[unnamed]", .{});
+
+                                if (try widgets.slider(u32, ui, .fromSlice("animIndexSlider"), &anim_index_slider, .{
+                                    .min = 0,
+                                    .max = if (demo.model != null and demo.model.?.animations.len > 0) @intCast(demo.model.?.animations.len - 1) else 0,
+                                })) {
+                                    demo.anim_state.setIndex(anim_index_slider);
+                                }
+                            }
+                        }
+
+                        {
+                            try ui.text("Debug Options", .{
+                                .font_id = FONT_ID_TITLE,
+                                .font_size = 32,
+                            });
+
+                            // Random text input
+                            if (try widgets.textInput(
+                                ui,
+                                .fromSlice("TextInputTest"),
+                                app.generalAllocator(),
+                                &text_buffer,
+                                .{ .sizing = .{ .w = .fixed(300), .h = .fixed(16 * 6) } },
+                            )) {
+                                std.debug.print("Text input changed:\n{s}\n", .{text_buffer.items});
+                            }
+
+                            { // Fps Overlay
+                                try ui.beginSection(.fromSlice("DebugFPSOverlayControlSection"), .{
+                                    .sizing = .fit,
+                                    .child_alignment = .center,
+                                });
+                                defer ui.endSection();
+
+                                try ui.text("Show FPS Overlay", .{});
+
+                                _ = try widgets.checkbox(ui, .fromSlice("fpsOverlayToggle"), &draw_fps, .{});
+                            }
+
+                            { // Light brightness
+                                try ui.beginSection(.fromSlice("SliderRow"), .{
                                     .sizing = .{ .w = .grow, .h = .fit },
-                                    .direction = .top_to_bottom,
                                     .child_alignment = .{ .x = .left, .y = .center },
                                 });
                                 defer ui.endSection();
 
-                                inline for (comptime std.meta.fieldNames(BufferDebugMode)) |mode_name| {
-                                    try ui.beginSection(.fromSlice("RadiowSubRow_" ++ mode_name), .{
+                                try ui.text("Light", .{});
+
+                                var buf: [4]u8 = undefined;
+                                try ui.text(try std.fmt.bufPrint(&buf, "{d:0.2}", .{demo.light.config.brightness}), .{ .font_id = FONT_ID_MONO });
+
+                                _ = try widgets.slider(f32, ui, .fromSlice("lightBrightnessSlider"), &demo.light.config.brightness, .{ .min = 0.0, .max = 3.0 });
+                            }
+
+                            { // Buffer Debug
+                                {
+                                    try ui.beginSection(.fromSlice("DropdownRow"), .{
                                         .sizing = .{ .w = .grow, .h = .fit },
-                                        .direction = .left_to_right,
                                         .child_alignment = .{ .x = .left, .y = .center },
                                     });
                                     defer ui.endSection();
 
-                                    _ = try widgets.enumRadioButton(BufferDebugMode, ui, .fromSlice(mode_name ++ "_radio"), &buffer_debug_mode, @field(BufferDebugMode, mode_name), .{});
+                                    try ui.text("Buffer Debug Mode", .{});
 
-                                    try ui.text(mode_name, .{});
+                                    _ = try widgets.enumDropdown(BufferDebugMode, ui, .fromSlice("BufferDebugModeDropdown"), &buffer_debug_mode, .{});
+                                }
+
+                                {
+                                    try ui.beginSection(.fromSlice("RadioRow"), .{
+                                        .sizing = .{ .w = .grow, .h = .fit },
+                                        .direction = .top_to_bottom,
+                                        .child_alignment = .{ .x = .left, .y = .center },
+                                    });
+                                    defer ui.endSection();
+
+                                    inline for (comptime std.meta.fieldNames(BufferDebugMode)) |mode_name| {
+                                        try ui.beginSection(.fromSlice("RadiowSubRow_" ++ mode_name), .{
+                                            .sizing = .{ .w = .grow, .h = .fit },
+                                            .child_alignment = .{ .x = .left, .y = .center },
+                                        });
+                                        defer ui.endSection();
+
+                                        _ = try widgets.enumRadioButton(BufferDebugMode, ui, .fromSlice(mode_name ++ "_radio"), &buffer_debug_mode, @field(BufferDebugMode, mode_name), .{});
+
+                                        try ui.text(mode_name, .{});
+                                    }
+                                }
+
+                                {
+                                    try ui.beginSection(.fromSlice("EnumSliderRow"), .{
+                                        .sizing = .{ .w = .grow, .h = .fit },
+                                        .child_alignment = .{ .x = .left, .y = .center },
+                                    });
+                                    defer ui.endSection();
+
+                                    try ui.text(@tagName(buffer_debug_mode), .{});
+
+                                    _ = try widgets.enumSlider(BufferDebugMode, ui, .fromSlice("buffer_debug_slider"), &buffer_debug_mode, .{});
                                 }
                             }
-
-                            {
-                                try ui.beginSection(.fromSlice("EnumSliderRow"), .{
-                                    .sizing = .{ .w = .grow, .h = .fit },
-                                    .direction = .left_to_right,
-                                    .child_alignment = .{ .x = .left, .y = .center },
-                                });
-                                defer ui.endSection();
-
-                                try ui.text(@tagName(buffer_debug_mode), .{});
-
-                                _ = try widgets.enumSlider(BufferDebugMode, ui, .fromSlice("buffer_debug_slider"), &buffer_debug_mode, .{});
-                            }
-
-                            switch (buffer_debug_mode) {
-                                .None => {},
-
-                                .Framebuffer => {
-                                    try widgets.image(ui, .fromSlice("PictureInPictureTest"), .{
-                                        .image_id = IMAGE_ID_PIP,
-                                        .sizing = .{ .w = .fixed(600) },
-                                        .aspect_ratio = screen_ratio,
-                                    });
-                                },
-
-                                .@"Picking Position" => {
-                                    try widgets.shaderRect(ui, .fromSlice("ShaderTest1"), .{
-                                        .shader = pwp_shader,
-                                        .texture_bindings = &.{
-                                            .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
-                                        },
-                                        .textures = &.{demo.picking.view.?},
-                                        .uniforms = mouse_uniforms,
-                                        .sizing = .{ .w = .fixed(600), .h = .fixed(600 / screen_ratio) },
-                                    });
-                                },
-
-                                .@"Picking Id" => {
-                                    try widgets.shaderRect(ui, .fromSlice("ShaderTest2"), .{
-                                        .shader = pid_shader,
-                                        .texture_bindings = &.{
-                                            .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
-                                        },
-                                        .textures = &.{demo.picking.view.?},
-                                        .uniforms = mouse_uniforms,
-                                        .sizing = .{ .w = .fixed(600), .h = .fixed(600 / screen_ratio) },
-                                    });
-                                },
-                            }
                         }
+                    }
+
+                    switch (buffer_debug_mode) {
+                        .None => {},
+
+                        .Framebuffer => {
+                            try widgets.image(ui, .fromSlice("PictureInPictureTest"), .{
+                                .image_id = IMAGE_ID_PIP,
+                                .sizing = .{ .w = .fixed(400) },
+                                .aspect_ratio = screen_ratio,
+                            });
+                        },
+
+                        .@"Picking Position" => {
+                            try widgets.shaderRect(ui, .fromSlice("ShaderTest1"), .{
+                                .shader = pwp_shader,
+                                .texture_bindings = &.{
+                                    .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
+                                },
+                                .textures = &.{demo.picking.view.?},
+                                .uniforms = mouse_uniforms,
+                                .sizing = .{ .w = .fixed(400) },
+                                .aspect_ratio = screen_ratio,
+                            });
+                        },
+
+                        .@"Picking Id" => {
+                            try widgets.shaderRect(ui, .fromSlice("ShaderTest2"), .{
+                                .shader = pid_shader,
+                                .texture_bindings = &.{
+                                    .{ .sample_type = .unfilterable_float, .view_dimension = .@"2d", .multisampled = .False },
+                                },
+                                .textures = &.{demo.picking.view.?},
+                                .uniforms = mouse_uniforms,
+                                .sizing = .{ .w = .fixed(400) },
+                                .aspect_ratio = screen_ratio,
+                            });
+                        },
                     }
                 }
             }

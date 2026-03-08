@@ -26,6 +26,7 @@ pub const Theme = struct {
     checkbox_size: Ui.Sizing = .{ .w = .fixed(16), .h = .fixed(16) },
     checkbox_mark_color: Ui.Color = .black,
     checkbox_mark_ratio: f32 = 0.5,
+    checkbox_radius: f32 = 8.0,
     checkbox_mark: Mark = .check,
 
     pub const BINDING_SET = Ui.Theme.Binding.Set.create(Theme);
@@ -39,12 +40,7 @@ pub fn render(self: *Checkbox, ui: *Ui, command: Ui.RenderCommand) !void {
     try ui.renderer.drawRoundedRect(
         .{ bb.x, bb.y },
         .{ bb.width, bb.height },
-        .{
-            .top_left = command.render_data.custom.corner_radius.top_left,
-            .top_right = command.render_data.custom.corner_radius.top_right,
-            .bottom_left = command.render_data.custom.corner_radius.bottom_left,
-            .bottom_right = command.render_data.custom.corner_radius.bottom_right,
-        },
+        .all(self.theme.checkbox_radius),
         .{
             .r = command.render_data.custom.background_color[0],
             .g = command.render_data.custom.background_color[1],
@@ -76,12 +72,7 @@ pub fn render(self: *Checkbox, ui: *Ui, command: Ui.RenderCommand) !void {
                 try ui.renderer.drawRoundedRect(
                     .{ bb.x + bb.width * padding, bb.y + bb.height * padding },
                     .{ bb.width * self.theme.checkbox_mark_ratio, bb.height * self.theme.checkbox_mark_ratio },
-                    .{
-                        .top_left = command.render_data.rectangle.corner_radius.top_left * self.theme.checkbox_mark_ratio,
-                        .top_right = command.render_data.rectangle.corner_radius.top_right * self.theme.checkbox_mark_ratio,
-                        .bottom_left = command.render_data.rectangle.corner_radius.bottom_left * self.theme.checkbox_mark_ratio,
-                        .bottom_right = command.render_data.rectangle.corner_radius.bottom_right * self.theme.checkbox_mark_ratio,
-                    },
+                    .all(self.theme.checkbox_radius * self.theme.checkbox_mark_ratio),
                     self.theme.checkbox_mark_color,
                 );
             },
@@ -102,11 +93,15 @@ pub fn checkbox(ui: *Ui, id: Ui.ElementId, value: *bool, config: Config) !bool {
     self.value = value;
     self.theme = .{};
 
-    const state = if (config.disabled) Ui.ActionState.disabled else null;
-    try ui.applyThemeState(&Theme.BINDING_SET, .widget, state orelse ui.getActionState(), &self.theme);
+    const state = if (config.disabled) Ui.ActionState.disabled else ui.getActionState();
+    try ui.applyThemeState(&Theme.BINDING_SET, .widget, state, &self.theme);
 
     try ui.configureElement(.{
         .sizing = self.theme.checkbox_size,
+        .radius_bottom_left = self.theme.checkbox_radius,
+        .radius_bottom_right = self.theme.checkbox_radius,
+        .radius_top_left = self.theme.checkbox_radius,
+        .radius_top_right = self.theme.checkbox_radius,
         .type = .render_widget,
         .state = state,
         .event_flags = .{

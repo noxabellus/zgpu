@@ -133,8 +133,6 @@ fn _end(ui: *Ui, id: Ui.ElementId) !void {
 
     if (scroll_data_opt) |scroll_data| {
         if (ui.getEvent(self.id, .wheel)) |event| {
-            log.info("ScrollArea wheel: {any}, position: {any}", .{ event.data.wheel, scroll_data.scroll_position });
-
             // Only manually scroll if the mouse isn't over the actual clip region.
             // If it IS over the clip region, Clay natively handles it.
             if (!ui.isHovered(clip_id)) {
@@ -164,8 +162,6 @@ fn _end(ui: *Ui, id: Ui.ElementId) !void {
                         scroll_data.scroll_position.x = new_scroll;
                     }
                 }
-
-                log.info("Scrollbar position: {any}", .{scroll_data.scroll_position});
             }
         }
     }
