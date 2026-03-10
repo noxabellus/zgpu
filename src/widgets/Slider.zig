@@ -178,7 +178,7 @@ pub fn slider(comptime T: type, ui: *Ui, id: Ui.ElementId, value: *T, config: St
     self.config = config;
     self.theme = .{};
     if (new) {
-        self.key_repeat = .{ .timer = try .start() };
+        self.key_repeat = .{ .timer = .start(ui.io) };
     }
 
     try ui.openElement(id);
@@ -227,7 +227,7 @@ pub fn slider(comptime T: type, ui: *Ui, id: Ui.ElementId, value: *T, config: St
         changed = changed or try self.performKeyAction(key);
 
         self.key_repeat.advance();
-        self.key_repeat.timer.reset();
+        self.key_repeat.timer.reset(ui.io);
     }
 
     if (ui.getEvent(id, .key)) |event| key: {
@@ -240,11 +240,11 @@ pub fn slider(comptime T: type, ui: *Ui, id: Ui.ElementId, value: *T, config: St
             .nth => self.key_repeat.nth_delay,
         };
 
-        if (self.key_repeat.timer.read() < delay) break :key;
+        if (self.key_repeat.timer.read(ui.io) < delay) break :key;
 
         changed = changed or try self.performKeyAction(data.key);
         self.key_repeat.advance();
-        self.key_repeat.timer.reset();
+        self.key_repeat.timer.reset(ui.io);
     }
 
     if (ui.getEvent(id, .key_up)) |event| {

@@ -3,6 +3,7 @@
 const Menu = @This();
 
 const std = @import("std");
+const Timer = @import("../Timer.zig");
 const Ui = @import("../Ui.zig");
 const linalg = @import("../linalg.zig");
 const vec2 = linalg.vec2;
@@ -47,7 +48,7 @@ navigable_items: std.ArrayList(NavigableItem),
 submenu_map: std.AutoHashMapUnmanaged(u32, Ui.ElementId),
 highlighted_index: ?usize,
 hovered_submenu_candidate: ?Ui.ElementId,
-hover_timer: std.time.Timer,
+hover_timer: Timer,
 
 pub fn deinit(self: *Menu, ui: *Ui) void {
     self.navigable_items.deinit(ui.gpa);
@@ -121,7 +122,7 @@ pub fn begin(ui: *Ui, id: Ui.ElementId) !bool {
         self.submenu_map = .empty;
         self.highlighted_index = 0;
         self.hovered_submenu_candidate = null;
-        self.hover_timer = try std.time.Timer.start();
+        self.hover_timer = .start(ui.io);
     }
 
     const is_first_frame = info.last_size[0] == 0;
@@ -445,14 +446,14 @@ pub fn subMenu(ui: *Ui, self_id: Ui.ElementId, label: []const u8, child_menu_id:
             if (state.hovered_submenu_candidate) |candidate| {
                 if (candidate.id != self_id.id) {
                     state.hovered_submenu_candidate = self_id;
-                    state.hover_timer.reset();
-                } else if (state.hover_timer.read() > 200 * std.time.ns_per_ms) {
+                    state.hover_timer.reset(ui.io);
+                } else if (state.hover_timer.read(ui.io) > 200 * std.time.ns_per_ms) {
                     ui.openOverlay(child_menu_id, menu_id, self_id, .{ 0, 0 });
                     state.hovered_submenu_candidate = null;
                 }
             } else {
                 state.hovered_submenu_candidate = self_id;
-                state.hover_timer.reset();
+                state.hover_timer.reset(ui.io);
             }
         }
     } else if (state.hovered_submenu_candidate) |candidate| {

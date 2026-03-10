@@ -1,6 +1,6 @@
 .cache
 .depr
 .direnv
-.vscode
 .zig-cache
 zig-out
+zig-pkg

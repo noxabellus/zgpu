@@ -23,8 +23,8 @@ roll: f32 = 0.0,
 first_mouse: bool = true,
 last_mouse: vec2 = .{ 0.0, 0.0 },
 sensitivity: f32 = 0.1,
-speed: f32 = 10.0,
-roll_speed: f32 = 60.0,
+speed: f32 = 1.0,
+roll_speed: f32 = 10.0,
 
 view_proj: mat4 = linalg.mat4_identity,
 

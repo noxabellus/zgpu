@@ -2,6 +2,7 @@ const Application = @This();
 
 const std = @import("std");
 const builtin = @import("builtin");
+const Timer = @import("Timer.zig");
 const linalg = @import("linalg.zig");
 const glfw = @import("glfw");
 const wgpu = @import("wgpu");
@@ -12,6 +13,7 @@ const InputState = @import("InputState.zig");
 
 const log = std.log.scoped(.app);
 
+io: std.Io,
 mem: struct {
     gpa: std.mem.Allocator,
     permanent_arena: std.heap.ArenaAllocator,
@@ -22,11 +24,11 @@ user_data: *anyopaque,
 gpu: Gpu,
 input_state: InputState,
 
-pub fn init(name: [*:0]const u8) !*Application {
+pub fn init(io: std.Io, name: [*:0]const u8) !*Application {
     const gpa = std.heap.smp_allocator;
 
     log.info("application initializing...", .{});
-    var timer = try std.time.Timer.start();
+    var timer = Timer.start(io);
 
     stbi.init(gpa);
     errdefer stbi.deinit();
@@ -48,6 +50,7 @@ pub fn init(name: [*:0]const u8) !*Application {
 
     var self = try gpa.create(Application);
     @memset(std.mem.asBytes(self), 0);
+    self.io = io;
     self.mem = .{
         .gpa = gpa,
         .permanent_arena = std.heap.ArenaAllocator.init(gpa),
@@ -69,7 +72,7 @@ pub fn init(name: [*:0]const u8) !*Application {
     try self.gpu.init();
     self.input_state.init();
 
-    const elapsed = timer.read();
+    const elapsed = timer.read(io);
     const ms = @as(f64, @floatFromInt(elapsed)) / std.time.ns_per_ms;
 
     log.info("application initialized in {d:.3}ms", .{ms});

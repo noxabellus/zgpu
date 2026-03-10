@@ -212,18 +212,18 @@ pub fn CopyPtrMutability(
     comptime child: type,
 ) type {
     const info = @typeInfo(source).pointer;
-    return @Type(std.builtin.Type{
-        .pointer = .{
-            .size = size,
-            .is_const = info.is_const,
-            .is_volatile = info.is_volatile,
-            .is_allowzero = false,
+    return @Pointer(
+        size,
+        .{
+            .@"const" = info.is_const,
+            .@"volatile" = info.is_volatile,
+            .@"allowzero" = false,
             .alignment = @alignOf(child),
             .address_space = info.address_space,
-            .child = child,
-            .sentinel_ptr = null,
         },
-    });
+        child,
+        null,
+    );
 }
 
 const TestMap = SlotMap.new(u32);

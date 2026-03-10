@@ -410,14 +410,14 @@ pub fn setFlipVerticallyOnWrite(should_flip: bool) void {
 
 var mem_allocator: ?std.mem.Allocator = null;
 var mem_allocations: ?std.AutoHashMap(usize, usize) = null;
-var mem_mutex: std.Thread.Mutex = .{};
+var mem_mutex: std.atomic.Mutex = .unlocked;
 const mem_alignment = 16;
 
 extern var stbi_MallocPtr: ?*const fn (size: usize) callconv(.c) ?*anyopaque;
 extern var stbi_wMallocPtr: ?*const fn (size: usize) callconv(.c) ?*anyopaque;
 
 fn stbiMalloc(size: usize) callconv(.c) ?*anyopaque {
-    mem_mutex.lock();
+    while (!mem_mutex.tryLock()) {}
     defer mem_mutex.unlock();
 
     const mem = mem_allocator.?.alignedAlloc(
@@ -435,7 +435,7 @@ extern var stbi_ReallocPtr: ?*const fn (ptr: ?*anyopaque, size: usize) callconv(
 extern var stbi_wReallocPtr: ?*const fn (ptr: ?*anyopaque, size: usize) callconv(.c) ?*anyopaque;
 
 fn stbiRealloc(ptr: ?*anyopaque, size: usize) callconv(.c) ?*anyopaque {
-    mem_mutex.lock();
+    while (!mem_mutex.tryLock()) {}
     defer mem_mutex.unlock();
 
     const old_size = if (ptr != null) mem_allocations.?.get(@intFromPtr(ptr.?)).? else 0;
@@ -461,7 +461,7 @@ extern var stbi_wFreePtr: ?*const fn (maybe_ptr: ?*anyopaque) callconv(.c) void;
 
 fn stbiFree(maybe_ptr: ?*anyopaque) callconv(.c) void {
     if (maybe_ptr) |ptr| {
-        mem_mutex.lock();
+        while (!mem_mutex.tryLock()) {}
         defer mem_mutex.unlock();
 
         const size = mem_allocations.?.fetchRemove(@intFromPtr(ptr)).?.value;

@@ -1,13 +1,14 @@
 const std = @import("std");
 const linalg = @import("linalg.zig");
 const vec2 = linalg.vec2;
+const Timer = @import("Timer.zig");
 const Batch2D = @import("Batch2D.zig");
 
 const FRAME_AVG_LEN = 144;
 const FRAME_TIME_BASE_MS = 1000.0 / 144.0;
 const FRAME_TIME_BASE_NS = FRAME_TIME_BASE_MS * @as(comptime_float, std.time.ns_per_ms); // Start with a base of 6ms
 
-pub var frame_time: u64 = @as(comptime_int, @intFromFloat(FRAME_TIME_BASE_NS));
+pub var frame_time: i96 = @as(comptime_int, @intFromFloat(FRAME_TIME_BASE_NS));
 pub var frame_ms: f64 = 6.0;
 pub var frame_ms_buf: [FRAME_AVG_LEN]f64 = [1]f64{6.0} ** FRAME_AVG_LEN;
 pub var frame_index: usize = 0;
@@ -19,16 +20,18 @@ pub var min_ms: f64 = std.math.inf(f64);
 pub var max_ms: f64 = -std.math.inf(f64);
 pub var avg_fps: f64 = 144.0;
 
-var timer: *std.time.Timer = undefined;
+var io: std.Io = undefined;
+var timer: *Timer = undefined;
 
-pub fn start(user_timer: *std.time.Timer) f64 {
+pub fn start(bound_io: std.Io, user_timer: *Timer) f64 {
+    io = bound_io;
     timer = user_timer;
-    const startup_time = timer.lap();
+    const startup_time = timer.lap(io);
     return @as(f64, @floatFromInt(startup_time)) / std.time.ns_per_ms;
 }
 
 pub fn lap() void {
-    frame_time = timer.lap();
+    frame_time = timer.lap(io);
     frame_ms = @as(f64, @floatFromInt(frame_time)) / std.time.ns_per_ms;
     frame_fps = 1000.0 / frame_ms;
 
@@ -44,9 +47,11 @@ pub fn lap() void {
         min_ms = @min(min_ms, ms);
         max_ms = @max(max_ms, ms);
         avg_ms += ms;
+        avg_fps += 1000.0 / ms;
     }
 
     avg_ms /= @as(f64, FRAME_AVG_LEN);
+    avg_fps /= @as(f64, FRAME_AVG_LEN);
 }
 
 /// Draws a bar chart for all frames in the buffer, with each bar scaled by its size relative to the max frame time

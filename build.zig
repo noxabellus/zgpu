@@ -1,56 +1,6 @@
 /// build.zig
 const std = @import("std");
 
-fn addSystemCFlags(b: *std.Build, mod: *std.Build.Module) void {
-    addSystemCFlagsFromEnv(b, mod, "NIX_CFLAGS_COMPILE");
-    addSystemCFlagsFromEnv(b, mod, "CFLAGS");
-}
-
-fn addSystemCFlagsFromEnv(b: *std.Build, mod: *std.Build.Module, env_var: []const u8) void {
-    if (std.process.getEnvVarOwned(b.allocator, env_var)) |cflags| {
-        defer b.allocator.free(cflags);
-
-        var it = std.mem.splitAny(u8, cflags, " \n");
-        while (it.next()) |flag| {
-            if (flag.len == 0) continue;
-
-            if (std.mem.startsWith(u8, flag, "-I")) {
-                const path = flag[2..];
-                // Handle both -I/path and -I /path
-                if (path.len > 0) {
-                    addIncludePath(b, mod, path);
-                } else if (it.next()) |next_path| {
-                    addIncludePath(b, mod, next_path);
-                }
-            } else if (std.mem.eql(u8, flag, "-isystem")) {
-                if (it.next()) |path| {
-                    addIncludePath(b, mod, path);
-                } else {
-                    std.debug.print("Warning: -isystem flag without a path\n", .{});
-                }
-            } else {
-                // std.debug.print("Warning: ignoring unsupported {s} flag: {s}\n", .{env_var, flag});
-            }
-        }
-    } else |err| {
-        if (err != error.EnvironmentVariableNotFound) {
-            std.debug.print("Warning: could not read {s}: {s}; if you are not on nix, ignore this.\n", .{ env_var, @errorName(err) });
-        }
-    }
-}
-
-/// Helper to add a path, detecting if it's absolute or relative.
-fn addIncludePath(b: *std.Build, mod: *std.Build.Module, path: []const u8) void {
-    if (std.fs.path.isAbsolute(path)) {
-        // std.debug.print("Adding absolute system include path: {s}\n", .{path});
-        mod.addIncludePath(.{ .cwd_relative = path });
-    } else {
-        // This case is unlikely with Nix but good to have.
-        // std.debug.print("Adding relative system include path: {s}\n", .{path});
-        mod.addIncludePath(b.path(path));
-    }
-}
-
 pub fn build(b: *std.Build) void {
     // std.debug.print("build.zig started\n", .{});
     const target = b.standardTargetOptions(.{});
@@ -203,8 +153,8 @@ pub fn build(b: *std.Build) void {
 
     glfw_mod.linkLibrary(glfw_lib);
 
-    glfw_lib.addIncludePath(glfw_dep.path("include"));
-    glfw_lib.addCSourceFiles(.{
+    glfw_lib.root_module.addIncludePath(glfw_dep.path("include"));
+    glfw_lib.root_module.addCSourceFiles(.{
         .files = &.{
             "context.c",     "init.c",          "input.c",
             "monitor.c",     "vulkan.c",        "window.c",
@@ -296,7 +246,7 @@ pub fn build(b: *std.Build) void {
     // --- Platform-specifics ---
     if (is_windows) {
         glfw_lib.root_module.addCMacro("_GLFW_WIN32", "");
-        glfw_lib.addCSourceFiles(.{
+        glfw_lib.root_module.addCSourceFiles(.{
             .files = &.{
                 "win32_init.c",     "win32_joystick.c", "win32_monitor.c", "win32_thread.c",
                 "win32_time.c",     "win32_window.c",   "wgl_context.c",   "egl_context.c",
@@ -326,10 +276,8 @@ pub fn build(b: *std.Build) void {
             .flags = &.{"-fno-sanitize=undefined"},
         });
     } else {
-        addSystemCFlags(b, glfw_lib.root_module);
-
         glfw_lib.root_module.addCMacro("_GLFW_X11", "");
-        glfw_lib.addCSourceFiles(.{
+        glfw_lib.root_module.addCSourceFiles(.{
             .files = &.{
                 "x11_init.c",       "x11_monitor.c",    "x11_window.c",  "xkb_unicode.c",
                 "posix_thread.c",   "posix_time.c",     "glx_context.c", "egl_context.c",
@@ -343,22 +291,25 @@ pub fn build(b: *std.Build) void {
         wgpu_mod.linkSystemLibrary("dl", .{});
 
         // for glfw
-        glfw_mod.linkSystemLibrary("X11", .{});
-        glfw_mod.linkSystemLibrary("Xrandr", .{});
-        glfw_mod.linkSystemLibrary("Xinerama", .{});
-        glfw_mod.linkSystemLibrary("Xi", .{});
-        glfw_mod.linkSystemLibrary("Xcursor", .{});
+        glfw_lib.root_module.linkSystemLibrary("X11", .{});
+        glfw_lib.root_module.linkSystemLibrary("Xrandr", .{});
+        glfw_lib.root_module.linkSystemLibrary("Xinerama", .{});
+        glfw_lib.root_module.linkSystemLibrary("Xi", .{});
+        glfw_lib.root_module.linkSystemLibrary("Xcursor", .{});
 
         // for nfd
+        nfd_mod.addSystemIncludePath(.{ .cwd_relative = "/usr/include/gtk-3.0/" });
         nfd_mod.linkSystemLibrary("gtk-3", .{});
         nfd_mod.linkSystemLibrary("glib-2.0", .{});
         nfd_mod.linkSystemLibrary("gobject-2.0", .{});
+        nfd_mod.linkSystemLibrary("pango-1.0", .{});
+        nfd_mod.linkSystemLibrary("cairo", .{});
+        nfd_mod.linkSystemLibrary("gdk-pixbuf-2.0", .{});
+        nfd_mod.linkSystemLibrary("atk-1.0", .{});
 
         nfd_mod.addCSourceFile(.{
             .file = nfd_dep.path("src/nfd_gtk.c"),
             .flags = &.{ "-std=c99", "-fno-sanitize=undefined" },
         });
-
-        addSystemCFlags(b, nfd_mod);
     }
 }

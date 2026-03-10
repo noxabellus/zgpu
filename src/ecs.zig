@@ -711,7 +711,7 @@ pub fn TypedQuery(comptime Q: anytype) type {
         inner: Query(M),
 
         pub const Element = create_element_type: {
-            var fields: [M]std.builtin.Type.StructField = undefined;
+            var field_types: [M]type = undefined;
 
             var field_index: comptime_int = 0;
 
@@ -719,25 +719,11 @@ pub fn TypedQuery(comptime Q: anytype) type {
                 const T = qtu.typeOf(Q, i);
                 if (@TypeOf(T) == Exclude) continue;
 
-                fields[field_index] = std.builtin.Type.StructField{
-                    .name = std.fmt.comptimePrint("{}", .{i}),
-                    .type = *T,
-                    .default_value_ptr = null,
-                    .is_comptime = false,
-                    .alignment = @alignOf(*T),
-                };
+                field_types[field_index] = *T;
                 field_index += 1;
             }
 
-            break :create_element_type @Type(.{
-                .@"struct" = std.builtin.Type.Struct{
-                    .layout = .auto,
-                    .backing_integer = null,
-                    .decls = &.{},
-                    .is_tuple = true,
-                    .fields = fields[0..field_index],
-                },
-            });
+            break :create_element_type @Tuple(field_types[0..field_index]);
         };
 
         pub fn next(self: *@This()) ?Element {

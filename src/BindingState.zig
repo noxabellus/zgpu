@@ -40,24 +40,24 @@ pub fn deinit(self: *BindingState) void {
 /// Registers a new input binding with a compile-time known enum literal.
 /// The enum literal acts as a unique, type-safe identifier for the action.
 /// Example: `try bindings.registerBinding(.jump, .{.key = .{.key = .space}})`
-pub fn bind(self: *BindingState, comptime name: @Type(.enum_literal), binding: InputBinding) !void {
+pub fn bind(self: *BindingState, comptime name: @EnumLiteral(), binding: InputBinding) !void {
     try self.bindings.put(self.allocator, @tagName(name), binding);
 }
 
 /// Determine if a given input has a binding in this BindingState.
-pub fn hasBinding(self: *const BindingState, comptime name: @Type(.enum_literal)) bool {
+pub fn hasBinding(self: *const BindingState, comptime name: @EnumLiteral()) bool {
     return self.bindings.contains(@tagName(name));
 }
 
 /// Get the InputBinding associated with a given enum literal, if it exists.
-pub fn getBinding(self: *const BindingState, comptime name: @Type(.enum_literal)) ?InputBinding {
+pub fn getBinding(self: *const BindingState, comptime name: @EnumLiteral()) ?InputBinding {
     return self.bindings.get(@tagName(name));
 }
 
 /// Retrieves the current action state of a registered binding.
 /// The enum literal must correspond to a previously registered binding.
 /// Example: `const jump_action = bindings.getBinding(.jump)`
-pub fn getAction(self: *const BindingState, comptime name: @Type(.enum_literal)) Action {
+pub fn getAction(self: *const BindingState, comptime name: @EnumLiteral()) Action {
     const binding = self.bindings.get(@tagName(name)) orelse {
         return .none;
     };

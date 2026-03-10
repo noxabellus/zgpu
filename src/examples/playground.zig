@@ -4,6 +4,7 @@ const builtin = @import("builtin");
 
 const nfd = @import("nfd");
 
+const Timer = @import("../Timer.zig");
 const Gpu = @import("../Gpu.zig");
 const Application = @import("../Application.zig");
 const RenderTexture = @import("../RenderTexture.zig");
@@ -158,19 +159,22 @@ const PickingUniforms = struct {
     }
 };
 
-pub fn main() !void {
+pub fn main(_: std.process.Init.Minimal) !void {
+    var threaded_io = std.Io.Threaded.init_single_threaded;
+    const io = threaded_io.io();
+
     @setEvalBranchQuota(10_000);
 
-    var timer = try std.time.Timer.start();
+    var timer = Timer.start(io);
 
-    const app = try Application.init("zgpu");
+    const app = try Application.init(io, "zgpu");
     defer app.deinit();
 
     // Init Asset Cache
     var asset_cache = AssetCache.init(app.generalAllocator());
     defer asset_cache.deinit();
 
-    try nfd.initAsync();
+    try nfd.initAsync(io);
     defer nfd.deinitAsync();
 
     const b2d = try Batch2D.init(
@@ -271,12 +275,12 @@ pub fn main() !void {
     try bindings.bind(.dump_atlas, .{ .key = .{ .bind_point = .a, .modifiers = .altMod } });
     try bindings.bind(.open_context_menu, .{ .mouse = .{ .bind_point = .button_2 } });
 
-    var ui = try Ui.init(app.permanentAllocator(), app.frameAllocator(), b2d, &asset_cache, &bindings);
+    var ui = try Ui.init(io, app.permanentAllocator(), app.frameAllocator(), b2d, &asset_cache, &bindings);
     defer ui.deinit();
 
-    FONT_ID_BODY = try asset_cache.loadFont("assets/fonts/pixels/Habbo.ttf", .nearest);
-    FONT_ID_TITLE = try asset_cache.loadFont("assets/fonts/pixels/ModernDOS9x16.ttf", .nearest);
-    FONT_ID_MONO = try asset_cache.loadFont("assets/fonts/pixels/PublicPixel.ttf", .nearest);
+    FONT_ID_BODY = try asset_cache.loadFont(io, "assets/fonts/pixels/Habbo.ttf", .nearest);
+    FONT_ID_TITLE = try asset_cache.loadFont(io, "assets/fonts/pixels/ModernDOS9x16.ttf", .nearest);
+    FONT_ID_MONO = try asset_cache.loadFont(io, "assets/fonts/pixels/PublicPixel.ttf", .nearest);
 
     IMAGE_ID_PIP = try b2d.createDynamicTexture(app.gpu.config.width, app.gpu.config.height);
 
@@ -461,14 +465,11 @@ pub fn main() !void {
         .border_color = COLOR_BROWN,
     });
 
-    const startup_ms = debug.start(&timer);
+    const startup_ms = debug.start(io, &timer);
     log.info("startup completed in {d} ms", .{startup_ms});
 
-    var last_frame_time = std.time.milliTimestamp();
     main_loop: while (app.beginFrame()) {
-        const current_time = std.time.milliTimestamp();
-        const delta_time: f32 = @as(f32, @floatFromInt(current_time - last_frame_time)) / 1000.0;
-        last_frame_time = current_time;
+        const delta_time: f32 = @floatCast(@as(f64, @floatFromInt(timer.lap(io))) / std.time.ns_per_ms);
 
         defer debug.lap();
 

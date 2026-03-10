@@ -5,6 +5,7 @@ const Ui = @This();
 const std = @import("std");
 const clay = @import("clay");
 
+const Timer = @import("Timer.zig");
 const linalg = @import("linalg.zig");
 const Batch2D = @import("Batch2D.zig");
 const AssetCache = @import("AssetCache.zig");
@@ -83,9 +84,9 @@ pub const SharedWidgetState = struct {
 };
 
 pub const KeyRepeatState = struct {
-    timer: std.time.Timer,
-    initial_delay: u64 = 350 * std.time.ns_per_ms,
-    nth_delay: u64 = 25 * std.time.ns_per_ms,
+    timer: Timer,
+    initial_delay: i96 = 350 * std.time.ns_per_ms,
+    nth_delay: i96 = 25 * std.time.ns_per_ms,
     state: enum { none, first, nth } = .none,
     active_key: ?BindingState.Key = null,
 
@@ -114,6 +115,7 @@ pub const default_bindings = .{
     .close_focus_scope = BindingState.InputBinding{ .key = .{ .bind_point = .escape } },
 };
 
+io: std.Io,
 gpa: std.mem.Allocator,
 frame_arena: std.mem.Allocator,
 renderer: *Batch2D,
@@ -174,7 +176,7 @@ wheel_delta: vec2 = .{ 0, 0 },
 char_input: []const BindingState.Char = &.{},
 
 text_repeat: struct {
-    timer: std.time.Timer = undefined,
+    timer: Timer = undefined,
     initial_delay: u64 = 350 * std.time.ns_per_ms,
     nth_delay: u64 = 50 * std.time.ns_per_ms,
     state: enum {
@@ -192,22 +194,22 @@ text_repeat: struct {
 } = .{},
 
 click_state: struct {
-    timer: std.time.Timer = undefined,
+    timer: Timer = undefined,
     // Double-click state
-    last_click_time: u64 = 0,
+    last_click_time: i96 = 0,
     last_click_element_id: ?u32 = null,
-    double_click_threshold_ms: u64 = 250,
+    double_click_threshold_ms: i96 = 250,
     // Drag-to-click differentiation state
     drag_state: struct {
         start_pos: vec2 = .{ 0, 0 },
-        start_time: u64 = 0,
+        start_time: i96 = 0,
         is_dragging: bool = false,
     } = .{},
-    drag_time_threshold_ms: u64 = 150,
+    drag_time_threshold_ms: i96 = 150,
     drag_dist_threshold: f32 = 5.0,
 } = .{},
 
-pub fn init(gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, bindings: *BindingState) !*Ui {
+pub fn init(io: std.Io, gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *Batch2D, asset_cache: *AssetCache, bindings: *BindingState) !*Ui {
     const self = try gpa.create(Ui);
     errdefer gpa.destroy(self);
 
@@ -236,6 +238,7 @@ pub fn init(gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *B
     );
 
     self.* = Ui{
+        .io = io,
         .gpa = gpa,
         .frame_arena = frame_arena,
         .renderer = renderer,
@@ -245,8 +248,8 @@ pub fn init(gpa: std.mem.Allocator, frame_arena: std.mem.Allocator, renderer: *B
         .clay_memory = clay_memory,
     };
 
-    self.click_state.timer = try .start();
-    self.text_repeat.timer = try .start();
+    self.click_state.timer = .start(io);
+    self.text_repeat.timer = .start(io);
 
     // Ensure required ui input bindings are registered
     if (!bindings.hasBinding(.primary_mouse)) try bindings.bind(.primary_mouse, default_bindings.primary_mouse);
@@ -1977,7 +1980,7 @@ fn generateEvents(self: *Ui) !void {
 
     const modifiers = self.bindings.input_state.getModifiers();
 
-    const now = self.click_state.timer.read();
+    const now = self.click_state.timer.read(self.io);
 
     // The top-most element in the stack is the one we consider "hovered" for this frame.
     if (self.hovered_element_stack.items.len > 0) {
@@ -2027,10 +2030,10 @@ fn generateEvents(self: *Ui) !void {
             // zig fmt: on
                 switch (self.text_repeat.state) {
                     .none => {},
-                    .first => if (self.text_repeat.timer.read() < self.text_repeat.initial_delay) {
+                    .first => if (self.text_repeat.timer.read(self.io) < self.text_repeat.initial_delay) {
                         break :special_text;
                     },
-                    .nth => if (self.text_repeat.timer.read() < self.text_repeat.nth_delay) {
+                    .nth => if (self.text_repeat.timer.read(self.io) < self.text_repeat.nth_delay) {
                         break :special_text;
                     },
                 }
@@ -2039,7 +2042,7 @@ fn generateEvents(self: *Ui) !void {
 
                 processed_text_input = true;
 
-                self.text_repeat.timer.reset();
+                self.text_repeat.timer.reset(self.io);
 
                 if (delete_down) {
                     try self.events.append(self.gpa, .{

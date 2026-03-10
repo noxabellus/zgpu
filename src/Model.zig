@@ -80,7 +80,7 @@ pub fn loadGltf(
 ) !Model {
     stbi.setFlipVerticallyOnLoad(false);
 
-    const gltf_file_buffer = try std.fs.cwd().readFileAllocOptions(model_path, allocator, .unlimited, .@"4", null);
+    const gltf_file_buffer = try std.Io.Dir.cwd().readFileAllocOptions(gpu.getApp().io, model_path, allocator, .unlimited, .@"4", null);
     defer allocator.free(gltf_file_buffer);
 
     var gltf_data = gltf.init(allocator);
@@ -101,7 +101,7 @@ pub fn loadGltf(
         for (gltf_data.data.buffers) |buffer_info| {
             const bin_path = try std.fs.path.join(allocator, &.{ model_dir, buffer_info.uri.? });
             defer allocator.free(bin_path);
-            const bin_buffer = try std.fs.cwd().readFileAllocOptions(bin_path, allocator, .unlimited, .@"4", null);
+            const bin_buffer = try std.Io.Dir.cwd().readFileAllocOptions(gpu.getApp().io, bin_path, allocator, .unlimited, .@"4", null);
             try binary_buffers.append(allocator, bin_buffer);
         }
     }

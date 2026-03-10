@@ -1,12 +1,13 @@
 const std = @import("std");
 
+var io: std.Io = undefined;
 var in_buf: [32000]u8 = undefined;
 var out_buf: [32000]u8 = undefined;
 var queue_buf: [32000]u8 = undefined;
 var thread: std.Thread = undefined;
 var shutdown_async: std.atomic.Value(bool) = .init(false);
 var queue_fba: std.heap.FixedBufferAllocator = undefined;
-var queue_lock: std.Thread.Mutex = .{};
+var queue_lock: std.atomic.Mutex = .unlocked;
 var queue: std.ArrayList(Event) = .empty;
 
 const EventKind = union(enum) {
@@ -23,7 +24,8 @@ const Event = struct {
     out: *error{DialogFailed}!?[]const u8,
 };
 
-pub fn initAsync() !void {
+pub fn initAsync(bind_io: std.Io) !void {
+    io = bind_io;
     queue_fba = std.heap.FixedBufferAllocator.init(&queue_buf);
     thread = try std.Thread.spawn(.{}, asyncExecutor, .{});
 }
@@ -31,7 +33,7 @@ pub fn initAsync() !void {
 fn asyncExecutor() void {
     while (!shutdown_async.load(.acquire)) {
         {
-            queue_lock.lock();
+            while (!queue_lock.tryLock()) {}
             defer queue_lock.unlock();
 
             if (queue.pop()) |event| {
@@ -53,7 +55,9 @@ fn asyncExecutor() void {
             }
         }
 
-        std.Thread.sleep(std.time.ns_per_ms * 10);
+        io.sleep(.fromMilliseconds(10), std.Io.Clock.real) catch {
+            std.log.scoped(.nfd).debug("sleep failed", .{});
+        };
     }
 }
 
@@ -63,7 +67,7 @@ pub fn deinitAsync() void {
 }
 
 pub fn openDialogAsync(filterList: ?[]const u8, defaultPath: ?[]const u8, result: *error{DialogFailed}!?[]const u8) !void {
-    queue_lock.lock();
+    while (!queue_lock.tryLock()) {}
     defer queue_lock.unlock();
 
     try queue.append(queue_fba.allocator(), Event{
@@ -75,7 +79,7 @@ pub fn openDialogAsync(filterList: ?[]const u8, defaultPath: ?[]const u8, result
 }
 
 pub fn openDialogMultipleAsync(filterList: ?[]const u8, defaultPath: ?[]const u8, result: *error{DialogFailed}!?[]const u8) !void {
-    queue_lock.lock();
+    while (!queue_lock.tryLock()) {}
     defer queue_lock.unlock();
 
     try queue.append(queue_fba.allocator(), Event{
@@ -87,7 +91,7 @@ pub fn openDialogMultipleAsync(filterList: ?[]const u8, defaultPath: ?[]const u8
 }
 
 pub fn saveDialogAsync(filterList: ?[]const u8, defaultPath: ?[]const u8, result: *error{DialogFailed}!?[]const u8) !void {
-    queue_lock.lock();
+    while (!queue_lock.tryLock()) {}
     defer queue_lock.unlock();
 
     try queue.append(queue_fba.allocator(), Event{
@@ -99,7 +103,7 @@ pub fn saveDialogAsync(filterList: ?[]const u8, defaultPath: ?[]const u8, result
 }
 
 pub fn folderDialogAsync(defaultPath: ?[]const u8, result: *error{DialogFailed}!?[]const u8) !void {
-    queue_lock.lock();
+    while (!queue_lock.tryLock()) {}
     defer queue_lock.unlock();
 
     try queue.append(queue_fba.allocator(), Event{

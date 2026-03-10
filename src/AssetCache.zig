@@ -129,10 +129,10 @@ pub fn createDynamicId(self: *AssetCache) ImageId {
 }
 
 /// Loads a font from a file path and returns its index.
-pub fn loadFont(self: *AssetCache, path: []const u8, filter_mode: FilterMode) !FontId {
+pub fn loadFont(self: *AssetCache, io: std.Io, path: []const u8, filter_mode: FilterMode) !FontId {
     std.debug.assert(self.fonts.items.len < std.math.maxInt(FontId));
 
-    const font_data = try std.fs.cwd().readFileAlloc(path, self.allocator, .limited(10 * 1024 * 1024));
+    const font_data = try std.Io.Dir.cwd().readFileAlloc(io, path, self.allocator, .limited(10 * 1024 * 1024));
     errdefer self.allocator.free(font_data);
 
     var font_info = stbtt.FontInfo{};
@@ -151,12 +151,12 @@ pub fn loadFont(self: *AssetCache, path: []const u8, filter_mode: FilterMode) !F
 
 /// Loads an image from a file path and returns a unique ImageId.
 /// Avoids loading the same image twice.
-pub fn loadImage(self: *AssetCache, path: []const u8, generate_mips: bool) !ImageId {
+pub fn loadImage(self: *AssetCache, io: std.Io, path: []const u8, generate_mips: bool) !ImageId {
     if (self.image_map.get(path)) |existing_id| {
         return existing_id;
     }
 
-    const file_data = try std.fs.cwd().readFileAlloc(path, self.allocator, .limited(10 * 1024 * 1024)); // 10MB max
+    const file_data = try try std.Io.Dir.cwd().readFileAlloc(io, path, self.allocator, .limited(10 * 1024 * 1024)); // 10MB max
     defer self.allocator.free(file_data);
 
     var image = try stbi.Image.loadFromMemory(file_data, 4);
