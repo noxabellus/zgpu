@@ -1443,7 +1443,6 @@ pub fn drawText(self: *Batch2D, string: []const u8, font_id: AssetCache.FontId, 
 
 pub fn preAtlasAllImages(renderer: *Batch2D) !void {
     log.info("Beginning pre-atlasing of {d} images...", .{renderer.asset_cache.images.items.len});
-    var timer = try std.time.Timer.start();
 
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     defer arena.deinit();
@@ -1473,8 +1472,7 @@ pub fn preAtlasAllImages(renderer: *Batch2D) !void {
         try renderer.recreateBindGroup();
     }
 
-    const duration_ms = @as(f64, @floatFromInt(timer.read())) / @as(f64, @floatFromInt(std.time.ns_per_ms));
-    log.info("Finished pre-atlasing all images in {:.2}ms.", .{duration_ms});
+    log.info("Finished pre-atlasing all images", .{});
 }
 
 fn pushQuad(self: *Batch2D, encoded_params: u32, pos: vec2, size: vec2, uv_min: vec2, uv_max: vec2, tint: Color, radii: [4]f32, border_thickness: [4]f32) !void {

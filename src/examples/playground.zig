@@ -5,6 +5,7 @@ const builtin = @import("builtin");
 const nfd = @import("nfd");
 
 const Timer = @import("../Timer.zig");
+const Csg = @import("../Csg.zig");
 const Gpu = @import("../Gpu.zig");
 const Application = @import("../Application.zig");
 const RenderTexture = @import("../RenderTexture.zig");
@@ -467,6 +468,9 @@ pub fn main(_: std.process.Init.Minimal) !void {
 
     const startup_ms = debug.start(io, &timer);
     log.info("startup completed in {d} ms", .{startup_ms});
+
+    var csg = Csg.init(app.generalAllocator());
+    defer csg.deinit();
 
     main_loop: while (app.beginFrame()) {
         const delta_time: f32 = @floatCast(@as(f64, @floatFromInt(timer.lap(io))) / std.time.ns_per_ms);

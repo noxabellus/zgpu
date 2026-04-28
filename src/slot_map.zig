@@ -1,6 +1,7 @@
 const SlotMap = @This();
 
 const std = @import("std");
+const util = @import("util.zig");
 
 pub const Ref = packed struct {
     index: usize,
@@ -12,7 +13,7 @@ pub const Ref = packed struct {
     };
 };
 
-pub const Generation = enum(u64) {
+pub const Generation = enum(usize) {
     invalid = 0,
     _,
 };
@@ -179,7 +180,7 @@ pub fn new(comptime T: type) type {
             };
         }
 
-        pub fn values(self: anytype) CopyPtrMutability(@TypeOf(self), .slice, T) {
+        pub fn values(self: anytype) util.CopyPtrMutability(@TypeOf(self), .slice, T) {
             return self.data.items;
         }
 
@@ -203,27 +204,6 @@ pub fn new(comptime T: type) type {
             };
         }
     };
-}
-
-/// Same as `CopyPtrAttrs`, but does not copy the allowzero or alignment attributes.
-pub fn CopyPtrMutability(
-    comptime source: type,
-    comptime size: std.builtin.Type.Pointer.Size,
-    comptime child: type,
-) type {
-    const info = @typeInfo(source).pointer;
-    return @Pointer(
-        size,
-        .{
-            .@"const" = info.is_const,
-            .@"volatile" = info.is_volatile,
-            .@"allowzero" = false,
-            .alignment = @alignOf(child),
-            .address_space = info.address_space,
-        },
-        child,
-        null,
-    );
 }
 
 const TestMap = SlotMap.new(u32);

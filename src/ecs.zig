@@ -1,6 +1,6 @@
 const ecs = @This();
 const std = @import("std");
-const SlotMap = @import("SlotMap.zig");
+const slot_map = @import("slot_map.zig");
 
 const log = std.log.scoped(.ecs);
 
@@ -8,20 +8,20 @@ const log = std.log.scoped(.ecs);
 
 /// EntityId represents a unique, stable handle to an entity in the world.
 /// It is a "stable" handle because it remains valid even if other entities are
-/// created or destroyed. It wraps a SlotMap.Ref, which provides this guarantee.
+/// created or destroyed. It wraps a slot_map.Ref, which provides this guarantee.
 pub const EntityId = packed struct {
-    ref: SlotMap.Ref,
+    ref: slot_map.Ref,
 
-    pub fn wrap(ref: SlotMap.Ref) EntityId {
+    pub fn wrap(ref: slot_map.Ref) EntityId {
         return EntityId{ .ref = ref };
     }
 };
 
 /// Used to reference component types and storage buffers.
 pub const ComponentId = packed struct {
-    ref: SlotMap.Ref,
+    ref: slot_map.Ref,
 
-    pub fn wrap(ref: SlotMap.Ref) ComponentId {
+    pub fn wrap(ref: slot_map.Ref) ComponentId {
         return ComponentId{ .ref = ref };
     }
 };
@@ -73,7 +73,7 @@ pub const max_entities: u32 = 1 << 31;
 
 /// PseudoIndex is an internal, recyclable index assigned to an entity upon creation.
 /// This is the index used to access the "sparse" arrays within each component buffer.
-/// It is the value stored within the EntityMap (a SlotMap).
+/// It is the value stored within the EntityMap (a slot_map).
 const PseudoIndex = u32;
 
 /// TrueIndex is the actual index into the dense `storage` array.
@@ -99,15 +99,15 @@ const IndexEntry = packed struct(u32) {
 // --- Core Data Structures ---
 
 /// EntityMap is the central manager for entity identity and lifecycle.
-/// It maps the stable, external `EntityId` (via its `SlotMap.Ref`) to a transient,
+/// It maps the stable, external `EntityId` (via its `slot_map.Ref`) to a transient,
 /// internal `PseudoIndex`. This provides a layer of indirection that allows
 //  `PseudoIndex` values to be recycled safely.
-pub const EntityMap = SlotMap.new(PseudoIndex);
+pub const EntityMap = slot_map.new(PseudoIndex);
 
-/// ComponentMap maps `ComponentId` (via its `SlotMap.Ref`) to a type-erased
+/// ComponentMap maps `ComponentId` (via its `slot_map.Ref`) to a type-erased
 /// `BufferStorage`. This allows the `World` to manage multiple component types
 /// without knowing their concrete types at compile time.
-pub const ComponentMap = SlotMap.new(BufferStorage);
+pub const ComponentMap = slot_map.new(BufferStorage);
 
 /// World is the top-level container for the entire ECS.
 /// It holds the allocator, the entity manager, and a type-erased list of
@@ -116,7 +116,7 @@ pub const World = struct {
     /// The allocator used for all dynamic memory operations within the ECS.
     allocator: std.mem.Allocator,
 
-    /// A slotmap that provides stable entity IDs and maps them to internal pseudo-indices.
+    /// A slot_map that provides stable entity IDs and maps them to internal pseudo-indices.
     entities: EntityMap = .empty,
 
     /// A map from component type names to their assigned ComponentId.

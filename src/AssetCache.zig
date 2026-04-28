@@ -156,7 +156,7 @@ pub fn loadImage(self: *AssetCache, io: std.Io, path: []const u8, generate_mips:
         return existing_id;
     }
 
-    const file_data = try try std.Io.Dir.cwd().readFileAlloc(io, path, self.allocator, .limited(10 * 1024 * 1024)); // 10MB max
+    const file_data = try std.Io.Dir.cwd().readFileAlloc(io, path, self.allocator, .limited(10 * 1024 * 1024)); // 10MB max
     defer self.allocator.free(file_data);
 
     var image = try stbi.Image.loadFromMemory(file_data, 4);

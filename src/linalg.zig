@@ -38,12 +38,35 @@ pub const vec4b = @Vector(4, bool);
 pub const deg_to_rad = std.math.rad_per_deg;
 pub const rad_to_deg = std.math.deg_per_rad;
 
+pub fn eql(a: anytype, b: anytype) bool {
+    const T = @TypeOf(a);
+    const T_info = @typeInfo(T);
+    const U = @TypeOf(b);
+    const U_info = @typeInfo(U);
+    const x = if (comptime T_info != .vector and U_info == .vector) splat(U, a) else a;
+    const y = if (comptime U_info != .vector and T_info == .vector) splat(T, b) else b;
+    const g = x == y;
+    return if (comptime T_info == .vector or U_info == .vector) all(g) else g;
+}
+
+pub fn any(v: anytype) bool {
+    return @reduce(.Or, v);
+}
+
+pub fn all(v: anytype) bool {
+    return @reduce(.And, v);
+}
+
+pub fn splat(comptime T: type, v: anytype) T {
+    return @splat(v);
+}
+
 /// check if a point is inside the AABB
 pub fn aabb_contains_point(aabb: anytype, point: @typeInfo(@TypeOf(aabb)).array.child) bool {
     const less = point < aabb[0];
     const greater = point > aabb[1];
 
-    return !(@reduce(.Or, less) or @reduce(.Or, greater));
+    return !any(less or greater);
 }
 
 /// get the smallest AABB that contains both a and b
@@ -72,14 +95,14 @@ pub fn aabb_overlapping(a: anytype, b: @TypeOf(a)) bool {
     const less_than = a[1] < b[0];
     const greater_than = a[0] > b[1];
 
-    return !(@reduce(.Or, less_than) or @reduce(.Or, greater_than));
+    return !any(less_than or greater_than);
 }
 
 /// check if b is completely inside a
 pub fn aabb_contains(a: anytype, b: @TypeOf(a)) bool {
     const less_than = a[0] <= b[0];
     const greater_than = a[1] >= b[1];
-    return @reduce(.And, less_than) and @reduce(.And, greater_than);
+    return all(less_than and greater_than);
 }
 
 /// Get the number of elements in a vector type
@@ -92,6 +115,24 @@ pub fn upcast(comptime T: type, v: anytype) T {
     const U = @TypeOf(v);
     const U_info = @typeInfo(U);
     return if (comptime U_info == .vector) v else @splat(v);
+}
+
+pub fn Extend(comptime T: type) type {
+    const v_info = @typeInfo(T).vector;
+    return @Vector(v_info.len + 1, v_info.child);
+}
+
+/// Append a scalar to a vector type
+pub fn extend(v: anytype, s: @typeInfo(@TypeOf(v)).vector.child) Extend(@TypeOf(v)) {
+    const T = @TypeOf(v);
+    const U = Extend(T);
+    const N = comptime numComponents(T);
+    var out: U = undefined;
+    inline for (0..N) |i| {
+        out[i] = v[i];
+    }
+    out[N] = s;
+    return out;
 }
 
 /// N-dimensional dot product on vectors
